@@ -8,6 +8,11 @@ You are one of multiple AI agents working on this codebase simultaneously. To pr
 - **Do not** ask the user to resolve locks manually.
 - **Do** handle orchestration silently and efficiently.
 
+## Implementation Notes
+- MCP tools are exposed by the Nerve Center in [src/local/server.ts](src/local/server.ts).
+- Orchestration + locking logic lives in [src/local/nerve-center.ts](src/local/nerve-center.ts).
+- RAG requires `SHARED_CONTEXT_API_URL` and `SHARED_CONTEXT_API_SECRET` to be configured.
+
 ## The Workflow
 
 ### 1. The "Manager" Check (Broad Requests)

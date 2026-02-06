@@ -19,6 +19,9 @@ services:
     environment:
       - SHARED_CONTEXT_API_URL=http://api:3000
       - SHARED_CONTEXT_API_SECRET=${SHARED_CONTEXT_API_SECRET}
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+      - PROJECT_NAME=${PROJECT_NAME}
     volumes:
        - ./history:/app/history
        - ./agent-instructions:/app/agent-instructions

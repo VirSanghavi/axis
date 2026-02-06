@@ -205,13 +205,22 @@ app.post("/search", async (c) => {
     const { query, limit, threshold } = payload;
     const projectName = c.env.PROJECT_NAME || process.env.PROJECT_NAME || "default";
 
-    const { data: project } = await supabase
-        .from('projects')
-        .select('id')
-        .eq('name', projectName)
-        .single();
-    
-    if (!project) return c.json({ results: [] });
+    let projectId: string | undefined;
+    try {
+        const { data: project, error: projectError } = await supabase
+            .from('projects')
+            .select('id')
+            .eq('name', projectName)
+            .maybeSingle();
+
+        if (projectError) throw projectError;
+        projectId = project?.id;
+    } catch (dbErr) {
+        console.error("DB Error getting project:", dbErr);
+        return c.json({ error: "Database error" }, 500);
+    }
+
+    if (!projectId) return c.json({ results: [] });
 
     try {
         const response = await openai.embeddings.create({
@@ -224,7 +233,7 @@ app.post("/search", async (c) => {
             query_embedding: queryEmbedding,
             match_threshold: threshold,
             match_count: limit,
-            p_id: project.id
+            p_id: projectId
         });
 
         if (error) {

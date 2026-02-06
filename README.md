@@ -2,11 +2,25 @@
 
 A shared context server that allows different AI agents (Claude Code, Cursor, Windsurf) to share knowledge about project architecture, conventions, and recent activity.
 
-## features
+## Features
 
 1.  **Local Context Storage**: Markdown files in `./agent-instructions/` (`context.md`, `conventions.md`, `activity.md`).
 2.  **MCP Server**: Exposes these files to any MCP-compatible agent.
 3.  **Smart Retrieval (RAG)**: Vector search via hosted API.
+4.  **Job Board + File Locks**: Multi-agent orchestration via MCP tools.
+
+## Environment
+
+Create a `.env.local` file for local development (see `.env.local.example`):
+
+```
+SHARED_CONTEXT_API_URL=http://localhost:3000
+SHARED_CONTEXT_API_SECRET=your_shared_secret
+OPENAI_API_KEY=your_openai_key
+SUPABASE_URL=your_supabase_url
+SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
+PROJECT_NAME=default
+```
 
 ## Setup
 
@@ -59,15 +73,7 @@ The key to this system is that **you (the human) should never manually edit the 
 
 The "Notebook" manages itself.
 
-### Production & Deployment
-
-**Docker**:
-```bash
-docker-compose up --build -d
-```
-Access the Nerve Center (HTTP) at `http://localhost:3001` and SSE at `http://localhost:3001/sse`.
-
-**Local Integration (MCP)**
+### Local Integration (MCP)
 Configure your IDE (Claude Desktop, Cursor, etc.) to point to the local server script:
 ```json
 {
@@ -97,9 +103,9 @@ Configure your IDE (Claude Desktop, Cursor, etc.) to point to the local server s
 ### Docker
 The server is fully containerized. To build and run:
 ```bash
-docker-compose up url --build
+docker-compose up --build
 ```
-This starts the `nerve-center` on port 3001.
+This starts the API on port 3000 and the `nerve-center` on port 3001.
 
 ### Testing
 We maintain a suite of Unit and Load tests.
@@ -116,4 +122,8 @@ bun tests/load-test.ts
 - **Persistence**: State is saved to `history/nerve-center-state.json` to survive restarts.
 - **Concurrency**: `AsyncMutex` ensures atomic operations on the Job Board and File Locks.
 
-## Setup
+## Feature Status
+
+- **RAG / Smart Retrieval**: Implemented via `/embed` and `/search` in the API.
+- **Job Board**: Implemented in the Nerve Center with optional Supabase persistence.
+- **File Locking**: Implemented with stale-lock cleanup and admin force unlock.
