@@ -53,3 +53,21 @@ begin
   limit match_count;
 end;
 $$;
+
+-- Job board table
+create table if not exists public.jobs (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid references public.projects(id) on delete cascade not null,
+  title text not null,
+  description text not null,
+  priority text not null check (priority in ('low', 'medium', 'high', 'critical')),
+  status text not null check (status in ('todo', 'in_progress', 'done', 'cancelled')),
+  assigned_to text,
+  dependencies jsonb default '[]'::jsonb,
+  cancel_reason text,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  updated_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+create index if not exists jobs_project_id_idx on public.jobs(project_id);
+create index if not exists jobs_status_idx on public.jobs(status);

@@ -81,6 +81,12 @@ const getSupabase = (c: any) => createClient(
 app.get("/", (c) => c.text("Shared Context API is running"));
 
 app.post("/embed", async (c) => {
+    const openaiKey = c.env.OPENAI_API_KEY || process.env.OPENAI_API_KEY;
+    const supabaseUrl = c.env.SUPABASE_URL || process.env.SUPABASE_URL;
+    const supabaseKey = c.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
+    if (!openaiKey || !supabaseUrl || !supabaseKey) {
+            return c.json({ error: "Missing required environment variables" }, 500);
+    }
   const openai = getOpenAI(c);
   const supabase = getSupabase(c);
   
@@ -105,11 +111,13 @@ app.post("/embed", async (c) => {
   // Get/Create Project ID
   let projectId;
   try {
-      const { data: project } = await supabase
-        .from('projects')
-        .select('id')
-        .eq('name', projectName)
-        .single();
+            const { data: project, error: projectError } = await supabase
+                .from('projects')
+                .select('id')
+                .eq('name', projectName)
+                .maybeSingle();
+
+            if (projectError) throw projectError;
     
       projectId = project?.id;
     
@@ -171,6 +179,12 @@ app.post("/embed", async (c) => {
 });
 
 app.post("/search", async (c) => {
+    const openaiKey = c.env.OPENAI_API_KEY || process.env.OPENAI_API_KEY;
+    const supabaseUrl = c.env.SUPABASE_URL || process.env.SUPABASE_URL;
+    const supabaseKey = c.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
+    if (!openaiKey || !supabaseUrl || !supabaseKey) {
+        return c.json({ error: "Missing required environment variables" }, 500);
+    }
     const openai = getOpenAI(c);
     const supabase = getSupabase(c);
 

@@ -6,7 +6,7 @@ A shared context server that allows different AI agents (Claude Code, Cursor, Wi
 
 1.  **Local Context Storage**: Markdown files in `./agent-instructions/` (`context.md`, `conventions.md`, `activity.md`).
 2.  **MCP Server**: Exposes these files to any MCP-compatible agent.
-3.  **Smart Retrieval (RAG)**: (Planned) Vector search via hosted API.
+3.  **Smart Retrieval (RAG)**: Vector search via hosted API.
 
 ## Setup
 
@@ -89,7 +89,7 @@ Configure your IDE (Claude Desktop, Cursor, etc.) to point to the local server s
 ## Architecture
 
 - **Active Orchestrator (`src/local/server.ts`)**: A single-process HTTP/SSE server that holds memorystate.
-- **Job Board**: In-memory task registry.
+- **Job Board**: Supabase-backed task registry (falls back to local state when not configured).
 - **RAG Memory**: Vector embeddings of all past decisions and prompts.
 
 ## Production & Deployment
