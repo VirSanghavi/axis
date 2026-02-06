@@ -39,6 +39,7 @@ PROJECT_NAME=default
     ```bash
     bun start:local
     ```
+  This stdio server exposes the full Nerve Center toolset (job board, locks, notepad).
     
     *Address for MCP Clients*: Since it runs on stdio, you typically configure your agent (e.g., in `claude_desktop_config.json` or Cursor settings) to run:
     ```json
@@ -86,6 +87,35 @@ Configure your IDE (Claude Desktop, Cursor, etc.) to point to the local server s
 }
 ```
 
+### MCP Tooling
+The server exposes these orchestration tools to agents:
+
+- `propose_file_access`
+- `update_shared_context`
+- `post_job`
+- `claim_next_job`
+- `complete_job`
+- `cancel_job`
+- `force_unlock`
+- `finalize_session`
+- `get_project_soul`
+
+### Agent Integration Examples
+
+**Claude Desktop (example flow)**
+
+1. `claim_next_job` with your `agentId`.
+2. If claimed, `propose_file_access` before edits.
+3. After completing work, `complete_job` with outcome notes.
+4. Use `update_shared_context` to summarize decisions.
+
+**Cursor (example flow)**
+
+1. `get_project_soul` to load context.
+2. `claim_next_job` or `post_job` for new work.
+3. `propose_file_access` before editing files.
+4. `finalize_session` at the end of a sprint.
+
 ## Troubleshooting
 
 - **Permissions**: Ensure `chmod +x src/local/mcp-server.ts` or that `bun` is in your PATH.
@@ -106,6 +136,41 @@ The server is fully containerized. To build and run:
 docker-compose up --build
 ```
 This starts the API on port 3000 and the `nerve-center` on port 3001.
+
+### Supabase Setup
+Apply the schema in [supabase/schema.sql](supabase/schema.sql) to your Supabase project.
+It creates the `projects`, `embeddings`, and `jobs` tables plus the `match_embeddings` RPC.
+
+### RAG API Examples
+
+**Embed content**
+
+```bash
+curl -X POST http://localhost:3000/embed \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $SHARED_CONTEXT_API_SECRET" \
+  -d '{
+    "items": [
+      {
+        "content": "This repo uses Bun and Hono",
+        "metadata": { "filename": "context.md", "source": "agent-instructions" }
+      }
+    ]
+  }'
+```
+
+**Search content**
+
+```bash
+curl -X POST http://localhost:3000/search \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $SHARED_CONTEXT_API_SECRET" \
+  -d '{
+    "query": "What runtime does this project use?",
+    "limit": 5,
+    "threshold": 0.5
+  }'
+```
 
 ### Testing
 We maintain a suite of Unit and Load tests.

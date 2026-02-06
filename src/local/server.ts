@@ -10,6 +10,7 @@ import express from "express";
 import dotenv from "dotenv";
 import { ContextManager } from "./context-manager.js";
 import { NerveCenter } from "./nerve-center.js";
+import { logger } from "../utils/logger.js";
 
 // Load environment variables
 dotenv.config({ path: ".env.local" });
@@ -32,7 +33,7 @@ async function ensureFileSystem() {
         try {
             await fs.access(dirPath);
         } catch {
-             console.log(`Creating required directory: ${d}`);
+             logger.info("Creating required directory", { dir: d });
              await fs.mkdir(dirPath, { recursive: true });
              if (d === "agent-instructions") {
                  // Create default files
@@ -49,9 +50,9 @@ async function ensureFileSystem() {
     try {
         await ensureFileSystem();
         await nerveCenter.init();
-        console.log("NerveCenter initialized successfully.");
+        logger.info("NerveCenter initialized successfully.");
     } catch (err) {
-        console.error("Failed to init NerveCenter:", err);
+        logger.error("Failed to init NerveCenter", err as Error);
     }
 })();
 
@@ -62,7 +63,7 @@ const port = 3001;
 const sessions = new Map();
 
 app.get("/sse", async (req, res) => {
-    console.log("New connection...");
+    logger.info("New connection");
     
     // 1. Create a new transport for this specific connection
     const transport = new SSEServerTransport("/message", res);
@@ -285,7 +286,7 @@ app.get("/sse", async (req, res) => {
     
     // Clean up on close
     res.on("close", () => {
-        console.log(`Session ${sessionId} closed`);
+        logger.info("Session closed", { sessionId });
         sessions.delete(sessionId);
     });
 });
@@ -303,5 +304,5 @@ app.post("/message", async (req, res) => {
 });
 
 app.listen(port, () => {
-    console.log(`Orchestrator Server running on http://localhost:${port}/sse`);
+    logger.info("Orchestrator Server running", { url: `http://localhost:${port}/sse` });
 });

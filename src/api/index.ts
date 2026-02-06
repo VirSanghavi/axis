@@ -5,6 +5,9 @@ import { bearerAuth } from "hono/bearer-auth";
 import { z } from "zod";
 import { cors } from 'hono/cors';
 import { logger } from "../utils/logger.js"; // Note: Need to ensure this path works or use local logger if running in diff context
+import dotenv from "dotenv";
+
+dotenv.config({ path: ".env.local" });
 
 // Simple in-memory rate limiter
 const RATE_LIMIT_WINDOW = 60 * 1000; // 1 min

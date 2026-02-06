@@ -6,17 +6,42 @@ import {
   ListResourcesRequestSchema,
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import fs from "fs/promises";
-import path from "path";
 import dotenv from "dotenv";
+import { ContextManager } from "./context-manager.js";
+import { NerveCenter } from "./nerve-center.js";
+import { logger } from "../utils/logger.js";
 
 // Load environment variables
 dotenv.config({ path: ".env.local" });
 
 // Configuration
-const INSTRUCTIONS_DIR = path.resolve(process.cwd(), "agent-instructions");
-const API_URL = process.env.SHARED_CONTEXT_API_URL;
-const API_SECRET = process.env.SHARED_CONTEXT_API_SECRET;
+const manager = new ContextManager(
+  process.env.SHARED_CONTEXT_API_URL,
+  process.env.SHARED_CONTEXT_API_SECRET
+);
+const nerveCenter = new NerveCenter(manager);
+
+// --- File System Operations ---
+const REQUIRED_DIRS = ["agent-instructions", "history"];
+async function ensureFileSystem() {
+  const fs = await import("fs/promises");
+  const path = await import("path");
+
+  for (const d of REQUIRED_DIRS) {
+    const dirPath = path.join(process.cwd(), d);
+    try {
+      await fs.access(dirPath);
+    } catch {
+      logger.info("Creating required directory", { dir: d });
+      await fs.mkdir(dirPath, { recursive: true });
+      if (d === "agent-instructions") {
+        await fs.writeFile(path.join(dirPath, "context.md"), "# Project Context\n\n");
+        await fs.writeFile(path.join(dirPath, "conventions.md"), "# Coding Conventions\n\n");
+        await fs.writeFile(path.join(dirPath, "activity.md"), "# Activity Log\n\n");
+      }
+    }
+  }
+}
 
 // Initialize server
 const server = new Server(
@@ -39,30 +64,37 @@ const SEARCH_CONTEXT_TOOL = "search_context";
 
 server.setRequestHandler(ListResourcesRequestSchema, async () => {
     try {
-        const files = await fs.readdir(INSTRUCTIONS_DIR);
         return {
-            resources: files
-                .filter(f => f.endsWith('.md'))
-                .map(f => ({
-                    uri: `context://local/${f}`,
-                    name: f,
-                    mimeType: "text/markdown",
-                    description: `Shared context file: ${f}`
-                }))
+      resources: [
+        {
+          uri: "mcp://context/current",
+          name: "Live Session Context",
+          mimeType: "text/markdown",
+          description: "The realtime state of the Nerve Center (Notepad + Locks)"
+        },
+        ...(await manager.listFiles())
+      ]
         };
     } catch (error) {
-        console.error("Error listing resources:", error);
+    logger.error("Error listing resources", error as Error);
         return { resources: [] };
     }
 });
 
 server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
     const uri = request.params.uri;
-    const fileName = uri.replace("context://local/", "");
-    const filePath = path.join(INSTRUCTIONS_DIR, fileName);
-    
     try {
-        const content = await fs.readFile(filePath, "utf-8");
+    if (uri === "mcp://context/current") {
+      return {
+        contents: [{
+          uri,
+          mimeType: "text/markdown",
+          text: await nerveCenter.getLiveContext()
+        }]
+      };
+    }
+    const fileName = uri.replace("context://local/", "");
+    const content = await manager.readFile(fileName);
         return {
             contents: [{
                 uri,
@@ -113,6 +145,107 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           required: ["query"],
         },
       },
+      // --- Decision & Orchestration ---
+      {
+        name: "propose_file_access",
+        description: "Request a lock on a file. Checks for conflicts with other agents.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            agentId: { type: "string" },
+            filePath: { type: "string" },
+            intent: { type: "string" },
+            userPrompt: { type: "string", description: "The full prompt provided by the user that initiated this action." }
+          },
+          required: ["agentId", "filePath", "intent", "userPrompt"]
+        }
+      },
+      {
+        name: "update_shared_context",
+        description: "Write to the in-memory Live Notepad.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            agentId: { type: "string" },
+            text: { type: "string" }
+          },
+          required: ["agentId", "text"]
+        }
+      },
+      // --- Permanent Memory ---
+      {
+        name: "finalize_session",
+        description: "End the session, archive the notepad, and clear locks.",
+        inputSchema: { type: "object", properties: {}, required: [] }
+      },
+      {
+        name: "get_project_soul",
+        description: "Get high-level project goals and context.",
+        inputSchema: { type: "object", properties: {}, required: [] }
+      },
+      // --- Job Board (Task Orchestration) ---
+      {
+        name: "post_job",
+        description: "Post a new job/ticket. Supports priority and dependencies.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            title: { type: "string" },
+            description: { type: "string" },
+            priority: { type: "string", enum: ["low", "medium", "high", "critical"] },
+            dependencies: { type: "array", items: { type: "string" } }
+          },
+          required: ["title", "description"]
+        }
+      },
+      {
+        name: "cancel_job",
+        description: "Cancel a job that is no longer needed.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            jobId: { type: "string" },
+            reason: { type: "string" }
+          },
+          required: ["jobId", "reason"]
+        }
+      },
+      {
+        name: "force_unlock",
+        description: "Admin tool to forcibly remove a lock from a file.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            filePath: { type: "string" },
+            reason: { type: "string" }
+          },
+          required: ["filePath", "reason"]
+        }
+      },
+      {
+        name: "claim_next_job",
+        description: "Auto-assign the next available 'todo' job to yourself.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            agentId: { type: "string" }
+          },
+          required: ["agentId"]
+        }
+      },
+      {
+        name: "complete_job",
+        description: "Mark your assigned job as done.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            agentId: { type: "string" },
+            jobId: { type: "string" },
+            outcome: { type: "string" }
+          },
+          required: ["agentId", "jobId", "outcome"]
+        }
+      }
     ],
   };
 });
@@ -120,11 +253,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
+  logger.info("Tool call", { name });
+
   if (name === READ_CONTEXT_TOOL) {
       const filename = String(args?.filename);
-      const filePath = path.join(INSTRUCTIONS_DIR, filename);
       try {
-          const data = await fs.readFile(filePath, 'utf-8');
+      const data = await manager.readFile(filename);
           return {
               content: [{ type: "text", text: data }]
           };
@@ -140,14 +274,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const filename = String(args?.filename);
       const content = String(args?.content);
       const append = Boolean(args?.append);
-      
-      const filePath = path.join(INSTRUCTIONS_DIR, filename);
       try {
-          if (append) {
-              await fs.appendFile(filePath, "\n" + content);
-          } else {
-              await fs.writeFile(filePath, content);
-          }
+        await manager.updateFile(filename, content, append);
           return {
               content: [{ type: "text", text: `Updated ${filename}` }]
           };
@@ -160,49 +288,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === SEARCH_CONTEXT_TOOL) {
-     if (!API_URL) {
-         return {
-             content: [{ type: "text", text: "Error: SHARED_CONTEXT_API_URL not configured in environment." }],
-             isError: true
-         };
-     }
-
      const query = String(args?.query);
-     
      try {
-         const response = await fetch(`${API_URL}/search`, {
-             method: "POST",
-             headers: {
-                 "Content-Type": "application/json",
-                 "Authorization": `Bearer ${API_SECRET || ""}`
-             },
-             body: JSON.stringify({ query })
-         });
-         
-         if (!response.ok) {
-              const text = await response.text();
-              return {
-                  content: [{ type: "text", text: `API Error ${response.status}: ${text}` }],
-                  isError: true
-              };
-         }
-         
-         const result = await response.json() as any;
-         
-         if (result.results && Array.isArray(result.results)) {
-             const formatted = result.results.map((r: any) => 
-                 `[Similarity: ${(r.similarity * 100).toFixed(1)}%] ${r.content}`
-             ).join("\n\n---\n\n");
-             
-             return {
-                 content: [{ type: "text", text: formatted || "No results found." }]
-             }
-         }
-         
-         return {
-             content: [{ type: "text", text: "No results format recognized." }]
-         };
-
+       const formatted = await manager.searchContext(query);
+       return { content: [{ type: "text", text: formatted }] };
      } catch (err) {
          return {
              content: [{ type: "text", text: `Search Execution Error: ${err}` }],
@@ -211,16 +300,62 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
      }
   }
 
+    if (name === "propose_file_access") {
+      const { agentId, filePath, intent, userPrompt } = args as any;
+      const result = await nerveCenter.proposeFileAccess(agentId, filePath, intent, userPrompt);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    }
+    if (name === "update_shared_context") {
+      const { agentId, text } = args as any;
+      const result = await nerveCenter.updateSharedContext(text, agentId);
+      return { content: [{ type: "text", text: result }] };
+    }
+    if (name === "finalize_session") {
+      const result = await nerveCenter.finalizeSession();
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    }
+    if (name === "get_project_soul") {
+      const result = await nerveCenter.getProjectSoul();
+      return { content: [{ type: "text", text: result }] };
+    }
+    if (name === "post_job") {
+      const { title, description, priority, dependencies } = args as any;
+      const result = await nerveCenter.postJob(title, description, priority, dependencies);
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    }
+    if (name === "cancel_job") {
+      const { jobId, reason } = args as any;
+      const result = await nerveCenter.cancelJob(jobId, reason);
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    }
+    if (name === "force_unlock") {
+      const { filePath, reason } = args as any;
+      const result = await nerveCenter.forceUnlock(filePath, reason);
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    }
+    if (name === "claim_next_job") {
+      const { agentId } = args as any;
+      const result = await nerveCenter.claimNextJob(agentId);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    }
+    if (name === "complete_job") {
+      const { agentId, jobId, outcome } = args as any;
+      const result = await nerveCenter.completeJob(agentId, jobId, outcome);
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    }
+
   throw new Error(`Tool not found: ${name}`);
 });
 
 async function main() {
+    await ensureFileSystem();
+    await nerveCenter.init();
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("Shared Context MCP Server running on stdio");
+    logger.info("Shared Context MCP Server running on stdio");
 }
 
 main().catch((error) => {
-  console.error("Server error:", error);
+  logger.error("Server error", error as Error);
   process.exit(1);
 });

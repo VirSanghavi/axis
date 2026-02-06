@@ -15,6 +15,17 @@ export class ContextManager {
         this.apiSecret = apiSecret;
     }
 
+    private resolveFilePath(filename: string) {
+        if (!filename || filename.includes("\0")) {
+            throw new Error("Invalid filename");
+        }
+        const resolved = path.resolve(INSTRUCTIONS_DIR, filename);
+        if (!resolved.startsWith(INSTRUCTIONS_DIR + path.sep)) {
+            throw new Error("Invalid file path");
+        }
+        return resolved;
+    }
+
     async listFiles() {
         try {
             const files = await fs.readdir(INSTRUCTIONS_DIR);
@@ -33,14 +44,14 @@ export class ContextManager {
     }
 
     async readFile(filename: string) {
-        const filePath = path.join(INSTRUCTIONS_DIR, filename);
+        const filePath = this.resolveFilePath(filename);
         // Read is safe to run concurrently, but we might want to ensure we don't read while writing
         // For max concurrency, we can let reads happen, but atomic writes are key.
         return await fs.readFile(filePath, "utf-8");
     }
 
     async updateFile(filename: string, content: string, append: boolean = false) {
-        const filePath = path.join(INSTRUCTIONS_DIR, filename);
+        const filePath = this.resolveFilePath(filename);
         
         return await this.mutex.runExclusive(async () => {
             if (append) {
