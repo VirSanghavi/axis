@@ -139,7 +139,7 @@ function QuickstartSection() {
                     <h3 className="text-[11px] font-bold uppercase tracking-[0.3em] text-neutral-900 mb-4">2. connect your agent</h3>
                     <p className="mb-4">point your cursor, claude-desktop, or your custom agent instance to the axis server.</p>
                     <CodeBlock code={`npm install -g @virsanghavi/axis-server
-export AXIS_API_KEY=sk_ax_...
+export AXIS_API_KEY=sk_sc_...
 axis-server`} />
                 </div>
             </div>
@@ -243,7 +243,7 @@ function APISection() {
                         </ul>
                     </div>
                     <CodeBlock lang="bash" code={`curl -X GET "https://api.axis.sh/v1/context/mirror?path=src/lib" \\
-  -H "Authorization: Bearer sk_ax_..."`} />
+  -H "Authorization: Bearer sk_sc_..."`} />
                 </div>
 
                 <div className="p-8 bg-neutral-50 rounded-2xl border border-neutral-100">
@@ -253,7 +253,7 @@ function APISection() {
                     </div>
                     <p className="text-neutral-500 mb-6 font-medium">real-time validation of distributed agent actions against project constraints.</p>
                     <CodeBlock lang="bash" code={`curl -X POST "https://api.axis.sh/v1/governance/check" \\
-  -H "Authorization: Bearer sk_ax_..." \\
+  -H "Authorization: Bearer sk_sc_..." \\
   -d '{
     "agent_id": "agent-001",
     "file_path": "src/auth/secrets.ts",
