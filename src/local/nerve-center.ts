@@ -209,6 +209,49 @@ export class NerveCenter {
         }
     }
 
+    private async getNotepad(): Promise<string> {
+        if (!this.useSupabase || !this.supabase || !this._projectId) {
+            return this.state.liveNotepad;
+        }
+
+        const { data, error } = await this.supabase
+            .from("projects")
+            .select("live_notepad")
+            .eq("id", this._projectId)
+            .single();
+
+        if (error || !data) {
+            logger.error("Failed to fetch notepad", error);
+            return this.state.liveNotepad;
+        }
+
+        return data.live_notepad || "";
+    }
+
+    private async appendToNotepad(text: string) {
+        if (!this.useSupabase || !this.supabase || !this._projectId) {
+            this.state.liveNotepad += text;
+            await this.saveState();
+            return;
+        }
+
+        // Atomic append using rpc if available, or just fetch and update for now
+        // A simple RPC would be better to avoid race conditions: update projects set live_notepad = live_notepad || p_text
+        const { error } = await this.supabase.rpc('append_to_project_notepad', {
+            p_project_id: this._projectId,
+            p_text: text
+        });
+
+        if (error) {
+            // Fallback to manual update if RPC doesn't exist
+            const current = await this.getNotepad();
+            await this.supabase
+                .from("projects")
+                .update({ live_notepad: current + text })
+                .eq("id", this._projectId);
+        }
+    }
+
     private async saveState() {
         try {
             await fs.mkdir(path.dirname(this.stateFilePath), { recursive: true });
@@ -270,9 +313,9 @@ export class NerveCenter {
                 };
             }
             const depText = dependencies.length ? ` (Depends on: ${dependencies.join(", ")})` : "";
-            this.state.liveNotepad += `\n- [JOB POSTED] [${priority.toUpperCase()}] ${title} (ID: ${id})${depText}`;
+            const logEntry = `\n- [JOB POSTED] [${priority.toUpperCase()}] ${title} (ID: ${id})${depText}`;
+            await this.appendToNotepad(logEntry);
             logger.info(`Job posted: ${title}`, { jobId: id, priority });
-            await this.saveState();
             return { jobId: id, status: "POSTED" };
         });
     }
@@ -320,9 +363,8 @@ export class NerveCenter {
 
                     if (data && data.length > 0) {
                         const job = this.jobFromRecord(data[0] as JobRecord);
-                        this.state.liveNotepad += `\n- [JOB CLAIMED] Agent '${agentId}' picked up: ${job.title}`;
+                        await this.appendToNotepad(`\n- [JOB CLAIMED] Agent '${agentId}' picked up: ${job.title}`);
                         logger.info(`Job claimed`, { jobId: job.id, agentId });
-                        await this.saveState();
                         return { status: "CLAIMED", job };
                     }
                 }
@@ -417,9 +459,8 @@ export class NerveCenter {
 
                 if (updateError) return { error: "Failed to complete job" };
 
-                this.state.liveNotepad += `\n- [JOB DONE] ${data.title} by ${agentId}. Outcome: ${outcome}`;
+                await this.appendToNotepad(`\n- [JOB DONE] ${data.title} by ${agentId}. Outcome: ${outcome}`);
                 logger.info(`Job completed`, { jobId, agentId });
-                await this.saveState();
                 return { status: "COMPLETED" };
             }
 
@@ -451,7 +492,9 @@ export class NerveCenter {
             `- [${j.status.toUpperCase()}] ${j.title} ${j.assignedTo ? '(' + j.assignedTo + ')' : '(Open)'}\n  ID: ${j.id}`
         ).join("\n");
 
-        return `# Active Session Context\n\n## Job Board (Active Orchestration)\n${jobSummary || "No active jobs."}\n\n## Task Registry (Locks)\n${lockSummary || "No active locks."}\n\n## Live Notepad\n${this.state.liveNotepad}`;
+        const notepad = await this.getNotepad();
+
+        return `# Active Session Context\n\n## Job Board (Active Orchestration)\n${jobSummary || "No active jobs."}\n\n## Task Registry (Locks)\n${lockSummary || "No active locks."}\n\n## Live Notepad\n${notepad}`;
     }
 
     // --- Decision & Orchestration ---
@@ -505,32 +548,44 @@ export class NerveCenter {
                 return { status: "ERROR", message: "Database lock failed." };
             }
 
-            this.state.liveNotepad += `\n\n### [${agentId}] Locked '${filePath}'\n**Intent:** ${intent}\n**Prompt:** "${userPrompt}"`;
-            await this.saveState();
+            await this.appendToNotepad(`\n\n### [${agentId}] Locked '${filePath}'\n**Intent:** ${intent}\n**Prompt:** "${userPrompt}"`);
             return { status: "GRANTED", message: `Access granted for ${filePath}` };
         });
     }
 
     async updateSharedContext(text: string, agentId: string) {
         return await this.mutex.runExclusive(async () => {
-            this.state.liveNotepad += `\n- [${agentId}] ${text}`;
-            await this.saveState();
+            await this.appendToNotepad(`\n- [${agentId}] ${text}`);
             return "Notepad updated.";
         });
     }
 
     async finalizeSession() {
         return await this.mutex.runExclusive(async () => {
-            const content = this.state.liveNotepad;
+            const content = await this.getNotepad();
             const filename = `session-${new Date().toISOString().replace(/[:.]/g, '-')}.md`;
             const historyPath = path.join(process.cwd(), "history", filename);
 
             await fs.writeFile(historyPath, content);
 
             // Clear State
-            this.state.liveNotepad = "Session Start: " + new Date().toISOString() + "\n";
-            this.state.locks = {};
             if (this.useSupabase && this.supabase && this._projectId) {
+                // Archive to sessions table first
+                await this.supabase
+                    .from("sessions")
+                    .insert({
+                        project_id: this._projectId,
+                        title: `Session ${new Date().toLocaleDateString()}`,
+                        summary: content.substring(0, 500) + "...",
+                        metadata: { full_content: content }
+                    });
+
+                // Clear live notepad
+                await this.supabase
+                    .from("projects")
+                    .update({ live_notepad: "Session Start: " + new Date().toISOString() + "\n" })
+                    .eq("id", this._projectId);
+
                 // Clear done jobs
                 await this.supabase
                     .from("jobs")
@@ -538,12 +593,14 @@ export class NerveCenter {
                     .eq("project_id", this._projectId)
                     .in("status", ["done", "cancelled"]);
 
-                // Clear all locks for this project? Maybe.
+                // Clear all locks for this project
                 await this.supabase
                     .from("locks")
                     .delete()
                     .eq("project_id", this._projectId);
             } else {
+                this.state.liveNotepad = "Session Start: " + new Date().toISOString() + "\n";
+                this.state.locks = {};
                 this.state.jobs = Object.fromEntries(
                     Object.entries(this.state.jobs).filter(([_, j]) => j.status !== "done" && j.status !== "cancelled")
                 );
@@ -588,7 +645,7 @@ export class NerveCenter {
             return { status: "unknown", message: "Profile not found." };
         }
 
-        const isActive = profile.subscription_status === 'pro' || 
+        const isActive = profile.subscription_status === 'pro' ||
             (profile.current_period_end && new Date(profile.current_period_end) > new Date());
 
         return {
@@ -600,10 +657,10 @@ export class NerveCenter {
     }
 
     async getUsageStats(email: string) {
-         if (!this.useSupabase || !this.supabase) {
+        if (!this.useSupabase || !this.supabase) {
             return { error: "Supabase not configured." };
         }
-        
+
         const { data: profile } = await this.supabase
             .from("profiles")
             .select("usage_count")
