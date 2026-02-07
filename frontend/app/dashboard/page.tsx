@@ -102,6 +102,19 @@ export default function Dashboard() {
               setActivities((prev) => [payload.new as Activity, ...prev].slice(0, 10));
             }
           )
+          .on(
+            'broadcast',
+            { event: 'new-activity' },
+            (payload) => {
+              setActivities((prev) => {
+                // Avoid duplicates if postgres_changes also fired
+                if (prev.some(a => a.id === payload.payload.id || (a.type === payload.payload.type && a.target === payload.payload.target && Math.abs(new Date(a.created_at).getTime() - new Date(payload.payload.created_at).getTime()) < 1000))) {
+                  return prev;
+                }
+                return [payload.payload as Activity, ...prev].slice(0, 10);
+              });
+            }
+          )
           .subscribe();
 
         return () => {
@@ -207,6 +220,15 @@ export default function Dashboard() {
         setKeys([...keys, data.key]);
         setCreatedKey(data.key.secret);
         setNewKeyName('');
+
+        // Local UI update for immediate feedback
+        setActivities(prev => [{
+          id: data.key.id,
+          type: 'KEY_GENERATED',
+          target: newKeyName,
+          status: 'success',
+          created_at: new Date().toISOString()
+        }, ...prev].slice(0, 10));
       }
     } catch (e) {
       console.error(e);
@@ -216,9 +238,19 @@ export default function Dashboard() {
   async function deleteKey(id: string) {
     if (!confirm('Are you sure? This action cannot be undone.')) return;
     try {
+      const keyToDelete = keys.find(k => k.id === id);
       const res = await fetch(`/api/keys/${id}`, { method: 'DELETE' });
       if (res.ok) {
         setKeys(keys.filter(k => k.id !== id));
+
+        // Local UI update for immediate feedback
+        setActivities(prev => [{
+          id: `del-${id}`,
+          type: 'KEY_DELETED',
+          target: keyToDelete?.name || 'Unknown Key',
+          status: 'success',
+          created_at: new Date().toISOString()
+        }, ...prev].slice(0, 10));
       }
     } catch (e) {
       console.error(e);

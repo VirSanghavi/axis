@@ -13,17 +13,29 @@ export async function logActivity(
     status: string = "success"
 ) {
     try {
-        const { error } = await supabase.from("activity_feed").insert({
+        const activity = {
             user_id: userId,
             type,
             target,
             metadata,
             status,
-        });
+            created_at: new Date().toISOString()
+        };
+
+        const { error } = await supabase.from("activity_feed").insert(activity);
 
         if (error) {
             console.error("[Activity Log] Error inserting record:", error);
         }
+
+        // Also broadcast to a user-specific channel for real-time updates
+        // This bypasses RLS issues with custom auth
+        await supabase.channel(`activity-feed-${userId}`).send({
+            type: 'broadcast',
+            event: 'new-activity',
+            payload: activity
+        });
+
     } catch (err) {
         console.error("[Activity Log] Unexpected error:", err);
     }
