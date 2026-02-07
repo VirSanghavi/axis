@@ -7,7 +7,7 @@ const PUBLIC_PATHS = ["/login", "/signup", "/api/auth/login", "/api/auth/signup"
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
-  if (pathname.startsWith("/_next") || pathname.startsWith("/favicon") || pathname === "/" || pathname === "/api/stripe/webhook") {
+  if (pathname.startsWith("/_next") || pathname.startsWith("/favicon") || pathname === "/" || pathname.startsWith("/api/stripe/webhook")) {
     return NextResponse.next();
   }
 
