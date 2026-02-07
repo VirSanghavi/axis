@@ -1,3 +1,10 @@
+var __require = /* @__PURE__ */ ((x) => typeof require !== "undefined" ? require : typeof Proxy !== "undefined" ? new Proxy(x, {
+  get: (a, b) => (typeof require !== "undefined" ? require : a)[b]
+}) : x)(function(x) {
+  if (typeof require !== "undefined") return require.apply(this, arguments);
+  throw Error('Dynamic require of "' + x + '" is not supported');
+});
+
 // ../../src/local/mcp-server.ts
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -13,7 +20,16 @@ import dotenv2 from "dotenv";
 import fs from "fs/promises";
 import path from "path";
 import { Mutex } from "async-mutex";
-var INSTRUCTIONS_DIR = path.resolve(process.cwd(), "agent-instructions");
+var LEGACY_INSTRUCTIONS_DIR = path.resolve(process.cwd(), "agent-instructions");
+var AXIS_DIR = path.resolve(process.cwd(), ".axis");
+var INSTRUCTIONS_DIR = path.resolve(AXIS_DIR, "instructions");
+function getEffectiveInstructionsDir() {
+  try {
+    if (__require("fs").existsSync(INSTRUCTIONS_DIR)) return INSTRUCTIONS_DIR;
+  } catch {
+  }
+  return LEGACY_INSTRUCTIONS_DIR;
+}
 var ContextManager = class {
   mutex;
   apiUrl;
@@ -27,15 +43,22 @@ var ContextManager = class {
     if (!filename || filename.includes("\0")) {
       throw new Error("Invalid filename");
     }
-    const resolved = path.resolve(INSTRUCTIONS_DIR, filename);
-    if (!resolved.startsWith(INSTRUCTIONS_DIR + path.sep)) {
+    const resolved = path.resolve(getEffectiveInstructionsDir(), filename);
+    const effectiveDir = getEffectiveInstructionsDir();
+    if (!resolved.startsWith(effectiveDir + path.sep)) {
       throw new Error("Invalid file path");
     }
     return resolved;
   }
   async listFiles() {
     try {
-      const files = await fs.readdir(INSTRUCTIONS_DIR);
+      const dir = getEffectiveInstructionsDir();
+      try {
+        await fs.access(dir);
+      } catch {
+        return [];
+      }
+      const files = await fs.readdir(dir);
       const docFiles = await this.listDocs();
       const instructionFiles = files.filter((f) => f.endsWith(".md")).map((f) => ({
         uri: `context://local/${f}`,
@@ -740,21 +763,34 @@ var ragEngine = new RagEngine(
   // Project ID is loaded async by NerveCenter... tricky dependency.
   // We'll let NerveCenter expose it or pass it later.
 );
-var REQUIRED_DIRS = ["agent-instructions", "history"];
 async function ensureFileSystem() {
   const fs3 = await import("fs/promises");
   const path3 = await import("path");
-  for (const d of REQUIRED_DIRS) {
-    const dirPath = path3.join(process.cwd(), d);
-    try {
-      await fs3.access(dirPath);
-    } catch {
-      logger.info("Creating required directory", { dir: d });
-      await fs3.mkdir(dirPath, { recursive: true });
-      if (d === "agent-instructions") {
-        await fs3.writeFile(path3.join(dirPath, "context.md"), "# Project Context\n\n");
-        await fs3.writeFile(path3.join(dirPath, "conventions.md"), "# Coding Conventions\n\n");
-        await fs3.writeFile(path3.join(dirPath, "activity.md"), "# Activity Log\n\n");
+  const fsSync = await import("fs");
+  const cwd = process.cwd();
+  const historyDir = path3.join(cwd, "history");
+  await fs3.mkdir(historyDir, { recursive: true }).catch(() => {
+  });
+  const axisDir = path3.join(cwd, ".axis");
+  const axisInstructions = path3.join(axisDir, "instructions");
+  const legacyInstructions = path3.join(cwd, "agent-instructions");
+  if (fsSync.existsSync(legacyInstructions) && !fsSync.existsSync(axisDir)) {
+    logger.info("Using legacy agent-instructions directory");
+  } else {
+    await fs3.mkdir(axisInstructions, { recursive: true }).catch(() => {
+    });
+    const defaults = [
+      ["context.md", "# Project Context\n\n"],
+      ["conventions.md", "# Coding Conventions\n\n"],
+      ["activity.md", "# Activity Log\n\n"]
+    ];
+    for (const [file, content] of defaults) {
+      const p = path3.join(axisInstructions, file);
+      try {
+        await fs3.access(p);
+      } catch {
+        await fs3.writeFile(p, content);
+        logger.info(`Created default context file: ${file}`);
       }
     }
   }

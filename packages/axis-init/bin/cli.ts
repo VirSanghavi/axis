@@ -23,8 +23,14 @@ program
             console.log(chalk.yellow('  ! .axis directory already exists. skipping creation.'));
         } else {
             await fs.ensureDir(axisDir);
-            await fs.ensureDir(path.join(axisDir, 'instructions'));
+            const instructionsDir = path.join(axisDir, 'instructions');
+            await fs.ensureDir(instructionsDir);
             await fs.ensureDir(path.join(axisDir, 'research'));
+
+            // Initialize standard context files
+            await fs.writeFile(path.join(instructionsDir, 'context.md'), '# Project Context\n\nHigh-level architectural context goes here.\n');
+            await fs.writeFile(path.join(instructionsDir, 'conventions.md'), '# Coding Conventions\n\nProject-specific patterns and rules.\n');
+            await fs.writeFile(path.join(instructionsDir, 'activity.md'), '# Activity Log\n\nLog of major agentic actions.\n');
 
             const configPath = path.join(axisDir, 'axis.json');
             await fs.writeJson(configPath, {

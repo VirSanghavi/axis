@@ -42,22 +42,46 @@ const ragEngine = new RagEngine(
 );
 
 // --- File System Operations ---
-const REQUIRED_DIRS = ["agent-instructions", "history"];
 async function ensureFileSystem() {
   const fs = await import("fs/promises");
   const path = await import("path");
+  const fsSync = await import("fs");
 
-  for (const d of REQUIRED_DIRS) {
-    const dirPath = path.join(process.cwd(), d);
-    try {
-      await fs.access(dirPath);
-    } catch {
-      logger.info("Creating required directory", { dir: d });
-      await fs.mkdir(dirPath, { recursive: true });
-      if (d === "agent-instructions") {
-        await fs.writeFile(path.join(dirPath, "context.md"), "# Project Context\n\n");
-        await fs.writeFile(path.join(dirPath, "conventions.md"), "# Coding Conventions\n\n");
-        await fs.writeFile(path.join(dirPath, "activity.md"), "# Activity Log\n\n");
+  const cwd = process.cwd();
+
+  // 1. Storage / History
+  const historyDir = path.join(cwd, "history");
+  await fs.mkdir(historyDir, { recursive: true }).catch(() => { });
+
+  // 2. Instructions (Prefer .axis, fallback to legacy if specifically used, but default new to .axis)
+  const axisDir = path.join(cwd, ".axis");
+  const axisInstructions = path.join(axisDir, "instructions");
+  const legacyInstructions = path.join(cwd, "agent-instructions");
+
+  // If legacy exists and .axis doesn't, we respect legacy.
+  // If neither, we create .axis structure.
+  // If .axis exists, we ensure subdirs.
+
+  if (fsSync.existsSync(legacyInstructions) && !fsSync.existsSync(axisDir)) {
+    // Legacy mode, do nothing
+    logger.info("Using legacy agent-instructions directory");
+  } else {
+    // Modern mode
+    await fs.mkdir(axisInstructions, { recursive: true }).catch(() => { });
+
+    const defaults = [
+      ["context.md", "# Project Context\n\n"],
+      ["conventions.md", "# Coding Conventions\n\n"],
+      ["activity.md", "# Activity Log\n\n"]
+    ];
+
+    for (const [file, content] of defaults) {
+      const p = path.join(axisInstructions, file);
+      try {
+        await fs.access(p);
+      } catch {
+        await fs.writeFile(p, content);
+        logger.info(`Created default context file: ${file}`);
       }
     }
   }

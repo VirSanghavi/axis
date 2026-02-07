@@ -1,6 +1,6 @@
 {
     "name": "@virsanghavi/axis-server",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "description": "Axis MCP Server CLI",
     "main": "dist/index.js",
     "bin": {
