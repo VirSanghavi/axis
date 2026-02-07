@@ -15,7 +15,7 @@ export default function Docs() {
     const tabs = [
         { id: 'quickstart', label: 'quickstart' },
         { id: 'mcp', label: 'mcp config' },
-        { id: 'governance', label: 'governance' },
+        { id: 'orchestration', label: 'orchestration' },
         { id: 'billing', label: 'billing' },
         { id: 'api', label: 'api reference' },
         { id: 'python', label: 'python sdk' },
@@ -71,7 +71,7 @@ export default function Docs() {
                         >
                             {activeTab === 'quickstart' && <QuickstartSection />}
                             {activeTab === 'mcp' && <MCPSection />}
-                            {activeTab === 'governance' && <GovernanceSection />}
+                            {activeTab === 'orchestration' && <OrchestrationSection />}
                             {activeTab === 'billing' && <BillingSection />}
                             {activeTab === 'api' && <APISection />}
                             {activeTab === 'python' && <PythonSection />}
@@ -123,9 +123,9 @@ function CodeBlock({ code, lang = 'bash' }: { code: string, lang?: string }) {
 
 function QuickstartSection() {
     return (
-        <Section title="quickstart" subtitle="get running in 60 seconds">
+        <Section title="quickstart" subtitle="orchestrate swarms in 60 seconds">
             <p className="text-lg text-neutral-500 leading-relaxed mb-8">
-                axis mirrors your project structure and streams high-fidelity context directly into agent prompts without complex rag pipelines.
+                axis is the control plane for parallel agent workflows. we provide the distributed shared memory and task management required for multiple agents to collaborate on a single project.
             </p>
 
             <div className="space-y-10">
@@ -199,7 +199,7 @@ function MCPSection() {
 
 function APISection() {
     return (
-        <Section title="api reference" subtitle="restful control plane">
+        <Section title="api reference" subtitle="distributed control plane">
             <div className="space-y-12">
                 <div className="p-8 bg-neutral-50 rounded-2xl border border-neutral-100">
                     <div className="flex items-center gap-3 mb-6">
@@ -223,7 +223,7 @@ function APISection() {
                         <span className="bg-neutral-900 text-white px-2.5 py-1 rounded text-[10px] font-bold tracking-widest uppercase">post</span>
                         <code className="font-mono text-xl tracking-tighter text-neutral-900">/v1/governance/check</code>
                     </div>
-                    <p className="text-neutral-500 mb-6 font-medium">real-time validation of agent actions against governance laws.</p>
+                    <p className="text-neutral-500 mb-6 font-medium">real-time validation of distributed agent actions against project constraints.</p>
                     <CodeBlock lang="bash" code={`curl -X POST "https://api.axis.sh/v1/governance/check" \\
   -H "Authorization: Bearer sk_ax_..." \\
   -d '{
@@ -281,80 +281,65 @@ if not is_allowed:
     )
 }
 
-function GovernanceSection() {
+function OrchestrationSection() {
     return (
-        <Section title="governance" subtitle="controlling agent behavior">
+        <Section title="orchestration" subtitle="building parallel agent swarms">
             <p className="mb-6">
-                axis implies strict governance over your autonomous agents via file locking, mirroring protocols, and job orchestration.
+                axis enables true parallel software development by providing the synchronization primitives required for multi-agent coordination.
             </p>
             <div className="space-y-12">
                 <div className="p-8 bg-neutral-50 rounded-2xl border border-neutral-100">
-                    <h3 className="text-[11px] font-bold uppercase tracking-[0.3em] text-neutral-900 mb-4">context mirroring</h3>
-                    <p className="mb-4">axis doesn&apos;t just &quot;index&quot; files. it creates a high-fidelity <strong>mirror</strong> of your project structure, injecting the &apos;soul&apos; (goals) and &apos;conventions&apos; of the repo into every agent request.</p>
+                    <h3 className="text-[11px] font-bold uppercase tracking-[0.3em] text-neutral-900 mb-4">distributed shared memory</h3>
+                    <p className="mb-4">axis provides a real-time <strong>live notepad</strong> that synchronizes state across disparate agent processes. this allows agents to share context, logic scores, and intent in sub-100ms.</p>
                     <ul className="list-disc pl-5 space-y-2 text-neutral-600">
-                        <li><strong>selective pruning</strong>: ignores noise (node_modules, logs) while preserving tree structure.</li>
-                        <li><strong>deep metadata</strong>: injects file sizes, last modified times, and dependency hints.</li>
+                        <li><strong>real-time sync</strong>: agent A's thought logs are instantly visible to agent B.</li>
+                        <li><strong>session persistence</strong>: automatic archiving of swarm interactions for future retrieval.</li>
                     </ul>
                 </div>
 
                 <div>
-                    <h3 className="text-[11px] font-bold uppercase tracking-[0.3em] text-neutral-900 mb-4">concurrency & locking</h3>
-                    <p className="mb-4">to prevent &quot;merge hell&quot; in multi-agent environments, axis implements a <strong>file locking protocol</strong>.</p>
-                    <CodeBlock lang="bash" code={`# agent loop example
-propose_file_access(agent_id="A", file="auth.ts")
--> GRANTED (Lock Acquired)
+                    <h3 className="text-[11px] font-bold uppercase tracking-[0.3em] text-neutral-900 mb-4">the job board</h3>
+                    <p className="mb-4">centralized orchestration for autonomous teams. break down complex objectives into <strong>atomic jobs</strong> and let agents claim them based on priority and dependencies.</p>
+                    <CodeBlock lang="bash" code={`# swarm orchestration example
+post_job(title="refactor auth", priority="high")
+-> job-123 created
 
-propose_file_access(agent_id="B", file="auth.ts")
--> DENIED (Wait for Agent A)`} />
-                    <p className="mt-4 text-[12px] text-neutral-400 italic font-mono uppercase tracking-widest">locks automatically expire after 5 minutes of inactivity to prevent deadlocks.</p>
+claim_next_job(agent_id="agent-A")
+-> GRANTED (agent-A assigned to job-123)`} />
+                    <p className="mt-4 text-[12px] text-neutral-400 italic font-mono uppercase tracking-widest">dependencies ensure tasks are executed in the correct logical order.</p>
                 </div>
 
                 <div className="p-8 bg-neutral-50 rounded-2xl border border-neutral-100">
-                    <h3 className="text-[11px] font-bold uppercase tracking-[0.3em] text-neutral-900 mb-4">the job board</h3>
-                    <p className="mb-4">centralized orchestration for autonomous teams. planners break down complex objectives into <strong>atomic jobs</strong>. workers claim them based on priority and dependency resolution.</p>
+                    <h3 className="text-[11px] font-bold uppercase tracking-[0.3em] text-neutral-900 mb-4">concurrency & locking</h3>
+                    <p className="mb-4">to prevent collisions in multi-agent environments, axis implements a robust <strong>file locking protocol</strong>.</p>
 
                     <div className="overflow-hidden rounded-xl border border-neutral-200">
                         <table className="w-full text-left text-[12px]">
                             <thead className="bg-neutral-100 text-neutral-400 uppercase tracking-widest font-bold">
                                 <tr>
-                                    <th className="px-4 py-2">protocol</th>
+                                    <th className="px-4 py-2">tool</th>
                                     <th className="px-4 py-2">intent</th>
-                                    <th className="px-4 py-2">agent requirement</th>
+                                    <th className="px-4 py-2">orchestration impact</th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-neutral-200">
                                 <tr>
-                                    <td className="px-4 py-3 font-mono text-neutral-900">sync_soul</td>
-                                    <td className="px-4 py-3">align goals</td>
-                                    <td className="px-4 py-3">call on session start</td>
+                                    <td className="px-4 py-3 font-mono text-neutral-900">propose_file_access</td>
+                                    <td className="px-4 py-3">acquire lock</td>
+                                    <td className="px-4 py-3">blocks other agents during edit</td>
                                 </tr>
                                 <tr>
-                                    <td className="px-4 py-3 font-mono text-neutral-900">propose_fix</td>
-                                    <td className="px-4 py-3">validate logic</td>
-                                    <td className="px-4 py-3">require user/ai peer review</td>
+                                    <td className="px-4 py-3 font-mono text-neutral-900">update_shared_context</td>
+                                    <td className="px-4 py-3">append thought</td>
+                                    <td className="px-4 py-3">notifies swarm of current logic</td>
                                 </tr>
                                 <tr>
-                                    <td className="px-4 py-3 font-mono text-neutral-900">lock_path</td>
-                                    <td className="px-4 py-3">prevent race</td>
-                                    <td className="px-4 py-3">enforced on all write ops</td>
+                                    <td className="px-4 py-3 font-mono text-neutral-900">finalize_session</td>
+                                    <td className="px-4 py-3">end swarm run</td>
+                                    <td className="px-4 py-3">archives memory and clears locks</td>
                                 </tr>
                             </tbody>
                         </table>
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-8">
-                        <div className="p-4 bg-white rounded-lg border border-neutral-100 shadow-sm">
-                            <p className="font-bold text-neutral-900 text-[11px] uppercase tracking-tighter mb-1">priority</p>
-                            <p className="text-[12px]">low to critical scaling.</p>
-                        </div>
-                        <div className="p-4 bg-white rounded-lg border border-neutral-100 shadow-sm">
-                            <p className="font-bold text-neutral-900 text-[11px] uppercase tracking-tighter mb-1">dependencies</p>
-                            <p className="text-[12px]">graph-based blocking.</p>
-                        </div>
-                        <div className="p-4 bg-white rounded-lg border border-neutral-100 shadow-sm">
-                            <p className="font-bold text-neutral-900 text-[11px] uppercase tracking-tighter mb-1">auditing</p>
-                            <p className="text-[12px]">per-agent job history.</p>
-                        </div>
                     </div>
                 </div>
             </div>

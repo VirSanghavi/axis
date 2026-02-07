@@ -67,54 +67,54 @@ export default function Home() {
                     <div className="prose prose-invert prose-emerald max-w-none">
                         <ReactMarkdown>{`
 # Axis Intelligence Kernel v1.0.0-prod
-## Technical Specification: Context Orchestration Layer
+## Technical Specification: Parallel Agent Orchestration
 
-Axis is a high-performance API and Model Context Protocol (MCP) orchestration layer designed to solve the **Context Retrieval Gap** in autonomous agent workflows. By maintaining a high-fidelity mirror of your environment, Axis ensures that agents operate on "Ground Truth" rather than stale or hallucinated data.
+Axis is a high-performance orchestration layer designed to enable **Parallel Agent Workflows**. By providing distributed memory synchronization and an atomic job board, Axis allows multiple autonomous agents to collaborate on the same codebase simultaneously without collisions or context drift.
 
 [Initialize System / Signup](/signup)
 
 ---
 
-### 1. Context Mirroring Protocol (CMP-1)
-The cornerstone of Axis's architecture is the **CMP-1** protocol. Unlike traditional RAG which treats codebases as flat text, CMP-1 treats them as a hierarchical graph. 
+### 1. Parallel Agent Orchestration (PAO-1)
+The cornerstone of Axis is the **PAO-1** protocol, which transforms a single-agent environment into a high-concurrency swarm.
 
-- **Mirror Extraction**: Zero-latency extraction of project-level goals, conventions, and architectural debt.
-- **Dependency Injection**: Axis identifies call-sites and logic-trees to inject relevant snippets into the agent's pre-fill.
-- **Sub-linear Scaling**: Optimized for multi-million line repos using selective indexing and change-vector tracking.
+- **Distributed Memory**: Real-time synchronization of the "Live Notepad" across disparate agent processes.
+- **Job Orchestration**: An atomic Job Board (\`post_job\`, \`claim_next_job\`) that prevents task duplication and manages dependencies.
+- **Conflict Prevention**: Granular file locking that ensures serial access to critical code paths during parallel execution.
 
-### 2. Governance & Governance Orchestration (G-ORC)
-To prevent "Merge Hell" and logical drift in multi-agent environments, Axis implements **G-ORC**:
+### 2. Context Governance & Mirroring
+To ensure agents have "Ground Truth" during execution, Axis maintains a high-fidelity mirror of the environment:
 
-- **Atomic File Locking**: Prevents sub-routines from overwriting the same logic-block simultaneously.
-- **Consistency Enforcement**: A rule-based engine that validates agent-edits against project \`rules.md\` before commit.
-- **Audit Trails**: Every context-request and tool-call is logged with nanosecond precision for post-mortem debugging.
+- **Mirror Extraction**: Zero-latency extraction of project goals and architectural constraints.
+- **Dependency Injection**: Automatic identification of logic-trees to inject relevant snippets into agent pre-fills.
+- **Sub-linear Scaling**: Optimized indexing for multi-million line repos with change-vector tracking.
 
-### 3. MCP Integration Logic
-Axis speaks the **Model Context Protocol** natively. By mounting Axis as an MCP server, your agents gain:
-- \`get_context_map\`: Returns a graph-based representation of the repo.
-- \`request_mirror_sync\`: Forces a refresh of specific sub-directories after a build.
-- \`lock_resource\` / \`unlock_resource\`: Orchestrates concurrency across distributed agent loops.
+### 3. MCP Orchestration Tools
+Axis exposes a standardized toolset via the **Model Context Protocol**:
+- \`propose_file_access\`: Distributed lock management for conflict-free editing.
+- \`post_job\` / \`claim_next_job\`: Decentralized task coordination for agent swarms.
+- \`update_shared_context\`: Real-time short-term memory synchronization.
 
 ---
 
-### 4. Vector Store Specifications
-- **Engine**: Custom FAISS-backed persistence layer.
-- **Embeddings**: Optimized for code-semantics (OpenAI \`text-embedding-3-small\` + Axis heuristic refinement).
-- **Similarity Threshold**: Adjusted dynamically based on the complexity of the query (\`dynamic_alpha\` weighting).
+### 4. Persistence & Sync Logic
+- **Engine**: Supabase-backed distributed state management.
+- **Concurrency**: Optimistic locking for job claims and pessimistic locking for file access.
+- **Latency**: Sub-100ms synchronization across globe-spanning agent instances.
 
-### 5. Tier Pro: Unit Economics & Capabilities
+### 5. Tier Pro: Distributed Capabilities
 - **Monthly Subscription**: $5 USD
-- **Streaming Context**: Real-time WebSocket connection for filesystem change events.
-- **Unlimited MCP Connectors**: No cap on the number of projects or agents managed.
-- **Priority Agent Recall**: Dedicated sub-second similarity search queue.
-- **Enterprise Logs**: FULL SQL-exportable history of context injections.
+- **Shared Memory Mirroring**: Real-time sync for the Live Notepad across all workers.
+- **Unlimited Worker Nodes**: No cap on the number of concurrent agents managed.
+- **Priority Task Queue**: Sub-second job board responsiveness.
+- **Audit Trails**: FULL history of agent interactions and state transitions.
 
 ---
 
-### 6. Roadmap: The Path to AGI-Context
+### 6. Roadmap: Evolution of Coordination
 - **v1.1 (Q1 2026)**: Sub-second hot-reloading for vector embeddings.
-- **v1.2 (Q2 2026)**: Multi-agent state synchronization (RAM-mirroring).
-- **v2.0 (EOD 2026)**: Autonomous context-pruning (The "Memory Optimizer").
+- **v1.2 (Q2 2026)**: Hierarchical agent sub-swarms (Nested Orchestration).
+- **v2.0 (EOD 2026)**: Autonomous task-decomposition (The "General" Model).
 
 ## Links & Connectivity
 - [Technical Documentation](/docs)
@@ -149,10 +149,10 @@ Axis speaks the **Model Context Protocol** natively. By mounting Axis as an MCP 
                     className="max-w-4xl relative"
                 >
                     <h1 className="text-[52px] md:text-[84px] font-medium tracking-tighter mb-8 text-white leading-[1.05] drop-shadow-[0_4px_80px_rgba(0,0,0,1)] mix-blend-difference">
-                        context <br />governance
+                        parallel <br />workflows
                     </h1>
                     <p className="text-[17px] md:text-[19px] text-white/95 max-w-xl mx-auto leading-relaxed mb-12 font-medium drop-shadow-[0_2px_40px_rgba(0,0,0,1)] mix-blend-difference">
-                        axis mirrors your project structure and streams high-fidelity context directly into agent prompts.
+                        distributed orchestration for multiple ai agents. solve complex engineering tasks with synchronized memory and coordinated swarms.
                     </p>
                 </motion.div>
 
@@ -235,20 +235,20 @@ Axis speaks the **Model Context Protocol** natively. By mounting Axis as an MCP 
                                 <h3 className="text-[12px] font-mono text-neutral-500 uppercase tracking-[0.4em] font-bold">protocol</h3>
                                 <div className="space-y-8">
                                     <div>
-                                        <div className="text-[13px] text-rose-600 font-mono mb-3 uppercase tracking-widest font-extrabold underline decoration-2 decoration-rose-600/30 underline-offset-4">hallucination</div>
-                                        <p className="text-[15px] text-neutral-800 leading-relaxed font-bold">agents lack structured recall. context windows are wasted on noise.</p>
+                                        <div className="text-[13px] text-rose-600 font-mono mb-3 uppercase tracking-widest font-extrabold underline decoration-2 decoration-rose-600/30 underline-offset-4">concurrency</div>
+                                        <p className="text-[15px] text-neutral-800 leading-relaxed font-bold">single-agent loops are linear. parallel agents collide and desync without a shared brain.</p>
                                     </div>
                                     <div>
-                                        <div className="text-[13px] text-emerald-600 font-mono mb-3 uppercase tracking-widest font-extrabold underline decoration-2 decoration-emerald-600/30 underline-offset-4">governance</div>
-                                        <p className="text-[15px] text-black leading-relaxed font-black">axis enforces strict context maps, ensuring your agents only see what they need.</p>
+                                        <div className="text-[13px] text-emerald-600 font-mono mb-3 uppercase tracking-widest font-extrabold underline decoration-2 decoration-emerald-600/30 underline-offset-4">coordination</div>
+                                        <p className="text-[15px] text-black leading-relaxed font-black">axis implements a distributed job board, allowing multiple agents to partition and solve complex bugs.</p>
                                     </div>
                                     <div>
-                                        <div className="text-[13px] text-amber-600 font-mono mb-3 uppercase tracking-widest font-extrabold underline decoration-2 decoration-amber-600/30 underline-offset-4">context drift</div>
-                                        <p className="text-[15px] text-black leading-relaxed font-black">real-time synchronization prevents stale reads. what you see is what the agent knows.</p>
+                                        <div className="text-[13px] text-amber-600 font-mono mb-3 uppercase tracking-widest font-extrabold underline decoration-2 decoration-amber-600/30 underline-offset-4">short-term memory</div>
+                                        <p className="text-[15px] text-black leading-relaxed font-black">the live notepad synchronizes "thoughts" across agents, enabling collective reasoning in real-time.</p>
                                     </div>
                                     <div>
-                                        <div className="text-[13px] text-blue-600 font-mono mb-3 uppercase tracking-widest font-extrabold underline decoration-2 decoration-blue-600/30 underline-offset-4">security</div>
-                                        <p className="text-[15px] text-black leading-relaxed font-black">granular file locking protocols prevent race conditions in multi-agent environments.</p>
+                                        <div className="text-[13px] text-blue-600 font-mono mb-3 uppercase tracking-widest font-extrabold underline decoration-2 decoration-blue-600/30 underline-offset-4">conflict avoidance</div>
+                                        <p className="text-[15px] text-black leading-relaxed font-black">granular file locks prevent race conditions, ensuring only one agent writes to a logic block at a time.</p>
                                     </div>
                                 </div>
                             </div>
@@ -269,11 +269,11 @@ Axis speaks the **Model Context Protocol** natively. By mounting Axis as an MCP 
                                 </div>
                                 <div className="space-y-6 mb-10 text-left px-4">
                                     {[
-                                        "live context streaming",
-                                        "zero manual ingestion",
-                                        "unlimited mcp connectors",
+                                        "distributed shared memory",
+                                        "atomic task orchestration",
+                                        "unlimited worker swarms",
                                         "priority agent recall",
-                                        "audit trails"
+                                        "high-fidelity context mirroring"
                                     ].map((feature, i) => (
                                         <div key={i} className="flex items-center gap-4 text-[14px] text-black font-extrabold lowercase">
                                             <div className="w-2 h-2 rounded-full bg-neutral-900" />
@@ -301,10 +301,10 @@ Axis speaks the **Model Context Protocol** natively. By mounting Axis as an MCP 
                                 <h3 className="text-[12px] font-mono text-neutral-500 uppercase tracking-[0.4em] font-bold">engine</h3>
                                 <div className="space-y-8 text-left">
                                     {[
-                                        { t: "mcp native", d: "seamless integration with the model context protocol." },
-                                        { t: "live mirroring", d: "real-time synchronization with your filesystem." },
-                                        { t: "audit trails", d: "verify agent context usage at a granular level." },
-                                        { t: "cli first", d: "initialize any project with npx axis-init in seconds." }
+                                        { t: "multi-agent sync", d: "real-time synchronization of state across disparate agent processes." },
+                                        { t: "task registry", d: "orchestrate complex workflows with an atomic, priority-based job board." },
+                                        { t: "lock protocol", d: "prevent concurrency collisions with project-level file locks." },
+                                        { t: "context governance", d: "stream high-fidelity project goals and conventions into every loop." }
                                     ].map((f, i) => (
                                         <div key={i}>
                                             <div className="text-[15px] text-black font-black mb-1.5 lowercase">{f.t}</div>

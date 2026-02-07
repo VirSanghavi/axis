@@ -1,6 +1,6 @@
 # @virsanghavi/axis-server
 
-The official Axis Shared Context MCP Server. This server mirrors your project structure and metadata to AI agents via the Model Context Protocol (MCP).
+The official Axis Parallel Orchestration MCP Server. This server enables distributed coordination and shared memory for parallel agent workflows via the Model Context Protocol (MCP).
 
 ## Installation
 

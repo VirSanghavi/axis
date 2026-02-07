@@ -14,8 +14,8 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Axis - AI Agent Context",
-  description: "Governance layer for AI agent context.",
+  title: "Axis - Parallel Agent Workflows",
+  description: "Orchestration layer for distributed AI agents and parallel software development.",
   icons: {
     icon: "/favicon.ico",
     apple: "/favicon.ico",

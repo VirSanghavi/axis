@@ -6,63 +6,66 @@ import Navbar from '@/components/Navbar';
 import ReactMarkdown from 'react-markdown';
 
 const ABOUT_CONTENT = `
-# AXIS: CONTEXT_GOVERNANCE_SYSTEM_v1.0.1
-## [STABLE_BUILD] // GROUND_TRUTH_PROTOCOL
+# AXIS: PARALLEL_WORKFLOW_ORCHESTRATOR_v1.0.1
+## [STABLE_BUILD] // DISTRIBUTED_COORDINATION_PROTOCOL
 
 [ 0.000000] axis: kernel v1.0.1-prod
-[ 0.000312] loading context modules...
-[ 0.001024] mem: 16384MB available
+[ 0.000312] loading coordination modules...
+[ 0.001024] mem: 16384MB available (distributed)
 [ 0.001337] cpu: neural_engine x8 online
-[ 0.002048] init: mounting /dev/knowledge
+[ 0.002048] init: mounting /dev/shared_memory
 
-Axis is a **high-fidelity context mirroring layer** engineered for the next generation of *autonomous AI agents*. We provide the **ground truth** required to eliminate hallucinations and streamline multi-agent collaboration.
+Axis is a **parallel agent orchestration layer** engineered for the next generation of *distributed autonomous swarms*. We provide the **distributed memory** and **task registry** required to coordinate multiple agents in a shared codebase without collisions.
 
 ### ### SYSTEM_TOPOLOGY ###
 ---------------------------------------
 \`\`\`mermaid
-graph LR
-    A[Agent] --> B{Axis Layer}
-    B --> C[FS Mirror]
-    B --> D[MCP Server]
-    B --> E[Vector Index]
+graph TD
+    A1[Agent A] --> O{Axis Orchestrator}
+    A2[Agent B] --> O
+    O --> B[Live Notepad]
+    O --> C[Job Board]
+    O --> D[File Locking]
+    O --> E[High-Fidelity Context]
 \`\`\`
 
 ### ### WHY_AXIS? ###
 ---------------------------------------
-As LLMs scale, the primary failure mode is no longer intelligence—it is **CONTEXT_DRIFT**. 
+As LLMs scale, the bottleneck shifts from individual intelligence to **SWARM_COORDINATION**. 
 
-*   **RAG_FAILURE**: Current RAG pipelines are brittle, high-latency, and often lose the "soul" of a project.
-*   **CONVENTION_LOSS**: Agents lose track of project-specific naming schemes, architectural patterns, and intent.
-*   **HALLUCINATION_TRAP**: When context is missing, agents fill the void with plausible lies.
+*   **CONCURRENCY_COLLISION**: Without a shared brain, multiple agents overwrite each other's work.
+*   **TASK_DUPLICATION**: Agents lack a central registry to partition and claim specific engineering tickets.
+*   **SYNERGY_LOSS**: Disparate agents cannot share "thoughts" or context in real-time.
 
-Axis solves this by creating a **real-time, high-fidelity mirror** of your project environment.
+Axis solves this by creating a **distributed coordination plane** for multi-agent loops.
 
 ### ### CORE_CAPABILITIES ###
 ---------------------------------------
-*   **[CONTEXT_MIRRORING]**: Selective, structured extraction of project trees and file contents via specialized hooks.
-*   **[PROTOCOL_ENFORCED]**: Standardized MCP tools (Model Context Protocol) for agents to read, write, and search.
-*   **[GOVERNANCE_LAYER]**: Granular file locking and access controls to prevent race conditions.
-*   **[SESSION_SYNC]**: Persistent, vector-indexed memory across disparate agent runs.
+*   **[DISTRIBUTED_MEMORY]**: A real-time "Live Notepad" that synchronizes state across disparate agent processes.
+*   **[JOB_ORCHESTRATION]**: An atomic, priority-based job board that manages task assignment and dependencies.
+*   **[CONFLICT_AVOIDANCE]**: Pessimistic file-locking protocols to prevent race conditions during parallel edits.
+*   **[CONTEXT_GOVERNANCE]**: High-fidelity mirroring of project goals and conventions to ensure collective alignment.
 
 ### ### SYSTEM_MISSION ###
 ---------------------------------------
-> "The future of software is orchestrated by fleets of agents. Axis is the control plane."
+> "The future of software is written by parallel agent swarms. Axis is the control plane."
 
-Axis exists to be the **SRC_OF_TRUTH** they can trust. Zero manual ingestion. Pure, governed recall.
+Axis exists to be the **SRC_OF_COORDINATION** they can trust. Zero race conditions. Pure, parallel execution.
 
 ### ### TECHNICAL_ARTIFACTS ###
 ---------------------------------------
-*   **MCP_ENDPOINT**: \`/api/mcp/v1\`
-*   **MIRROR_LAYER**: \`v1.0.1-prod\`
+*   **ORCHESTRATION_LOGIC**: \`v1.0.1-prod\`
+*   **SYNC_LAYER**: DISTRIBUTED_SUPABASE_PERSISTENCE
 *   **GOVERNANCE**: SECURE_AUTH_VIA_JWT
 *   **STORAGE**: HYBRID_VECTOR_RELATIONAL
 
 \`\`\`json
 {
-  "system": "axis-core",
+  "system": "axis-orchestrator",
   "version": "1.0.1",
   "status": "operational",
-  "active_contexts": 42
+  "active_swarms": 12,
+  "sync_latency": "<100ms"
 }
 \`\`\`
 `;
@@ -117,10 +120,10 @@ export default function AboutPage() {
                     <div className="relative z-10 space-y-12">
                         <div className="space-y-4">
                             <h1 className="text-6xl font-medium tracking-tighter text-neutral-900 leading-none">
-                                context <br /> governance
+                                parallel <br /> workflows
                             </h1>
                             <p className="text-[11px] text-neutral-400 uppercase tracking-[0.4em] font-bold">
-                                the mission of axis intelligence
+                                orchestrated ai coordination
                             </p>
                         </div>
 
@@ -128,13 +131,13 @@ export default function AboutPage() {
                             <div className="space-y-6">
                                 <h2 className="text-[14px] font-bold uppercase tracking-[0.2em] text-neutral-900 underline decoration-2 decoration-neutral-200 underline-offset-8">what it is</h2>
                                 <p className="text-[15px] text-neutral-600 leading-relaxed font-medium">
-                                    axis is a high-fidelity context mirroring layer designed for autonomous AI agents. we provide the ground truth required to eliminate hallucinations and streamline multi-agent collaboration.
+                                    axis is a parallel agent orchestration layer designed for autonomous swarms. we provide the distributed memory and atomic task registries required for multi-agent software development.
                                 </p>
                             </div>
                             <div className="space-y-6">
                                 <h2 className="text-[14px] font-bold uppercase tracking-[0.2em] text-neutral-900 underline decoration-2 decoration-neutral-200 underline-offset-8">why it exists</h2>
                                 <p className="text-[15px] text-neutral-600 leading-relaxed font-medium">
-                                    as llms become more powerful, their bottleneck is no longer intelligence, but context. current rag pipelines are brittle and lose the soul of a project. axis solves this via structured recall.
+                                    as ai loops shift from single-agent to parallel execution, coordination becomes the new bottleneck. axis prevents collisions and context drift by serving as the collective brain for your swarm.
                                 </p>
                             </div>
                         </div>
@@ -143,9 +146,9 @@ export default function AboutPage() {
                             <h2 className="text-[14px] font-bold uppercase tracking-[0.2em] text-neutral-900">capabilities</h2>
                             <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
                                 {[
-                                    { t: "context mirroring", d: "selective, structured extraction of project trees." },
-                                    { t: "governance", d: "granular file locking and access controls." },
-                                    { t: "session sync", d: "persistent memory across disparate agent runs." }
+                                    { t: "distributed memory", d: "real-time state sync across disparate agent runs." },
+                                    { t: "job orchestration", d: "atomic registers to partition and claim tasks." },
+                                    { t: "conflict avoidance", d: "granular file locking to prevent race conditions." }
                                 ].map((cap, i) => (
                                     <div key={i} className="p-6 bg-neutral-50 rounded-xl border border-neutral-100 space-y-2">
                                         <div className="text-[13px] font-bold text-neutral-900">{cap.t}</div>
