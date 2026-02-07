@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
+import { logActivity } from "@/lib/activity";
+import { resolveUserId } from "@/lib/db-utils";
 
 export const runtime = "nodejs";
 
@@ -48,13 +50,19 @@ export async function POST(req: Request) {
 
                 if (!customerId || !email) break;
 
-                await supabase
+                const { data: updatedProfile } = await supabase
                     .from("profiles")
                     .update({
                         stripe_customer_id: customerId,
                         subscription_status: "pro",
                     })
-                    .ilike("email", email);
+                    .ilike("email", email)
+                    .select("id")
+                    .single();
+
+                if (updatedProfile) {
+                    await logActivity(updatedProfile.id, "SUBSCRIPTION_ACTIVATED", "Axis Pro", { session_id: session.id });
+                }
 
                 break;
             }
@@ -72,7 +80,7 @@ export async function POST(req: Request) {
                     (subscription.status === "canceled" &&
                         subscription.current_period_end > now);
 
-                await supabase
+                const { data: updatedProfile } = await supabase
                     .from("profiles")
                     .update({
                         subscription_status: stillValid ? "pro" : "free",
@@ -80,7 +88,12 @@ export async function POST(req: Request) {
                             subscription.current_period_end * 1000
                         ).toISOString(),
                     })
-                    .eq("stripe_customer_id", customerId);
+                    .eq("stripe_customer_id", customerId)
+                    .select("id")
+                    .single();
+
+                // If it just became active or trial, log it if not already logged by checkout?
+                // Or log specific updates like plan changes if we had more than one plan.
 
                 break;
             }
@@ -90,13 +103,19 @@ export async function POST(req: Request) {
 
                 const customerId = subscription.customer as string;
 
-                await supabase
+                const { data: updatedProfile } = await supabase
                     .from("profiles")
                     .update({
                         subscription_status: "free",
                         current_period_end: null,
                     })
-                    .eq("stripe_customer_id", customerId);
+                    .eq("stripe_customer_id", customerId)
+                    .select("id")
+                    .single();
+
+                if (updatedProfile) {
+                    await logActivity(updatedProfile.id, "SUBSCRIPTION_CANCELED", "Axis Pro", { subscription_id: subscription.id });
+                }
 
                 break;
             }

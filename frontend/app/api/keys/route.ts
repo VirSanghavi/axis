@@ -4,6 +4,7 @@ import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import crypto from "crypto";
 import { getClientIp, rateLimit } from "@/lib/rate-limit";
 import { resolveUserId } from "@/lib/db-utils";
+import { logActivity } from "@/lib/activity";
 
 const WINDOW_MS = 60 * 1000;
 const LIMIT = 30; // 30 req/min for key management
@@ -107,6 +108,9 @@ export async function POST(req: NextRequest) {
             .single();
 
         if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+        // Log activity
+        await logActivity(userId as string, "KEY_GENERATED", name, { key_id: data.id });
 
         // Return the RAW key only now
         return NextResponse.json({

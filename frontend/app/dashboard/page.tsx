@@ -7,6 +7,7 @@ import { twMerge } from 'tailwind-merge';
 import Link from 'next/link';
 import Navbar from '@/components/Navbar';
 import { Terminal } from 'lucide-react';
+import { supabase } from '@/lib/supabase-client';
 
 // Helper for classes
 function cn(...inputs: (string | undefined | null | false)[]) {
@@ -14,6 +15,14 @@ function cn(...inputs: (string | undefined | null | false)[]) {
 }
 
 // Types
+interface Activity {
+  id: string;
+  type: string;
+  target: string;
+  status: string;
+  created_at: string;
+}
+
 interface ApiKey {
   id: string;
   name: string;
@@ -69,17 +78,65 @@ export default function Dashboard() {
   const [subData, setSubData] = useState<SubscriptionData | null>(null);
   const [sessions, setSessions] = useState<SessionRecord[]>([]);
   const [activeTab, setActiveTab] = useState<'keys' | 'usage' | 'sessions'>('keys');
-  const [session, setSession] = useState<{ email: string } | null>(null);
+  const [session, setSession] = useState<{ email: string; id: string } | null>(null);
+  const [activities, setActivities] = useState<Activity[]>([]);
 
   useEffect(() => {
     fetch('/api/auth/session').then(res => res.json()).then(data => {
-      if (data.user) setSession(data.user);
+      if (data.user) {
+        setSession(data.user);
+        fetchActivity(data.user.id);
+
+        // Subscribe to realtime activity feed
+        const channel = supabase
+          .channel(`activity-feed-${data.user.id}`)
+          .on(
+            'postgres_changes',
+            {
+              event: 'INSERT',
+              schema: 'public',
+              table: 'activity_feed',
+              filter: `user_id=eq.${data.user.id}`,
+            },
+            (payload) => {
+              setActivities((prev) => [payload.new as Activity, ...prev].slice(0, 10));
+            }
+          )
+          .subscribe();
+
+        return () => {
+          supabase.removeChannel(channel);
+        };
+      }
     });
     fetchKeys();
     fetchUsage();
     fetchSubStatus();
     fetchSessions();
   }, []);
+
+  async function fetchActivity(userId: string) {
+    try {
+      const res = await fetch('/api/activity');
+      if (res.ok) {
+        const data = await res.json();
+        setActivities(data.activity || []);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  function getRelativeTime(dateString: string) {
+    const date = new Date(dateString);
+    const now = new Date();
+    const diffInSeconds = Math.floor((now.getTime() - date.getTime()) / 1000);
+
+    if (diffInSeconds < 60) return 'just now';
+    if (diffInSeconds < 3600) return `${Math.floor(diffInSeconds / 60)}m ago`;
+    if (diffInSeconds < 86400) return `${Math.floor(diffInSeconds / 3600)}h ago`;
+    return `${Math.floor(diffInSeconds / 86400)}d ago`;
+  }
 
   async function fetchSessions() {
     try {
@@ -265,23 +322,23 @@ export default function Dashboard() {
 
               <div className="mt-8 pt-8 border-t border-neutral-100">
                 <div className="flex items-center gap-2 mb-4">
-                  <h3 className="text-[10px] font-mono text-neutral-500 uppercase tracking-[0.3em]">live context discovery feed</h3>
+                  <h3 className="text-[10px] font-mono text-neutral-500 uppercase tracking-[0.3em]">live activity feed</h3>
                 </div>
                 <div className="space-y-2">
-                  {[
-                    { op: 'MIRROR_SYNC', target: 'shared-context/v1', status: 'success', time: '2m ago' },
-                    { op: 'LOCK_ACQUIRED', target: 'auth.ts', status: 'success', time: '5m ago' },
-                    { op: 'VECTOR_UPSELL', target: 'system-kernel', status: 'queued', time: '12m ago' },
-                  ].map((item, idx) => (
-                    <div key={idx} className="flex items-center justify-between text-[11px] font-mono bg-neutral-50 px-4 py-2 rounded border border-neutral-100">
-                      <div className="flex items-center gap-3">
-                        <div className={cn("w-1.5 h-1.5 rounded-full", item.status === 'success' ? "bg-emerald-500" : "bg-amber-500 animate-pulse")} />
-                        <span className="text-neutral-400">[{item.op}]</span>
-                        <span className="text-neutral-700 font-medium">{item.target}</span>
+                  {activities.length === 0 ? (
+                    <div className="text-center py-6 opacity-40 font-mono text-[10px]">no recent activity</div>
+                  ) : (
+                    activities.map((item) => (
+                      <div key={item.id} className="flex items-center justify-between text-[11px] font-mono bg-neutral-50 px-4 py-2 rounded border border-neutral-100">
+                        <div className="flex items-center gap-3">
+                          <div className={cn("w-1.5 h-1.5 rounded-full", item.status === 'success' ? "bg-emerald-500" : "bg-amber-500 animate-pulse")} />
+                          <span className="text-neutral-400">[{item.type}]</span>
+                          <span className="text-neutral-700 font-medium truncate max-w-[150px]">{item.target}</span>
+                        </div>
+                        <span className="text-neutral-400 text-[9px] whitespace-nowrap">{getRelativeTime(item.created_at)}</span>
                       </div>
-                      <span className="text-neutral-400 text-[9px]">{item.time}</span>
-                    </div>
-                  ))}
+                    ))
+                  )}
                 </div>
               </div>
             </div>

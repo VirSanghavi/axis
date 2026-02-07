@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import { resolveUserId } from "@/lib/db-utils";
+import { logActivity } from "@/lib/activity";
 
 function getSupabaseClient() {
     const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -31,6 +32,13 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
             return NextResponse.json({ error: "User not found" }, { status: 404 });
         }
 
+        // Fetch key name before deletion for logging
+        const { data: keyData } = await supabase
+            .from("api_keys")
+            .select("name")
+            .match({ id, user_id: userId })
+            .single();
+
         const { error } = await supabase
             .from("api_keys")
             .delete()
@@ -40,6 +48,9 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
             console.error("Delete key error:", error);
             return NextResponse.json({ error: error.message }, { status: 500 });
         }
+
+        // Log activity
+        await logActivity(userId as string, "KEY_DELETED", keyData?.name || "Unknown Key", { key_id: id });
 
         return NextResponse.json({ success: true });
     } catch (err: unknown) {

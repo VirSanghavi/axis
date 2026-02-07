@@ -3,6 +3,8 @@ import { getSessionFromRequest } from "@/lib/auth";
 import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
 import { getClientIp, rateLimit } from "@/lib/rate-limit";
+import { logActivity } from "@/lib/activity";
+import { resolveUserId } from "@/lib/db-utils";
 
 const WINDOW_MS = 60 * 1000;
 const LIMIT = 5; // 5 req/min for retention offers
@@ -66,6 +68,12 @@ export async function POST(req: NextRequest) {
         await stripe.subscriptions.update(sub.id, {
             coupon: 'CvcPuGJs',
         });
+
+        // Log activity
+        const userId = session.sub || session.id || await resolveUserId(session.email);
+        if (userId) {
+            await logActivity(userId as string, "DISCOUNT_APPLIED", "RETENTION_50", { subscription_id: sub.id, coupon: 'CvcPuGJs' });
+        }
 
         return NextResponse.json({ success: true, message: "Retention offer applied" });
     } catch (error: unknown) {
