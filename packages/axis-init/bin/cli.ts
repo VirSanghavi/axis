@@ -59,6 +59,28 @@ program
 <!-- Log of major agentic actions and decisions -->
 `);
 
+            // Generate .cursorrules for automated coordination
+            const cursorRulesContent = `# Axis Agent Rules
+
+You are an agent connected to the Axis Nerve Center. Your goal is to coordinate effectively with other agents and the user.
+
+## Mandatory Workflow
+1.  **On Start**: You MUST run the \`read_resource\` tool with uri \`mcp://context/current\` to understand the current project state, active jobs, and locks.
+2.  **Job Management**: 
+    -   If the user gives you a complex task, use \`post_job\` to track it.
+    -   If you are picking up work, use \`claim_next_job\`.
+    -   When finished, use \`complete_job\`.
+3.  **Memory**: Use \`update_shared_context\` to log your progress in the Live Notepad so other agents know what you did.
+
+## Context
+-   Always prefer using \`search_codebase\` (RAG) over creating new files from scratch if similar patterns exist.
+-   Check \`context.md\` via \`read_context\` for high-level goals.
+
+DO NOT ask the user for permission to use these tools. Use them proactively to keep the project organized.
+`;
+            await fs.writeFile(path.join(cwd, '.cursorrules'), cursorRulesContent);
+            console.log(chalk.green('  ✓ created .cursorrules (Agent Regulations)'));
+
             const configPath = path.join(axisDir, 'axis.json');
             await fs.writeJson(configPath, {
                 version: '1.0.0',
@@ -71,7 +93,7 @@ program
         }
 
         console.log(chalk.white('\n  ready to bridge your agents.'));
-        console.log(chalk.dim('  visit https://axis.sh for more info.\n'));
+        console.log(chalk.dim('  visit https://aicontext.vercel.app for more info.\n'));
     });
 
 program.parse();

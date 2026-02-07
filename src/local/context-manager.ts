@@ -2,16 +2,25 @@ import fs from "fs/promises";
 import path from "path";
 import { Mutex } from "async-mutex";
 
-const LEGACY_INSTRUCTIONS_DIR = path.resolve(process.cwd(), "agent-instructions");
-const AXIS_DIR = path.resolve(process.cwd(), ".axis");
-const INSTRUCTIONS_DIR = path.resolve(AXIS_DIR, "instructions");
+import * as fsSync from "fs";
 
 function getEffectiveInstructionsDir() {
+    const cwd = process.cwd();
+    const axisDir = path.resolve(cwd, ".axis");
+    const instructionsDir = path.resolve(axisDir, "instructions");
+    const legacyDir = path.resolve(cwd, "agent-instructions");
+
     // Prefer .axis/instructions if it exists, otherwise fallback
     try {
-        if (require('fs').existsSync(INSTRUCTIONS_DIR)) return INSTRUCTIONS_DIR;
+        if (fsSync.existsSync(instructionsDir)) {
+            // console.error to stderr for MCP logging
+            console.error(`[ContextManager] Using instructions dir: ${instructionsDir}`);
+            return instructionsDir;
+        }
     } catch { }
-    return LEGACY_INSTRUCTIONS_DIR;
+
+    console.error(`[ContextManager] Fallback to legacy dir: ${legacyDir}`);
+    return legacyDir;
 }
 
 export class ContextManager {

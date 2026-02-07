@@ -1,0 +1,46 @@
+import { NextRequest, NextResponse } from "next/server";
+import { getSessionFromRequest } from "@/lib/auth";
+import { createClient } from "@supabase/supabase-js";
+
+const supabase = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL || "",
+    process.env.SUPABASE_SERVICE_ROLE_KEY || ""
+);
+
+export async function GET(req: NextRequest) {
+    const session = await getSessionFromRequest(req);
+    if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+    try {
+        // 1. Get Profile (Subscription Status)
+        const { data: profile, error: profileError } = await supabase
+            .from("profiles")
+            .select("subscription_status, current_period_end")
+            .eq("id", session.sub)
+            .single();
+
+        if (profileError) throw profileError;
+
+        // 2. Get Usage (Count from api_usage)
+        const { count, error: usageError } = await supabase
+            .from("api_usage")
+            .select("*", { count: 'exact', head: true })
+            .eq("user_id", session.sub);
+
+        if (usageError) throw usageError;
+
+        const isActive = profile.subscription_status === 'pro' ||
+            (profile.current_period_end && new Date(profile.current_period_end) > new Date());
+
+        return NextResponse.json({
+            email: session.email,
+            plan: isActive ? "Pro" : "Free",
+            status: profile.subscription_status || "free",
+            validUntil: profile.current_period_end,
+            usageCount: count || 0,
+            limit: 1000 // Placeholder limit
+        });
+    } catch (e: any) {
+        return NextResponse.json({ error: e.message }, { status: 500 });
+    }
+}

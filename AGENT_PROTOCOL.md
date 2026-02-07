@@ -32,7 +32,8 @@ If the user asks for a specific task OR simply says "help out":
 
 ### 3. The "Completion Loop" (Autonomy)
 **When you finish a task, do not stop.**
-- **Call**: `complete_job(..., outcome="Done")`.
+- **Call**: `complete_job(..., outcome="Done", completionKey="...")`. 
+    - *Note: If you possess the `completionKey` (from `post_job` or `claim_next_job`), you can complete a job even if not current owner.*
 - **Immediately Call**: `claim_next_job(...)`.
 - **Logic**: 
     - If you get a new job: Keep working. (This allows you to complete the whole project solo if no one else joins).

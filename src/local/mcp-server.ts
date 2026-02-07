@@ -44,47 +44,52 @@ if (process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KE
 
 // --- File System Operations ---
 async function ensureFileSystem() {
-  const fs = await import("fs/promises");
-  const path = await import("path");
-  const fsSync = await import("fs");
+  try {
+    const fs = await import("fs/promises");
+    const path = await import("path");
+    const fsSync = await import("fs");
 
-  const cwd = process.cwd();
+    const cwd = process.cwd();
+    logger.info(`Server CWD: ${cwd}`);
 
-  // 1. Storage / History
-  const historyDir = path.join(cwd, "history");
-  await fs.mkdir(historyDir, { recursive: true }).catch(() => { });
+    // 1. Storage / History
+    const historyDir = path.join(cwd, "history");
+    await fs.mkdir(historyDir, { recursive: true }).catch(() => { });
 
-  // 2. Instructions (Prefer .axis, fallback to legacy if specifically used, but default new to .axis)
-  const axisDir = path.join(cwd, ".axis");
-  const axisInstructions = path.join(axisDir, "instructions");
-  const legacyInstructions = path.join(cwd, "agent-instructions");
+    // 2. Instructions (Prefer .axis, fallback to legacy if specifically used, but default new to .axis)
+    const axisDir = path.join(cwd, ".axis");
+    const axisInstructions = path.join(axisDir, "instructions");
+    const legacyInstructions = path.join(cwd, "agent-instructions");
 
-  // If legacy exists and .axis doesn't, we respect legacy.
-  // If neither, we create .axis structure.
-  // If .axis exists, we ensure subdirs.
+    // If legacy exists and .axis doesn't, we respect legacy.
+    // If neither, we create .axis structure.
+    // If .axis exists, we ensure subdirs.
 
-  if (fsSync.existsSync(legacyInstructions) && !fsSync.existsSync(axisDir)) {
-    // Legacy mode, do nothing
-    logger.info("Using legacy agent-instructions directory");
-  } else {
-    // Modern mode
-    await fs.mkdir(axisInstructions, { recursive: true }).catch(() => { });
+    if (fsSync.existsSync(legacyInstructions) && !fsSync.existsSync(axisDir)) {
+      // Legacy mode, do nothing
+      logger.info("Using legacy agent-instructions directory");
+    } else {
+      // Modern mode
+      await fs.mkdir(axisInstructions, { recursive: true }).catch(() => { });
 
-    const defaults = [
-      ["context.md", "# Project Context\n\n"],
-      ["conventions.md", "# Coding Conventions\n\n"],
-      ["activity.md", "# Activity Log\n\n"]
-    ];
+      const defaults = [
+        ["context.md", "# Project Context\n\n"],
+        ["conventions.md", "# Coding Conventions\n\n"],
+        ["activity.md", "# Activity Log\n\n"]
+      ];
 
-    for (const [file, content] of defaults) {
-      const p = path.join(axisInstructions, file);
-      try {
-        await fs.access(p);
-      } catch {
-        await fs.writeFile(p, content);
-        logger.info(`Created default context file: ${file}`);
+      for (const [file, content] of defaults) {
+        const p = path.join(axisInstructions, file);
+        try {
+          await fs.access(p);
+        } catch {
+          await fs.writeFile(p, content);
+          logger.info(`Created default context file: ${file}`);
+        }
       }
     }
+  } catch (error) {
+    logger.warn("Could not initialize local file system. Persistence features (context.md) may be disabled.", { error: String(error) });
   }
 }
 
@@ -134,7 +139,7 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
         contents: [{
           uri,
           mimeType: "text/markdown",
-          text: await nerveCenter.getLiveContext()
+          text: await nerveCenter.getCoreContext()
         }]
       };
     }
@@ -327,7 +332,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           properties: {
             agentId: { type: "string" },
             jobId: { type: "string" },
-            outcome: { type: "string" }
+            outcome: { type: "string" },
+            completionKey: { type: "string", description: "Optional key to authorize completion if not the assigned agent." }
           },
           required: ["agentId", "jobId", "outcome"]
         }
@@ -485,8 +491,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   }
   if (name === "complete_job") {
-    const { agentId, jobId, outcome } = args as any;
-    const result = await nerveCenter.completeJob(agentId, jobId, outcome);
+    const { agentId, jobId, outcome, completionKey } = args as any;
+    const result = await nerveCenter.completeJob(agentId, jobId, outcome, completionKey);
     return { content: [{ type: "text", text: JSON.stringify(result) }] };
   }
 

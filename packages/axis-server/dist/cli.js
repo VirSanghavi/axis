@@ -37,8 +37,18 @@ var import_fs = __toESM(require("fs"));
 var __filename2 = (0, import_url.fileURLToPath)(importMetaUrl);
 var __dirname = import_path.default.dirname(__filename2);
 import_commander.program.name("axis-server").description("Start the Axis Shared Context MCP Server").version("1.0.0");
-import_commander.program.action(() => {
+import_commander.program.argument("[root]", "Project root directory (optional)").action((root) => {
   console.error(import_chalk.default.bold.blue("Axis MCP Server Starting..."));
+  if (root) {
+    const resolvedRoot = import_path.default.resolve(root);
+    if (import_fs.default.existsSync(resolvedRoot)) {
+      console.error(import_chalk.default.blue(`Setting CWD to: ${resolvedRoot}`));
+      process.chdir(resolvedRoot);
+    } else {
+      console.error(import_chalk.default.red(`Error: Project root not found: ${resolvedRoot}`));
+      process.exit(1);
+    }
+  }
   const serverScript = import_path.default.resolve(__dirname, "../dist/mcp-server.mjs");
   if (!import_fs.default.existsSync(serverScript)) {
     console.error(import_chalk.default.red("Error: Server script not found."));
@@ -50,6 +60,7 @@ import_commander.program.action(() => {
   const args = [serverScript, ...process.argv.slice(2)];
   const proc = (0, import_child_process.spawn)("node", args, {
     stdio: "inherit",
+    cwd: process.cwd(),
     env: { ...process.env, FORCE_COLOR: "1" }
   });
   proc.on("close", (code) => {

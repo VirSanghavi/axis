@@ -1,6 +1,6 @@
 {
     "name": "@virsanghavi/axis-init",
-    "version": "1.0.3",
+    "version": "1.0.4",
     "type": "module",
     "description": "initialize axis context in your project",
     "main": "dist/index.js",

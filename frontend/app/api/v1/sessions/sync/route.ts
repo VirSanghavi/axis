@@ -6,7 +6,35 @@ import { logUsage } from "@/lib/usage";
 import { getClientIp, rateLimit } from "@/lib/rate-limit";
 
 const WINDOW_MS = 60 * 1000;
-const LIMIT = 20; // Limit session syncs
+const LIMIT = 50; // Increased limit for syncs
+
+export async function GET(req: NextRequest) {
+    const session = await getSessionFromRequest(req);
+    if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+    const { searchParams } = new URL(req.url);
+    const projectName = searchParams.get("projectName") || "default";
+
+    try {
+        const supabase = createClient(
+            process.env.NEXT_PUBLIC_SUPABASE_URL || "",
+            process.env.SUPABASE_SERVICE_ROLE_KEY || ""
+        );
+
+        const { data: project, error } = await supabase
+            .from("projects")
+            .select("live_notepad")
+            .eq("name", projectName)
+            .eq("owner_id", session.sub)
+            .maybeSingle();
+
+        if (error) throw error;
+
+        return NextResponse.json({ liveNotepad: project?.live_notepad || "" });
+    } catch (e: any) {
+        return NextResponse.json({ error: e.message }, { status: 500 });
+    }
+}
 
 export async function POST(req: NextRequest) {
     const startTime = Date.now();
