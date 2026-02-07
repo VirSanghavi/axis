@@ -169,30 +169,16 @@ function MCPSection() {
                     <h3 className="text-[11px] font-bold uppercase tracking-[0.3em] text-neutral-900 mb-4">step 2: add to your ide</h3>
                     <p className="mb-6">copy and paste the configuration below into your ide&apos;s mcp settings. this works for <strong>cursor, vs code, antigravity, windsurf, and codex</strong>.</p>
 
-                    <div className="bg-neutral-50 rounded-2xl p-8 border border-neutral-100">
-                        <div className="flex items-center gap-2 mb-4 opacity-40">
-                            <div className="w-2 h-2 rounded-full bg-red-400" />
-                            <div className="w-2 h-2 rounded-full bg-amber-400" />
-                            <div className="w-2 h-2 rounded-full bg-emerald-400" />
-                            <span className="text-[10px] font-mono ml-2 uppercase tracking-widest">mcp_config.json</span>
-                        </div>
-                        <CodeBlock lang="json" code={`{
+                    <CodeBlock lang="json" code={`{
   "mcpServers": {
     "axis": {
       "command": "axis-server",
       "env": {
-        "AXIS_API_KEY": "sk_ax_YOUR_KEY_HERE"
+        "AXIS_API_KEY": "sk_sc_YOUR_KEY_HERE"
       }
     }
   }
 }`} />
-                        <div className="mt-6 p-4 bg-amber-50 border border-amber-100 rounded-lg flex gap-3">
-                            <span className="text-amber-600 text-[14px]">⚠️</span>
-                            <p className="text-[11px] text-amber-700 leading-relaxed uppercase tracking-tighter font-bold">
-                                important: replace <code className="bg-amber-100 px-1 rounded">sk_ax_YOUR_KEY_HERE</code> with your real key from the <Link href="/dashboard" className="underline">dashboard</Link>.
-                            </p>
-                        </div>
-                    </div>
                 </div>
 
                 {/* Step 3: Location of config */}
