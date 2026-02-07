@@ -17,28 +17,28 @@ dotenv.config({ path: ".env.local" });
 
 // VALIDATION
 if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
-    logger.error("CRITICAL: Supabase credentials missing. RAG & Persistence disabled.");
-    process.exit(1);
+  logger.error("CRITICAL: Supabase credentials missing. RAG & Persistence disabled.");
+  process.exit(1);
 }
 
 // Configuration
 const manager = new ContextManager(
-  process.env.SHARED_CONTEXT_API_URL,
-  process.env.SHARED_CONTEXT_API_SECRET
+  process.env.SHARED_CONTEXT_API_URL || "https://api.axis.sh/v1",
+  process.env.AXIS_API_KEY || process.env.SHARED_CONTEXT_API_SECRET
 );
 const nerveCenter = new NerveCenter(manager, {
-    supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL,
-    supabaseServiceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
-    projectName: process.env.PROJECT_NAME || "default"
+  supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL,
+  supabaseServiceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
+  projectName: process.env.PROJECT_NAME || "default"
 });
 
 // Initialize RAG Engine
 const ragEngine = new RagEngine(
-    process.env.NEXT_PUBLIC_SUPABASE_URL,
-    process.env.SUPABASE_SERVICE_ROLE_KEY,
-    process.env.OPENAI_API_KEY || "",
-    // Project ID is loaded async by NerveCenter... tricky dependency.
-    // We'll let NerveCenter expose it or pass it later.
+  process.env.NEXT_PUBLIC_SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY,
+  process.env.OPENAI_API_KEY || "",
+  // Project ID is loaded async by NerveCenter... tricky dependency.
+  // We'll let NerveCenter expose it or pass it later.
 );
 
 // --- File System Operations ---
@@ -83,8 +83,8 @@ const UPDATE_CONTEXT_TOOL = "update_context";
 const SEARCH_CONTEXT_TOOL = "search_codebase"; // Renamed for clarity
 
 server.setRequestHandler(ListResourcesRequestSchema, async () => {
-    try {
-        return {
+  try {
+    return {
       resources: [
         {
           uri: "mcp://context/current",
@@ -94,16 +94,16 @@ server.setRequestHandler(ListResourcesRequestSchema, async () => {
         },
         ...(await manager.listFiles())
       ]
-        };
-    } catch (error) {
+    };
+  } catch (error) {
     logger.error("Error listing resources", error as Error);
-        return { resources: [] };
-    }
+    return { resources: [] };
+  }
 });
 
 server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
-    const uri = request.params.uri;
-    try {
+  const uri = request.params.uri;
+  try {
     if (uri === "mcp://context/current") {
       return {
         contents: [{
@@ -113,25 +113,25 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
         }]
       };
     }
-    
+
     let fileName = uri;
     if (uri.startsWith("context://local/")) {
-        fileName = uri.replace("context://local/", "");
+      fileName = uri.replace("context://local/", "");
     } else if (uri.startsWith("context://docs/")) {
-        fileName = uri.replace("context://", ""); // Result: docs/filename.md which ContextManager handles
+      fileName = uri.replace("context://", ""); // Result: docs/filename.md which ContextManager handles
     }
-    
+
     const content = await manager.readFile(fileName);
-        return {
-            contents: [{
-                uri,
-                mimeType: "text/markdown",
-                text: content
-            }]
-        };
-    } catch (_error) {
-        throw new Error(`Resource not found: ${uri}`);
-    }
+    return {
+      contents: [{
+        uri,
+        mimeType: "text/markdown",
+        text: content
+      }]
+    };
+  } catch (_error) {
+    throw new Error(`Resource not found: ${uri}`);
+  }
 });
 
 server.setRequestHandler(ListToolsRequestSchema, async () => {
@@ -143,7 +143,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         inputSchema: {
           type: "object",
           properties: {
-             filename: { type: "string", description: "The name of the file to read (e.g., 'context.md')" }
+            filename: { type: "string", description: "The name of the file to read (e.g., 'context.md')" }
           },
           required: ["filename"]
         },
@@ -179,7 +179,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         inputSchema: {
           type: "object",
           properties: {
-             email: { type: "string", description: "User email to check." }
+            email: { type: "string", description: "User email to check." }
           },
           required: ["email"]
         }
@@ -190,7 +190,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         inputSchema: {
           type: "object",
           properties: {
-             email: { type: "string", description: "User email to check." }
+            email: { type: "string", description: "User email to check." }
           },
           required: ["email"]
         }
@@ -201,7 +201,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         inputSchema: {
           type: "object",
           properties: {
-             query: { type: "string", description: "Search query." }
+            query: { type: "string", description: "Search query." }
           },
           required: ["query"]
         }
@@ -311,12 +311,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         name: "index_file",
         description: "Force re-index a file into the RAG vector database.",
         inputSchema: {
-            type: "object",
-            properties: {
-                filePath: { type: "string" },
-                content: { type: "string" }
-            },
-            required: ["filePath", "content"]
+          type: "object",
+          properties: {
+            filePath: { type: "string" },
+            content: { type: "string" }
+          },
+          required: ["filePath", "content"]
         }
       }
     ],
@@ -329,137 +329,137 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   logger.info("Tool call", { name });
 
   if (name === READ_CONTEXT_TOOL) {
-      const filename = String(args?.filename);
-      try {
+    const filename = String(args?.filename);
+    try {
       const data = await manager.readFile(filename);
-          return {
-              content: [{ type: "text", text: data }]
-          };
-      } catch (err) {
-          return {
-              content: [{ type: "text", text: `Error reading file: ${err}` }],
-              isError: true
-          }
+      return {
+        content: [{ type: "text", text: data }]
+      };
+    } catch (err) {
+      return {
+        content: [{ type: "text", text: `Error reading file: ${err}` }],
+        isError: true
       }
+    }
   }
 
   if (name === UPDATE_CONTEXT_TOOL) {
-      const filename = String(args?.filename);
-      const content = String(args?.content);
-      const append = Boolean(args?.append);
-      try {
-        await manager.updateFile(filename, content, append);
-          return {
-              content: [{ type: "text", text: `Updated ${filename}` }]
-          };
-      } catch (err) {
-          return {
-              content: [{ type: "text", text: `Error updating file: ${err}` }],
-              isError: true
-          }
+    const filename = String(args?.filename);
+    const content = String(args?.content);
+    const append = Boolean(args?.append);
+    try {
+      await manager.updateFile(filename, content, append);
+      return {
+        content: [{ type: "text", text: `Updated ${filename}` }]
+      };
+    } catch (err) {
+      return {
+        content: [{ type: "text", text: `Error updating file: ${err}` }],
+        isError: true
       }
+    }
   }
 
   if (name === "index_file") {
-      const filePath = String(args?.filePath);
-      const content = String(args?.content);
-      const success = await ragEngine.indexContent(filePath, content);
-      return { content: [{ type: "text", text: success ? "Indexed." : "Failed." }] };
+    const filePath = String(args?.filePath);
+    const content = String(args?.content);
+    const success = await ragEngine.indexContent(filePath, content);
+    return { content: [{ type: "text", text: success ? "Indexed." : "Failed." }] };
   }
 
   if (name === SEARCH_CONTEXT_TOOL) {
-      const query = String(args?.query);
-      const results = await ragEngine.search(query);
-      return { content: [{ type: "text", text: results.join("\n---\n") }] };
+    const query = String(args?.query);
+    const results = await ragEngine.search(query);
+    return { content: [{ type: "text", text: results.join("\n---\n") }] };
   }
 
   if (name === "get_subscription_status") {
-      const email = String(args?.email);
-      const result = await nerveCenter.getSubscriptionStatus(email);
-      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    const email = String(args?.email);
+    const result = await nerveCenter.getSubscriptionStatus(email);
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   }
 
   if (name === "get_usage_stats") {
-      const email = String(args?.email);
-      const result = await nerveCenter.getUsageStats(email);
-      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    const email = String(args?.email);
+    const result = await nerveCenter.getUsageStats(email);
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   }
 
   if (name === "search_docs") {
-      const query = String(args?.query);
-      // For now, use the same searchContext method, or a specialized one if we added it.
-      // ContextManager.searchContext uses an API, which might not be running.
-      // But we can implement a simple fuzzy match here or rely on the API.
-      // Since we want "detailed", let's assume the API handles it or fallback.
-      // Re-using searchContext for now as it's the RAG interface.
-      try {
-        const formatted = await manager.searchContext(query);
-        return { content: [{ type: "text", text: formatted }] };
-      } catch (err) {
-         return {
-             content: [{ type: "text", text: `Search Error: ${err}` }],
-             isError: true
-         }
+    const query = String(args?.query);
+    // For now, use the same searchContext method, or a specialized one if we added it.
+    // ContextManager.searchContext uses an API, which might not be running.
+    // But we can implement a simple fuzzy match here or rely on the API.
+    // Since we want "detailed", let's assume the API handles it or fallback.
+    // Re-using searchContext for now as it's the RAG interface.
+    try {
+      const formatted = await manager.searchContext(query);
+      return { content: [{ type: "text", text: formatted }] };
+    } catch (err) {
+      return {
+        content: [{ type: "text", text: `Search Error: ${err}` }],
+        isError: true
       }
+    }
   }
 
-    if (name === "propose_file_access") {
-      const { agentId, filePath, intent, userPrompt } = args as any;
-      const result = await nerveCenter.proposeFileAccess(agentId, filePath, intent, userPrompt);
-      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
-    }
-    if (name === "update_shared_context") {
-      const { agentId, text } = args as any;
-      const result = await nerveCenter.updateSharedContext(text, agentId);
-      return { content: [{ type: "text", text: result }] };
-    }
-    if (name === "finalize_session") {
-      const result = await nerveCenter.finalizeSession();
-      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
-    }
-    if (name === "get_project_soul") {
-      const result = await nerveCenter.getProjectSoul();
-      return { content: [{ type: "text", text: result }] };
-    }
-    if (name === "post_job") {
-      const { title, description, priority, dependencies } = args as any;
-      const result = await nerveCenter.postJob(title, description, priority, dependencies);
-      return { content: [{ type: "text", text: JSON.stringify(result) }] };
-    }
-    if (name === "cancel_job") {
-      const { jobId, reason } = args as any;
-      const result = await nerveCenter.cancelJob(jobId, reason);
-      return { content: [{ type: "text", text: JSON.stringify(result) }] };
-    }
-    if (name === "force_unlock") {
-      const { filePath, reason } = args as any;
-      const result = await nerveCenter.forceUnlock(filePath, reason);
-      return { content: [{ type: "text", text: JSON.stringify(result) }] };
-    }
-    if (name === "claim_next_job") {
-      const { agentId } = args as any;
-      const result = await nerveCenter.claimNextJob(agentId);
-      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
-    }
-    if (name === "complete_job") {
-      const { agentId, jobId, outcome } = args as any;
-      const result = await nerveCenter.completeJob(agentId, jobId, outcome);
-      return { content: [{ type: "text", text: JSON.stringify(result) }] };
-    }
+  if (name === "propose_file_access") {
+    const { agentId, filePath, intent, userPrompt } = args as any;
+    const result = await nerveCenter.proposeFileAccess(agentId, filePath, intent, userPrompt);
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+  }
+  if (name === "update_shared_context") {
+    const { agentId, text } = args as any;
+    const result = await nerveCenter.updateSharedContext(text, agentId);
+    return { content: [{ type: "text", text: result }] };
+  }
+  if (name === "finalize_session") {
+    const result = await nerveCenter.finalizeSession();
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+  }
+  if (name === "get_project_soul") {
+    const result = await nerveCenter.getProjectSoul();
+    return { content: [{ type: "text", text: result }] };
+  }
+  if (name === "post_job") {
+    const { title, description, priority, dependencies } = args as any;
+    const result = await nerveCenter.postJob(title, description, priority, dependencies);
+    return { content: [{ type: "text", text: JSON.stringify(result) }] };
+  }
+  if (name === "cancel_job") {
+    const { jobId, reason } = args as any;
+    const result = await nerveCenter.cancelJob(jobId, reason);
+    return { content: [{ type: "text", text: JSON.stringify(result) }] };
+  }
+  if (name === "force_unlock") {
+    const { filePath, reason } = args as any;
+    const result = await nerveCenter.forceUnlock(filePath, reason);
+    return { content: [{ type: "text", text: JSON.stringify(result) }] };
+  }
+  if (name === "claim_next_job") {
+    const { agentId } = args as any;
+    const result = await nerveCenter.claimNextJob(agentId);
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+  }
+  if (name === "complete_job") {
+    const { agentId, jobId, outcome } = args as any;
+    const result = await nerveCenter.completeJob(agentId, jobId, outcome);
+    return { content: [{ type: "text", text: JSON.stringify(result) }] };
+  }
 
   throw new Error(`Tool not found: ${name}`);
 });
 
 async function main() {
-    await ensureFileSystem();
-    await nerveCenter.init();
-    if (nerveCenter.projectId) {
-        ragEngine.setProjectId(nerveCenter.projectId);
-        logger.info(`RAG Engine linked to Project ID: ${nerveCenter.projectId}`);
-    }
+  await ensureFileSystem();
+  await nerveCenter.init();
+  if (nerveCenter.projectId) {
+    ragEngine.setProjectId(nerveCenter.projectId);
+    logger.info(`RAG Engine linked to Project ID: ${nerveCenter.projectId}`);
+  }
   const transport = new StdioServerTransport();
   await server.connect(transport);
-    logger.info("Shared Context MCP Server running on stdio");
+  logger.info("Shared Context MCP Server running on stdio");
 }
 
 main().catch((error) => {

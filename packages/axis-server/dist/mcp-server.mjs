@@ -284,6 +284,32 @@ var NerveCenter = class {
       return Object.values(this.state.locks);
     }
   }
+  async getNotepad() {
+    if (!this.useSupabase || !this.supabase || !this._projectId) {
+      return this.state.liveNotepad;
+    }
+    const { data, error } = await this.supabase.from("projects").select("live_notepad").eq("id", this._projectId).single();
+    if (error || !data) {
+      logger.error("Failed to fetch notepad", error);
+      return this.state.liveNotepad;
+    }
+    return data.live_notepad || "";
+  }
+  async appendToNotepad(text) {
+    if (!this.useSupabase || !this.supabase || !this._projectId) {
+      this.state.liveNotepad += text;
+      await this.saveState();
+      return;
+    }
+    const { error } = await this.supabase.rpc("append_to_project_notepad", {
+      p_project_id: this._projectId,
+      p_text: text
+    });
+    if (error) {
+      const current = await this.getNotepad();
+      await this.supabase.from("projects").update({ live_notepad: current + text }).eq("id", this._projectId);
+    }
+  }
   async saveState() {
     try {
       await fs2.mkdir(path2.dirname(this.stateFilePath), { recursive: true });
@@ -335,10 +361,10 @@ var NerveCenter = class {
         };
       }
       const depText = dependencies.length ? ` (Depends on: ${dependencies.join(", ")})` : "";
-      this.state.liveNotepad += `
+      const logEntry = `
 - [JOB POSTED] [${priority.toUpperCase()}] ${title} (ID: ${id})${depText}`;
+      await this.appendToNotepad(logEntry);
       logger.info(`Job posted: ${title}`, { jobId: id, priority });
-      await this.saveState();
       return { jobId: id, status: "POSTED" };
     });
   }
@@ -373,10 +399,9 @@ var NerveCenter = class {
           }
           if (data && data.length > 0) {
             const job2 = this.jobFromRecord(data[0]);
-            this.state.liveNotepad += `
-- [JOB CLAIMED] Agent '${agentId}' picked up: ${job2.title}`;
+            await this.appendToNotepad(`
+- [JOB CLAIMED] Agent '${agentId}' picked up: ${job2.title}`);
             logger.info(`Job claimed`, { jobId: job2.id, agentId });
-            await this.saveState();
             return { status: "CLAIMED", job: job2 };
           }
         }
@@ -442,10 +467,9 @@ var NerveCenter = class {
         if (data.assigned_to !== agentId) return { error: "You don't own this job." };
         const { error: updateError } = await this.supabase.from("jobs").update({ status: "done", updated_at: (/* @__PURE__ */ new Date()).toISOString() }).eq("id", jobId).eq("assigned_to", agentId);
         if (updateError) return { error: "Failed to complete job" };
-        this.state.liveNotepad += `
-- [JOB DONE] ${data.title} by ${agentId}. Outcome: ${outcome}`;
+        await this.appendToNotepad(`
+- [JOB DONE] ${data.title} by ${agentId}. Outcome: ${outcome}`);
         logger.info(`Job completed`, { jobId, agentId });
-        await this.saveState();
         return { status: "COMPLETED" };
       }
       const job = this.state.jobs[jobId];
@@ -472,6 +496,7 @@ var NerveCenter = class {
       (j) => `- [${j.status.toUpperCase()}] ${j.title} ${j.assignedTo ? "(" + j.assignedTo + ")" : "(Open)"}
   ID: ${j.id}`
     ).join("\n");
+    const notepad = await this.getNotepad();
     return `# Active Session Context
 
 ## Job Board (Active Orchestration)
@@ -481,7 +506,7 @@ ${jobSummary || "No active jobs."}
 ${lockSummary || "No active locks."}
 
 ## Live Notepad
-${this.state.liveNotepad}`;
+${notepad}`;
   }
   // --- Decision & Orchestration ---
   async proposeFileAccess(agentId, filePath, intent, userPrompt) {
@@ -515,35 +540,40 @@ ${this.state.liveNotepad}`;
         logger.error("Lock upsert failed", error);
         return { status: "ERROR", message: "Database lock failed." };
       }
-      this.state.liveNotepad += `
+      await this.appendToNotepad(`
 
 ### [${agentId}] Locked '${filePath}'
 **Intent:** ${intent}
-**Prompt:** "${userPrompt}"`;
-      await this.saveState();
+**Prompt:** "${userPrompt}"`);
       return { status: "GRANTED", message: `Access granted for ${filePath}` };
     });
   }
   async updateSharedContext(text, agentId) {
     return await this.mutex.runExclusive(async () => {
-      this.state.liveNotepad += `
-- [${agentId}] ${text}`;
-      await this.saveState();
+      await this.appendToNotepad(`
+- [${agentId}] ${text}`);
       return "Notepad updated.";
     });
   }
   async finalizeSession() {
     return await this.mutex.runExclusive(async () => {
-      const content = this.state.liveNotepad;
+      const content = await this.getNotepad();
       const filename = `session-${(/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-")}.md`;
       const historyPath = path2.join(process.cwd(), "history", filename);
       await fs2.writeFile(historyPath, content);
-      this.state.liveNotepad = "Session Start: " + (/* @__PURE__ */ new Date()).toISOString() + "\n";
-      this.state.locks = {};
       if (this.useSupabase && this.supabase && this._projectId) {
+        await this.supabase.from("sessions").insert({
+          project_id: this._projectId,
+          title: `Session ${(/* @__PURE__ */ new Date()).toLocaleDateString()}`,
+          summary: content.substring(0, 500) + "...",
+          metadata: { full_content: content }
+        });
+        await this.supabase.from("projects").update({ live_notepad: "Session Start: " + (/* @__PURE__ */ new Date()).toISOString() + "\n" }).eq("id", this._projectId);
         await this.supabase.from("jobs").delete().eq("project_id", this._projectId).in("status", ["done", "cancelled"]);
         await this.supabase.from("locks").delete().eq("project_id", this._projectId);
       } else {
+        this.state.liveNotepad = "Session Start: " + (/* @__PURE__ */ new Date()).toISOString() + "\n";
+        this.state.locks = {};
         this.state.jobs = Object.fromEntries(
           Object.entries(this.state.jobs).filter(([_, j]) => j.status !== "done" && j.status !== "cancelled")
         );
@@ -682,8 +712,8 @@ if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_
   process.exit(1);
 }
 var manager = new ContextManager(
-  process.env.SHARED_CONTEXT_API_URL,
-  process.env.SHARED_CONTEXT_API_SECRET
+  process.env.SHARED_CONTEXT_API_URL || "https://api.axis.sh/v1",
+  process.env.AXIS_API_KEY || process.env.SHARED_CONTEXT_API_SECRET
 );
 var nerveCenter = new NerveCenter(manager, {
   supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL,
