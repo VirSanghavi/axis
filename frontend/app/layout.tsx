@@ -17,8 +17,8 @@ export const metadata: Metadata = {
   title: "Axis - AI Agent Context",
   description: "Governance layer for AI agent context.",
   icons: {
-    icon: "/alogo.jpg",
-    apple: "/alogo.jpg",
+    icon: "/favicon.ico",
+    apple: "/favicon.ico",
   },
 };
 
@@ -32,7 +32,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <head>
-        <link rel="icon" href="/alogo.jpg" />
+        <link rel="icon" href="/favicon.ico" />
         <link rel="preload" as="image" href="/avalanche.gif" />
         <link rel="preload" as="image" href="/avalanche2.gif" />
       </head>
