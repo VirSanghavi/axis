@@ -149,7 +149,7 @@ Axis exposes a standardized toolset via the **Model Context Protocol**:
                     className="max-w-4xl relative"
                 >
                     <h1 className="text-[52px] md:text-[84px] font-medium tracking-tighter mb-8 text-white leading-[1.05] drop-shadow-[0_4px_80px_rgba(0,0,0,1)] mix-blend-difference">
-                        parallel <br />workflows
+                        parallel coding <br />agent workflows
                     </h1>
                     <p className="text-[17px] md:text-[19px] text-white/95 max-w-xl mx-auto leading-relaxed mb-12 font-medium drop-shadow-[0_2px_40px_rgba(0,0,0,1)] mix-blend-difference">
                         distributed orchestration for multiple ai agents. solve complex engineering tasks with synchronized memory and coordinated swarms.
