@@ -356,18 +356,18 @@ export default function Dashboard() {
                 <div className="flex items-center gap-2 mb-4">
                   <h3 className="text-[10px] font-mono text-neutral-500 uppercase tracking-[0.3em]">live activity feed</h3>
                 </div>
-                <div className="space-y-2">
+                <div className="space-y-2 max-h-[160px] overflow-y-auto pr-2 custom-scrollbar">
                   {activities.length === 0 ? (
                     <div className="text-center py-6 opacity-40 font-mono text-[10px]">no recent activity</div>
                   ) : (
                     activities.map((item) => (
                       <div key={item.id} className="flex items-center justify-between text-[11px] font-mono bg-neutral-50 px-4 py-2 rounded border border-neutral-100">
-                        <div className="flex items-center gap-3">
-                          <div className={cn("w-1.5 h-1.5 rounded-full", item.status === 'success' ? "bg-emerald-500" : "bg-amber-500 animate-pulse")} />
-                          <span className="text-neutral-400">[{item.type}]</span>
-                          <span className="text-neutral-700 font-medium truncate max-w-[150px]">{item.target}</span>
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className={cn("w-1.5 h-1.5 rounded-full flex-shrink-0", item.status === 'success' ? "bg-emerald-500" : "bg-amber-500 animate-pulse")} />
+                          <span className="text-neutral-400 flex-shrink-0">[{item.type}]</span>
+                          <span className="text-neutral-700 font-medium truncate">{item.target}</span>
                         </div>
-                        <span className="text-neutral-400 text-[9px] whitespace-nowrap">{getRelativeTime(item.created_at)}</span>
+                        <span className="text-neutral-400 text-[9px] whitespace-nowrap ml-4">{getRelativeTime(item.created_at)}</span>
                       </div>
                     ))
                   )}
