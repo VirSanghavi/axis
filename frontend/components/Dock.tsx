@@ -34,18 +34,28 @@ function DockItem({
     const stableX = useRef<number>(0);
 
     useEffect(() => {
-        if (ref.current) {
-            const rect = ref.current.getBoundingClientRect();
-            stableX.current = rect.left + rect.width / 2;
-        }
-    }, [baseItemSize]);
+        const updateStableX = () => {
+            if (ref.current) {
+                const rect = ref.current.getBoundingClientRect();
+                stableX.current = rect.left + rect.width / 2;
+            }
+        };
+
+        updateStableX();
+        window.addEventListener('resize', updateStableX);
+        // Also update after a short delay since layout might shift after initial mount
+        const timer = setTimeout(updateStableX, 500);
+
+        return () => {
+            window.removeEventListener('resize', updateStableX);
+            clearTimeout(timer);
+        };
+    }, []);
 
     const mouseDistance = useTransform(mouseX, (val) => {
         if (val === Infinity) return Infinity;
-        // Use a more stable calculation that doesn't rely on the current (animating) rect if possible
-        const rect = ref.current?.getBoundingClientRect();
-        const centerX = rect ? rect.left + rect.width / 2 : stableX.current;
-        return val - centerX;
+        // Use the stableX collected in useEffect to avoid getBoundingClientRect() on every frame
+        return val - stableX.current;
     });
 
     const targetSize = useTransform(

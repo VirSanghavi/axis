@@ -14,10 +14,13 @@ export default function Navbar() {
     useEffect(() => {
         const checkAuth = async () => {
             try {
+                // Use a controller to avoid parallel fetches if pathname changes rapidly
                 const res = await fetch("/api/auth/session");
                 if (res.ok) {
                     const data = await res.json();
                     setIsAuthenticated(data.authenticated);
+                } else {
+                    setIsAuthenticated(false);
                 }
             } catch {
                 setIsAuthenticated(false);
