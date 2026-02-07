@@ -14,8 +14,8 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Axis - Parallel Agent Workflows",
-  description: "Orchestration layer for distributed AI agents and parallel software development.",
+  title: "Axis - Parallel Agent Workflows & Distributed Orchestration",
+  description: "The high-performance orchestration layer for parallel AI agent workflows. Coordinate distributed agent swarms with shared memory and atomic task management.",
   icons: {
     icon: "/favicon.ico",
     apple: "/favicon.ico",

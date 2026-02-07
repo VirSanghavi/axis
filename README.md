@@ -1,13 +1,13 @@
-# Shared Context Layer for AI Coding Agents via MCP
+# Axis: Parallel Agent Workflows & Orchestration
 
-A shared context server that allows different AI agents (Claude Code, Cursor, Windsurf) to share knowledge about project architecture, conventions, and recent activity.
+Axis is a high-performance orchestration layer that enables **Parallel Agent Workflows**. It allows multiple AI agents (Claude Code, Cursor, Antigravity, Windsurf) to coordinate on the same codebase simultaneously through distributed shared memory and atomic task management.
 
 ## Features
 
-1.  **Local Context Storage**: Markdown files in `./agent-instructions/` (`context.md`, `conventions.md`, `activity.md`).
-2.  **MCP Server**: Exposes these files to any MCP-compatible agent.
-3.  **Smart Retrieval (RAG)**: Vector search via hosted API.
-4.  **Job Board + File Locks**: Multi-agent orchestration via MCP tools.
+1.  **Parallel Agent Orchestration (PAO-1)**: Coordinate agent swarms with a shared Job Board and pessimistic File Locking.
+2.  **Distributed Shared Memory**: Real-time synchronization of the "Live Notepad" across disparate agent processes.
+3.  **Governance & Mirroring**: High-fidelity context mirroring to ensure all agents operate on "Ground Truth."
+4.  **MCP Native**: Standardized toolset via the Model Context Protocol for seamless integration with any agent.
 
 ## Environment
 
@@ -59,20 +59,14 @@ PROJECT_NAME=default
     bun cli add-context "Refactored the API to use Hono"
     ```
 
-## Zero-Touch Philosophy
+## Parallelism Philosophy
 
-The key to this system is that **you (the human) should never manually edit the shared context**.
+The key to Axis is the **Parallel Sprints**. You no longer have to manage a single agent sequentially; instead, you orchestrate a swarm.
 
-1.  **Just talk to your agents.**
-2.  If you tell Claude: "Build a todo app", Claude will automatically:
-    *   Create 3-4 jobs on the "Invisible Job Board".
-    *   Start working on the first one.
-3.  If you open Cursor and say "Help out", Cursor will:
-    *   Automatically check the board.
-    *   Claim the next open job.
-    *   Start working without you explaining anything.
-
-The "Notebook" manages itself.
+1.  **Define the Objective**: Tell any agent (the "Manager"): "Build the Authentication System."
+2.  **Autonomous Partitioning**: The agent decomposes the objective into jobs (API, UI, Tests) and posts them to the **Distributed Job Board**.
+3.  **Horizontal Scaling**: You open Cursor, Claude Code, and Antigravity. They all instantly "claim" the next available job on the board.
+4.  **Synchronized Execution**: While agents work in parallel, they stay in sync via the **Live Notepad**, ensuring that if one agent changes an API signature, the others adjust their code in real-time.
 
 ### Local Integration (MCP)
 Configure your IDE (Claude Desktop, Cursor, etc.) to point to the local server script:
@@ -127,18 +121,18 @@ The server exposes these orchestration tools to agents:
 
 ## Architecture
 
-- **Active Orchestrator (`src/local/server.ts`)**: A single-process HTTP/SSE server that holds memorystate.
-- **Job Board**: Supabase-backed task registry (falls back to local state when not configured).
-- **RAG Memory**: Vector embeddings of all past decisions and prompts.
+- **Active Orchestrator (`src/local/server.ts`)**: A high-concurrency MCP server that manages distributed state.
+- **Parallel Job Board**: Supabase-backed registry for atomic task distribution.
+- **Distributed Memory**: Real-time vector-indexed persistence of agent decisions.
 
 ## Production & Deployment
 
 ### Docker
-The server is fully containerized. To build and run:
+The system is fully containerized for cloud orchestration.
 ```bash
 docker-compose up --build
 ```
-This starts the API on port 3000 and the `nerve-center` on port 3001.
+This starts the Parallel Control Plane on port 3001 and the Context API on port 3000.
 
 ### Supabase Setup
 Apply the schema in [supabase/schema.sql](supabase/schema.sql) to your Supabase project.
