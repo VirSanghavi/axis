@@ -1,14 +1,14 @@
 {
-    "name": "@axis/server",
-    "version": "1.0.0",
+    "name": "@virsanghavi/axis-server",
+    "version": "1.0.1",
     "description": "Axis MCP Server CLI",
     "main": "dist/index.js",
     "bin": {
-        "axis-server": "./bin/cli.ts"
+        "axis-server": "dist/cli.js"
     },
     "scripts": {
-        "start": "node bin/cli.ts",
-        "build": "tsup ../../src/local/mcp-server.ts --format esm --out-dir dist --target node18 --clean",
+        "start": "node dist/cli.js",
+        "build": "tsup bin/cli.ts --format cjs --out-dir dist --clean --shims && tsup ../../src/local/mcp-server.ts --format esm --out-dir dist",
         "prepublishOnly": "npm run build"
     },
     "dependencies": {

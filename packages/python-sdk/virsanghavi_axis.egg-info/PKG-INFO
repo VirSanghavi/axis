@@ -1,0 +1,73 @@
+Metadata-Version: 2.4
+Name: virsanghavi-axis
+Version: 1.0.0
+Summary: Python SDK for the Axis Context Protocol
+Home-page: https://github.com/VirSanghavi/shared-context
+Author: Axis Governance
+Author-email: vir@tilt.vote
+Keywords: axis context ai agents governance
+Classifier: Programming Language :: Python :: 3
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Requires-Python: >=3.7
+Description-Content-Type: text/markdown
+Requires-Dist: requests>=2.25.1
+Dynamic: author
+Dynamic: author-email
+Dynamic: classifier
+Dynamic: description
+Dynamic: description-content-type
+Dynamic: home-page
+Dynamic: keywords
+Dynamic: requires-dist
+Dynamic: requires-python
+Dynamic: summary
+
+# Axis Python SDK
+
+The official Python client for the Axis Context Protocol. 
+
+## Installation
+
+```bash
+pip install virsanghavi-axis
+```
+
+## Quick Start
+
+### 1. Initialize the Client
+
+```python
+from axis import Axis
+
+# Reads AXIS_API_KEY from environment by default
+axis = Axis() 
+```
+
+### 2. Get a Context Mirror
+
+```python
+mirror = axis.get_mirror(path="./src")
+
+# Convert to text for your prompt
+prompt_context = mirror.to_prompt()
+print(prompt_context)
+```
+
+### 3. Check Governance
+
+```python
+is_allowed = axis.check_governance(
+    agent_id="agent-001",
+    file_path="src/auth/secrets.ts",
+    action="read"
+)
+
+if not is_allowed:
+    print("Access Denied by Axis Governance Law")
+```
+
+## Environment Variables
+
+- `AXIS_API_KEY`: Your project's secret key.
+- `AXIS_BASE_URL`: (Optional) Defaults to `https://api.axis.sh/v1`.

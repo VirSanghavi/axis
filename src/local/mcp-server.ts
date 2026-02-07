@@ -9,17 +9,37 @@ import {
 import dotenv from "dotenv";
 import { ContextManager } from "./context-manager.js";
 import { NerveCenter } from "./nerve-center.js";
+import { RagEngine } from "./rag-engine.js";
 import { logger } from "../utils/logger.js";
 
 // Load environment variables
 dotenv.config({ path: ".env.local" });
+
+// VALIDATION
+if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    logger.error("CRITICAL: Supabase credentials missing. RAG & Persistence disabled.");
+    process.exit(1);
+}
 
 // Configuration
 const manager = new ContextManager(
   process.env.SHARED_CONTEXT_API_URL,
   process.env.SHARED_CONTEXT_API_SECRET
 );
-const nerveCenter = new NerveCenter(manager);
+const nerveCenter = new NerveCenter(manager, {
+    supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL,
+    supabaseServiceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
+    projectName: process.env.PROJECT_NAME || "default"
+});
+
+// Initialize RAG Engine
+const ragEngine = new RagEngine(
+    process.env.NEXT_PUBLIC_SUPABASE_URL,
+    process.env.SUPABASE_SERVICE_ROLE_KEY,
+    process.env.OPENAI_API_KEY || "",
+    // Project ID is loaded async by NerveCenter... tricky dependency.
+    // We'll let NerveCenter expose it or pass it later.
+);
 
 // --- File System Operations ---
 const REQUIRED_DIRS = ["agent-instructions", "history"];
@@ -60,7 +80,7 @@ const server = new Server(
 // Tools
 const READ_CONTEXT_TOOL = "read_context";
 const UPDATE_CONTEXT_TOOL = "update_context";
-const SEARCH_CONTEXT_TOOL = "search_context";
+const SEARCH_CONTEXT_TOOL = "search_codebase"; // Renamed for clarity
 
 server.setRequestHandler(ListResourcesRequestSchema, async () => {
     try {
@@ -143,7 +163,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: SEARCH_CONTEXT_TOOL,
-        description: "Search shared context using RAG (Remote API)",
+        description: "Search the codebase using vector similarity.",
         inputSchema: {
           type: "object",
           properties: {
@@ -286,6 +306,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           },
           required: ["agentId", "jobId", "outcome"]
         }
+      },
+      {
+        name: "index_file",
+        description: "Force re-index a file into the RAG vector database.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                filePath: { type: "string" },
+                content: { type: "string" }
+            },
+            required: ["filePath", "content"]
+        }
       }
     ],
   };
@@ -328,17 +360,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
   }
 
+  if (name === "index_file") {
+      const filePath = String(args?.filePath);
+      const content = String(args?.content);
+      const success = await ragEngine.indexContent(filePath, content);
+      return { content: [{ type: "text", text: success ? "Indexed." : "Failed." }] };
+  }
+
   if (name === SEARCH_CONTEXT_TOOL) {
-     const query = String(args?.query);
-     try {
-       const formatted = await manager.searchContext(query);
-       return { content: [{ type: "text", text: formatted }] };
-     } catch (err) {
-         return {
-             content: [{ type: "text", text: `Search Execution Error: ${err}` }],
-             isError: true
-         }
-     }
+      const query = String(args?.query);
+      const results = await ragEngine.search(query);
+      return { content: [{ type: "text", text: results.join("\n---\n") }] };
   }
 
   if (name === "get_subscription_status") {
@@ -421,6 +453,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function main() {
     await ensureFileSystem();
     await nerveCenter.init();
+    if (nerveCenter.projectId) {
+        ragEngine.setProjectId(nerveCenter.projectId);
+        logger.info(`RAG Engine linked to Project ID: ${nerveCenter.projectId}`);
+    }
   const transport = new StdioServerTransport();
   await server.connect(transport);
     logger.info("Shared Context MCP Server running on stdio");

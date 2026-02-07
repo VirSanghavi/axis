@@ -7,7 +7,7 @@ import {
   ListResourcesRequestSchema,
   ReadResourceRequestSchema
 } from "@modelcontextprotocol/sdk/types.js";
-import dotenv from "dotenv";
+import dotenv2 from "dotenv";
 
 // ../../src/local/context-manager.ts
 import fs from "fs/promises";
@@ -182,7 +182,8 @@ var NerveCenter = class {
   stateFilePath;
   lockTimeout;
   supabase;
-  projectId;
+  _projectId;
+  // Renamed backing field
   projectName;
   useSupabase;
   /**
@@ -195,19 +196,21 @@ var NerveCenter = class {
     this.stateFilePath = options.stateFilePath || STATE_FILE;
     this.lockTimeout = options.lockTimeout || LOCK_TIMEOUT_DEFAULT;
     this.projectName = options.projectName || process.env.PROJECT_NAME || "default";
-    const supabaseUrl = options.supabaseUrl || process.env.SUPABASE_URL;
+    const supabaseUrl = options.supabaseUrl || process.env.NEXT_PUBLIC_SUPABASE_URL;
     const supabaseKey = options.supabaseServiceRoleKey || process.env.SUPABASE_SERVICE_ROLE_KEY;
-    if (supabaseUrl && supabaseKey) {
-      this.supabase = createClient(supabaseUrl, supabaseKey);
-      this.useSupabase = true;
-    } else {
-      this.useSupabase = false;
+    if (!supabaseUrl || !supabaseKey) {
+      throw new Error("CRITICAL: Supabase URL and Service Role Key are REQUIRED for NerveCenter persistence.");
     }
+    this.supabase = createClient(supabaseUrl, supabaseKey);
+    this.useSupabase = true;
     this.state = {
       locks: {},
       jobs: {},
       liveNotepad: "Session Start: " + (/* @__PURE__ */ new Date()).toISOString() + "\n"
     };
+  }
+  get projectId() {
+    return this._projectId;
   }
   async init() {
     await this.loadState();
@@ -223,7 +226,7 @@ var NerveCenter = class {
       return;
     }
     if (project?.id) {
-      this.projectId = project.id;
+      this._projectId = project.id;
       return;
     }
     const { data: created, error: createError } = await this.supabase.from("projects").insert({ name: this.projectName }).select("id").single();
@@ -231,7 +234,7 @@ var NerveCenter = class {
       logger.error("Failed to create project", createError);
       return;
     }
-    this.projectId = created.id;
+    this._projectId = created.id;
   }
   jobFromRecord(record) {
     return {
@@ -248,10 +251,10 @@ var NerveCenter = class {
   }
   // --- Data Access Layers (Hybrid: Supabase > Local) ---
   async listJobs() {
-    if (!this.useSupabase || !this.supabase || !this.projectId) {
+    if (!this.useSupabase || !this.supabase || !this._projectId) {
       return Object.values(this.state.jobs);
     }
-    const { data, error } = await this.supabase.from("jobs").select("id,title,description,priority,status,assigned_to,dependencies,created_at,updated_at").eq("project_id", this.projectId);
+    const { data, error } = await this.supabase.from("jobs").select("id,title,description,priority,status,assigned_to,dependencies,created_at,updated_at").eq("project_id", this._projectId);
     if (error || !data) {
       logger.error("Failed to load jobs", error);
       return [];
@@ -259,15 +262,15 @@ var NerveCenter = class {
     return data.map((record) => this.jobFromRecord(record));
   }
   async getLocks() {
-    if (!this.useSupabase || !this.supabase || !this.projectId) {
+    if (!this.useSupabase || !this.supabase || !this._projectId) {
       return Object.values(this.state.locks);
     }
     try {
       await this.supabase.rpc("clean_stale_locks", {
-        p_project_id: this.projectId,
+        p_project_id: this._projectId,
         p_timeout_seconds: Math.floor(this.lockTimeout / 1e3)
       });
-      const { data, error } = await this.supabase.from("locks").select("*").eq("project_id", this.projectId);
+      const { data, error } = await this.supabase.from("locks").select("*").eq("project_id", this._projectId);
       if (error) throw error;
       return (data || []).map((row) => ({
         agentId: row.agent_id,
@@ -301,10 +304,10 @@ var NerveCenter = class {
   async postJob(title, description, priority = "medium", dependencies = []) {
     return await this.mutex.runExclusive(async () => {
       let id = `job-${Date.now()}-${Math.floor(Math.random() * 1e3)}`;
-      if (this.useSupabase && this.supabase && this.projectId) {
+      if (this.useSupabase && this.supabase && this._projectId) {
         const now = (/* @__PURE__ */ new Date()).toISOString();
         const { data, error } = await this.supabase.from("jobs").insert({
-          project_id: this.projectId,
+          project_id: this._projectId,
           title,
           description,
           priority,
@@ -414,8 +417,8 @@ var NerveCenter = class {
   }
   async forceUnlock(filePath, adminReason) {
     return await this.mutex.runExclusive(async () => {
-      if (this.useSupabase && this.supabase && this.projectId) {
-        const { error } = await this.supabase.from("locks").delete().eq("project_id", this.projectId).eq("file_path", filePath);
+      if (this.useSupabase && this.supabase && this._projectId) {
+        const { error } = await this.supabase.from("locks").delete().eq("project_id", this._projectId).eq("file_path", filePath);
         if (error) return { error: "DB Error" };
         this.state.liveNotepad += `
 - [ADMIN] Force unlocked '${filePath}'. Reason: ${adminReason}`;
@@ -483,71 +486,42 @@ ${this.state.liveNotepad}`;
   // --- Decision & Orchestration ---
   async proposeFileAccess(agentId, filePath, intent, userPrompt) {
     return await this.mutex.runExclusive(async () => {
-      if (this.useSupabase && this.supabase && this.projectId) {
-        const { data: existing } = await this.supabase.from("locks").select("*").eq("project_id", this.projectId).eq("file_path", filePath).single();
-        if (existing) {
-          const updatedAt = new Date(existing.updated_at).getTime();
-          const isStale = Date.now() - updatedAt > this.lockTimeout;
-          if (!isStale && existing.agent_id !== agentId) {
-            return {
-              status: "REQUIRES_ORCHESTRATION",
-              message: `Conflict: File '${filePath}' is currently locked by agent '${existing.agent_id}'`,
-              currentLock: existing
-            };
-          }
-        }
-        const { error } = await this.supabase.from("locks").upsert({
-          project_id: this.projectId,
-          file_path: filePath,
-          agent_id: agentId,
-          intent,
-          user_prompt: userPrompt,
-          updated_at: (/* @__PURE__ */ new Date()).toISOString()
-        }, { onConflict: "project_id,file_path" });
-        if (error) {
-          logger.error("Lock upsert failed", error);
-          return { status: "ERROR", message: "Database lock failed." };
-        }
-        this.state.liveNotepad += `
-
-### [${agentId}] Locked '${filePath}'
-**Intent:** ${intent}
-**Prompt:** "${userPrompt}"`;
-        await this.saveState();
-        return { status: "GRANTED", message: `Access granted for ${filePath}` };
-      }
-      const now = Date.now();
-      for (const [path3, lock] of Object.entries(this.state.locks)) {
-        if (now - lock.timestamp > this.lockTimeout) {
-          delete this.state.locks[path3];
+      if (!this.supabase || !this._projectId) throw new Error("Database not connected");
+      const { data: existing } = await this.supabase.from("locks").select("*").eq("project_id", this._projectId).eq("file_path", filePath).maybeSingle();
+      if (existing) {
+        const updatedAt = new Date(existing.updated_at).getTime();
+        const isStale = Date.now() - updatedAt > this.lockTimeout;
+        if (!isStale && existing.agent_id !== agentId) {
+          return {
+            status: "REQUIRES_ORCHESTRATION",
+            message: `Conflict: File '${filePath}' is currently locked by agent '${existing.agent_id}'`,
+            currentLock: {
+              agentId: existing.agent_id,
+              intent: existing.intent,
+              timestamp: updatedAt
+            }
+          };
         }
       }
-      const currentLock = this.state.locks[filePath];
-      if (currentLock && currentLock.agentId !== agentId) {
-        return {
-          status: "REQUIRES_ORCHESTRATION",
-          message: `Conflict: File '${filePath}' is currently locked by agent '${currentLock.agentId}'`,
-          currentLock
-        };
-      }
-      this.state.locks[filePath] = {
-        agentId,
-        filePath,
+      const { error } = await this.supabase.from("locks").upsert({
+        project_id: this._projectId,
+        file_path: filePath,
+        agent_id: agentId,
         intent,
-        userPrompt,
-        timestamp: Date.now()
-      };
+        user_prompt: userPrompt,
+        updated_at: (/* @__PURE__ */ new Date()).toISOString()
+      }, { onConflict: "project_id,file_path" });
+      if (error) {
+        logger.error("Lock upsert failed", error);
+        return { status: "ERROR", message: "Database lock failed." };
+      }
       this.state.liveNotepad += `
 
 ### [${agentId}] Locked '${filePath}'
 **Intent:** ${intent}
 **Prompt:** "${userPrompt}"`;
       await this.saveState();
-      return {
-        status: "GRANTED",
-        message: `Access granted for ${filePath}`,
-        lock: this.state.locks[filePath]
-      };
+      return { status: "GRANTED", message: `Access granted for ${filePath}` };
     });
   }
   async updateSharedContext(text, agentId) {
@@ -566,9 +540,9 @@ ${this.state.liveNotepad}`;
       await fs2.writeFile(historyPath, content);
       this.state.liveNotepad = "Session Start: " + (/* @__PURE__ */ new Date()).toISOString() + "\n";
       this.state.locks = {};
-      if (this.useSupabase && this.supabase && this.projectId) {
-        await this.supabase.from("jobs").delete().eq("project_id", this.projectId).in("status", ["done", "cancelled"]);
-        await this.supabase.from("locks").delete().eq("project_id", this.projectId);
+      if (this.useSupabase && this.supabase && this._projectId) {
+        await this.supabase.from("jobs").delete().eq("project_id", this._projectId).in("status", ["done", "cancelled"]);
+        await this.supabase.from("locks").delete().eq("project_id", this._projectId);
       } else {
         this.state.jobs = Object.fromEntries(
           Object.entries(this.state.jobs).filter(([_, j]) => j.status !== "done" && j.status !== "cancelled")
@@ -628,13 +602,101 @@ ${conventions}`;
   }
 };
 
-// ../../src/local/mcp-server.ts
+// ../../src/local/rag-engine.ts
+import { createClient as createClient2 } from "@supabase/supabase-js";
+import OpenAI from "openai";
+import dotenv from "dotenv";
 dotenv.config({ path: ".env.local" });
+var RagEngine = class {
+  supabase;
+  openai;
+  projectId;
+  constructor(supabaseUrl, supabaseKey, openaiKey, projectId) {
+    this.supabase = createClient2(supabaseUrl, supabaseKey);
+    this.openai = new OpenAI({ apiKey: openaiKey });
+    this.projectId = projectId;
+  }
+  setProjectId(id) {
+    this.projectId = id;
+  }
+  async indexContent(filePath, content) {
+    if (!this.projectId) {
+      console.error("RAG: Project ID missing.");
+      return false;
+    }
+    try {
+      const resp = await this.openai.embeddings.create({
+        model: "text-embedding-3-small",
+        input: content.substring(0, 8e3)
+        // simplistic chunking
+      });
+      const embedding = resp.data[0].embedding;
+      await this.supabase.from("embeddings").delete().eq("project_id", this.projectId).contains("metadata", { filePath });
+      const { error } = await this.supabase.from("embeddings").insert({
+        project_id: this.projectId,
+        content,
+        embedding,
+        metadata: { filePath }
+      });
+      if (error) {
+        console.error("RAG Insert Error:", error);
+        return false;
+      }
+      logger.info(`Indexed ${filePath}`);
+      return true;
+    } catch (e) {
+      console.error("RAG Error:", e);
+      return false;
+    }
+  }
+  async search(query, limit = 5) {
+    if (!this.projectId) return [];
+    try {
+      const resp = await this.openai.embeddings.create({
+        model: "text-embedding-3-small",
+        input: query
+      });
+      const embedding = resp.data[0].embedding;
+      const { data, error } = await this.supabase.rpc("match_embeddings", {
+        query_embedding: embedding,
+        match_threshold: 0.5,
+        match_count: limit,
+        p_project_id: this.projectId
+      });
+      if (error || !data) {
+        console.error("RAG Search DB Error:", error);
+        return [];
+      }
+      return data.map((d) => d.content);
+    } catch (e) {
+      console.error("RAG Search Fail:", e);
+      return [];
+    }
+  }
+};
+
+// ../../src/local/mcp-server.ts
+dotenv2.config({ path: ".env.local" });
+if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+  logger.error("CRITICAL: Supabase credentials missing. RAG & Persistence disabled.");
+  process.exit(1);
+}
 var manager = new ContextManager(
   process.env.SHARED_CONTEXT_API_URL,
   process.env.SHARED_CONTEXT_API_SECRET
 );
-var nerveCenter = new NerveCenter(manager);
+var nerveCenter = new NerveCenter(manager, {
+  supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL,
+  supabaseServiceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
+  projectName: process.env.PROJECT_NAME || "default"
+});
+var ragEngine = new RagEngine(
+  process.env.NEXT_PUBLIC_SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY,
+  process.env.OPENAI_API_KEY || ""
+  // Project ID is loaded async by NerveCenter... tricky dependency.
+  // We'll let NerveCenter expose it or pass it later.
+);
 var REQUIRED_DIRS = ["agent-instructions", "history"];
 async function ensureFileSystem() {
   const fs3 = await import("fs/promises");
@@ -668,7 +730,7 @@ var server = new Server(
 );
 var READ_CONTEXT_TOOL = "read_context";
 var UPDATE_CONTEXT_TOOL = "update_context";
-var SEARCH_CONTEXT_TOOL = "search_context";
+var SEARCH_CONTEXT_TOOL = "search_codebase";
 server.setRequestHandler(ListResourcesRequestSchema, async () => {
   try {
     return {
@@ -746,7 +808,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: SEARCH_CONTEXT_TOOL,
-        description: "Search shared context using RAG (Remote API)",
+        description: "Search the codebase using vector similarity.",
         inputSchema: {
           type: "object",
           properties: {
@@ -889,6 +951,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           },
           required: ["agentId", "jobId", "outcome"]
         }
+      },
+      {
+        name: "index_file",
+        description: "Force re-index a file into the RAG vector database.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            filePath: { type: "string" },
+            content: { type: "string" }
+          },
+          required: ["filePath", "content"]
+        }
       }
     ]
   };
@@ -926,17 +1000,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       };
     }
   }
+  if (name === "index_file") {
+    const filePath = String(args?.filePath);
+    const content = String(args?.content);
+    const success = await ragEngine.indexContent(filePath, content);
+    return { content: [{ type: "text", text: success ? "Indexed." : "Failed." }] };
+  }
   if (name === SEARCH_CONTEXT_TOOL) {
     const query = String(args?.query);
-    try {
-      const formatted = await manager.searchContext(query);
-      return { content: [{ type: "text", text: formatted }] };
-    } catch (err) {
-      return {
-        content: [{ type: "text", text: `Search Execution Error: ${err}` }],
-        isError: true
-      };
-    }
+    const results = await ragEngine.search(query);
+    return { content: [{ type: "text", text: results.join("\n---\n") }] };
   }
   if (name === "get_subscription_status") {
     const email = String(args?.email);
@@ -1008,6 +1081,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function main() {
   await ensureFileSystem();
   await nerveCenter.init();
+  if (nerveCenter.projectId) {
+    ragEngine.setProjectId(nerveCenter.projectId);
+    logger.info(`RAG Engine linked to Project ID: ${nerveCenter.projectId}`);
+  }
   const transport = new StdioServerTransport();
   await server.connect(transport);
   logger.info("Shared Context MCP Server running on stdio");
