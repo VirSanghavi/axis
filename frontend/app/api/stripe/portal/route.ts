@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth";
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
@@ -7,9 +7,9 @@ import { getClientIp, rateLimit } from "@/lib/rate-limit";
 const WINDOW_MS = 60 * 1000;
 const LIMIT = 10; // 10 req/min for portal access
 
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
   const ip = getClientIp(req.headers);
-  const { allowed, remaining, reset } = await rateLimit(`portal:${ip}`, LIMIT, WINDOW_MS);
+  const { allowed } = await rateLimit(`portal:${ip}`, LIMIT, WINDOW_MS);
   if (!allowed) {
     return NextResponse.json({ error: "Too many requests" }, { status: 429 });
   }
@@ -23,7 +23,7 @@ export async function POST(req: Request) {
     process.env.SUPABASE_SERVICE_ROLE_KEY || ""
   );
 
-  const session = await getSessionFromRequest(req as any);
+  const session = await getSessionFromRequest(req);
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }

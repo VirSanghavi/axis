@@ -65,7 +65,6 @@ export default function Dashboard() {
   const [newKeyName, setNewKeyName] = useState('');
   const [createdKey, setCreatedKey] = useState<string | null>(null);
   const [usageData, setUsageData] = useState<{ day: string; requests: number }[]>([]);
-  const [usageLoading, setUsageLoading] = useState(true);
   const [subData, setSubData] = useState<SubscriptionData | null>(null);
   const [sessions, setSessions] = useState<SessionRecord[]>([]);
   const [activeTab, setActiveTab] = useState<'keys' | 'usage' | 'sessions'>('keys');
@@ -117,7 +116,6 @@ export default function Dashboard() {
   }
 
   async function fetchUsage() {
-    setUsageLoading(true);
     try {
       const res = await fetch('/api/usage');
       if (res.ok) {
@@ -127,7 +125,7 @@ export default function Dashboard() {
     } catch (e) {
       console.error(e);
     } finally {
-      setUsageLoading(false);
+      // Done fetching
     }
   }
 

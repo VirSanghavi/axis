@@ -73,7 +73,7 @@ export async function POST(req: NextRequest) {
 
             if (chunks && Array.isArray(chunks) && chunks.length > 0) {
                 contextContent = "--- HISTORICAL CONTEXT & SESSIONS ---\n" +
-                    chunks.map((c: any) => `[Content]: ${c.content}\n[Metadata]: ${JSON.stringify(c.metadata)}`).join('\n---\n');
+                    (chunks as Array<{ content: string; metadata: Record<string, unknown> }>).map((c) => `[Content]: ${c.content}\n[Metadata]: ${JSON.stringify(c.metadata)}`).join('\n---\n');
             }
         } catch (e) {
             console.warn("Vector search failed, falling back to basic response", e);

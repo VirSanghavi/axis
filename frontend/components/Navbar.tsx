@@ -3,7 +3,7 @@
 import { usePathname, useRouter } from "next/navigation";
 import { Home, Info, MessageCircle, BookOpen, Github, LogOut, LogIn } from "lucide-react";
 import Dock, { DockItemConfig } from "./Dock";
-import { useRef, useState, useEffect } from "react";
+import { useRef, useState, useEffect, useMemo, useCallback } from "react";
 
 export default function Navbar() {
     const pathname = usePathname();
@@ -26,47 +26,57 @@ export default function Navbar() {
         checkAuth();
     }, [pathname]);
 
-    const navItems: DockItemConfig[] = [
-        {
-            icon: <Home size={20} />,
-            label: "home",
-            onClick: () => router.push("/")
-        },
-        {
-            icon: isAuthenticated === false ? <LogIn size={20} /> : <Info size={20} />,
-            label: "about",
-            onClick: () => router.push("/about")
-        },
-        {
-            icon: <MessageCircle size={20} />,
-            label: "thoughts?",
-            onClick: () => router.push("/feedback")
-        },
-        {
-            icon: <BookOpen size={20} />,
-            label: "docs",
-            onClick: () => router.push("/docs")
-        },
-        {
-            icon: <Github size={20} />,
-            label: "github",
-            onClick: () => window.open("https://github.com/VirSanghavi/shared-context", "_blank")
-        }
-    ];
+    const [shouldLogout, setShouldLogout] = useState(false);
 
-    if (isAuthenticated === true) {
-        navItems.push({
-            icon: <LogOut size={20} />,
-            label: "logout",
-            onClick: () => logoutFormRef.current?.submit()
-        });
-    } else if (isAuthenticated === false) {
-        navItems.push({
-            icon: <LogIn size={20} />,
-            label: "sign in",
-            onClick: () => router.push("/login")
-        });
-    }
+    useEffect(() => {
+        if (shouldLogout) {
+            logoutFormRef.current?.submit();
+            setTimeout(() => setShouldLogout(false), 0);
+        }
+    }, [shouldLogout]);
+
+    const handleLogout = useCallback(() => {
+        setShouldLogout(true);
+    }, []);
+
+    const navItems = useMemo(() => {
+        const items: DockItemConfig[] = [
+            {
+                icon: <Home size={20} />,
+                label: "home",
+                onClick: () => router.push("/")
+            },
+            {
+                icon: isAuthenticated === false ? <LogIn size={20} /> : <Info size={20} />,
+                label: isAuthenticated === false ? "sign in" : "about",
+                onClick: () => router.push(isAuthenticated === false ? "/login" : "/about")
+            },
+            {
+                icon: <MessageCircle size={20} />,
+                label: "thoughts?",
+                onClick: () => router.push("/feedback")
+            },
+            {
+                icon: <BookOpen size={20} />,
+                label: "docs",
+                onClick: () => router.push("/docs")
+            },
+            {
+                icon: <Github size={20} />,
+                label: "github",
+                onClick: () => window.open("https://github.com/VirSanghavi/shared-context", "_blank")
+            }
+        ];
+
+        if (isAuthenticated === true) {
+            items.push({
+                icon: <LogOut size={20} />,
+                label: "logout",
+                onClick: handleLogout
+            });
+        }
+        return items;
+    }, [isAuthenticated, router, handleLogout]);
 
     return (
         <header className="fixed top-0 left-0 right-0 z-50 pointer-events-none">

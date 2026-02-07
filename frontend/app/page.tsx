@@ -38,7 +38,7 @@ export default function Home() {
             } else if (data.error) {
                 setAnswer(data.error);
             }
-        } catch (err) {
+        } catch {
             setAnswer("axis intelligence: internal connection bridge failed. ensure env keys are present.");
         } finally {
             setIsSearching(false);
@@ -63,30 +63,60 @@ export default function Home() {
                     </pre>
                     <div className="prose prose-invert prose-emerald max-w-none">
                         <ReactMarkdown>{`
-# Axis Intelligence
-## Context for AI Agents
-Axis is an API and MCP layer that gives agents continuously updated context from libraries, research papers, and docs, so they don't hallucinate and you skip manual ingestion.
+# Axis Intelligence Kernel v1.0.0-prod
+## Technical Specification: Context Orchestration Layer
 
-[Deploy Axis](/signup)
+Axis is a high-performance API and Model Context Protocol (MCP) orchestration layer designed to solve the **Context Retrieval Gap** in autonomous agent workflows. By maintaining a high-fidelity mirror of your environment, Axis ensures that agents operate on "Ground Truth" rather than stale or hallucinated data.
 
-## Capabilities
-- **Context Mirroring**: High-fidelity mirror extraction.
-- **Protocol Enforced**: Standardized tools for agents.
-- **Governance**: Granular file locking and access controls.
-- **Session Sync**: Persistent memory across agent runs.
+[Initialize System / Signup](/signup)
 
-## Pricing
-- **Tier Pro**: $5/month
-  - Live context streaming
-  - Zero manual ingestion
-  - Unlimited MCP connectors
-  - Priority agent recall
-  - Audit trails
+---
 
-## Links
-- [Documentation](/docs)
-- [GitHub](https://github.com/VirSanghavi/shared-context)
-- [About](/about)
+### 1. Context Mirroring Protocol (CMP-1)
+The cornerstone of Axis's architecture is the **CMP-1** protocol. Unlike traditional RAG which treats codebases as flat text, CMP-1 treats them as a hierarchical graph. 
+
+- **Mirror Extraction**: Zero-latency extraction of project-level goals, conventions, and architectural debt.
+- **Dependency Injection**: Axis identifies call-sites and logic-trees to inject relevant snippets into the agent's pre-fill.
+- **Sub-linear Scaling**: Optimized for multi-million line repos using selective indexing and change-vector tracking.
+
+### 2. Governance & Governance Orchestration (G-ORC)
+To prevent "Merge Hell" and logical drift in multi-agent environments, Axis implements **G-ORC**:
+
+- **Atomic File Locking**: Prevents sub-routines from overwriting the same logic-block simultaneously.
+- **Consistency Enforcement**: A rule-based engine that validates agent-edits against project \`rules.md\` before commit.
+- **Audit Trails**: Every context-request and tool-call is logged with nanosecond precision for post-mortem debugging.
+
+### 3. MCP Integration Logic
+Axis speaks the **Model Context Protocol** natively. By mounting Axis as an MCP server, your agents gain:
+- \`get_context_map\`: Returns a graph-based representation of the repo.
+- \`request_mirror_sync\`: Forces a refresh of specific sub-directories after a build.
+- \`lock_resource\` / \`unlock_resource\`: Orchestrates concurrency across distributed agent loops.
+
+---
+
+### 4. Vector Store Specifications
+- **Engine**: Custom FAISS-backed persistence layer.
+- **Embeddings**: Optimized for code-semantics (OpenAI \`text-embedding-3-small\` + Axis heuristic refinement).
+- **Similarity Threshold**: Adjusted dynamically based on the complexity of the query (\`dynamic_alpha\` weighting).
+
+### 5. Tier Pro: Unit Economics & Capabilities
+- **Monthly Subscription**: $5 USD
+- **Streaming Context**: Real-time WebSocket connection for filesystem change events.
+- **Unlimited MCP Connectors**: No cap on the number of projects or agents managed.
+- **Priority Agent Recall**: Dedicated sub-second similarity search queue.
+- **Enterprise Logs**: FULL SQL-exportable history of context injections.
+
+---
+
+### 6. Roadmap: The Path to AGI-Context
+- **v1.1 (Q1 2026)**: Sub-second hot-reloading for vector embeddings.
+- **v1.2 (Q2 2026)**: Multi-agent state synchronization (RAM-mirroring).
+- **v2.0 (EOD 2026)**: Autonomous context-pruning (The "Memory Optimizer").
+
+## Links & Connectivity
+- [Technical Documentation](/docs)
+- [Mirror Source (GitHub)](https://github.com/VirSanghavi/shared-context)
+- [System Manifest (/about)](/about)
 `}</ReactMarkdown>
                     </div>
                 </div>
@@ -98,7 +128,7 @@ Axis is an API and MCP layer that gives agents continuously updated context from
     return (
         <div className="relative min-h-screen font-sans selection:bg-white/5 tracking-tight lowercase overflow-x-hidden text-white bg-black">
 
-            {/* global spatial effect */}
+
             <div className="bg-avalanche pointer-events-none fixed inset-0 z-[0]" />
 
             {/* section 1: hero (clean / clear background) */}

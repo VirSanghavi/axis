@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth";
 import { logUsage } from "@/lib/usage";
-import { createClient } from "@supabase/supabase-js";
 import { getClientIp, rateLimit } from "@/lib/rate-limit";
 
 const WINDOW_MS = 60 * 1000;
@@ -21,10 +20,6 @@ export async function GET(req: NextRequest) {
         return NextResponse.json({ error: "Too many requests" }, { status: 429 });
     }
 
-    const supabase = createClient(
-        process.env.NEXT_PUBLIC_SUPABASE_URL || "",
-        process.env.SUPABASE_SERVICE_ROLE_KEY || ""
-    );
 
     // In a full implementation, we would query the 'embeddings' or 'projects' table
     // to build a real map of the context. For this iteration, we keep the schema-aligned

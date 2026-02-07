@@ -15,8 +15,7 @@ export default function NotFound() {
                 animate={{ opacity: 1, scale: 1 }}
                 className="relative z-10 glass p-12 rounded-2xl text-center max-w-md w-full mx-6 shadow-2xl border border-white/10"
             >
-                <h1 className="text-4xl font-mono mb-6 tracking-tighter text-white">404 not found</h1>
-                <p className="text-white/60 font-mono text-sm mb-10 lowercase">the path you are looking for has been pruned from the context map.</p>
+                <h1 className="text-4xl font-mono mb-8 tracking-tighter text-white">404 not found</h1>
                 <Link
                     href="/"
                     className="inline-block bg-white text-black px-8 py-3 rounded text-[10px] font-bold tracking-widest uppercase hover:bg-neutral-200 transition-all"

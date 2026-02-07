@@ -34,7 +34,7 @@ export async function GET(req: NextRequest) {
         return NextResponse.json({ error: "Supabase not configured" }, { status: 503 });
     }
 
-    const session = await getSessionFromRequest(req as any);
+    const session = await getSessionFromRequest(req);
     if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     try {
@@ -69,7 +69,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: "Supabase not configured" }, { status: 503 });
     }
 
-    const session = await getSessionFromRequest(req as any);
+    const session = await getSessionFromRequest(req);
     if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     try {

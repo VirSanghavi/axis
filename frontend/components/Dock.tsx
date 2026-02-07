@@ -1,7 +1,7 @@
 'use client';
 
-import { motion, useMotionValue, useSpring, useTransform, AnimatePresence, MotionValue, useVelocity } from 'framer-motion';
-import { Children, cloneElement, useEffect, useMemo, useRef, useState } from 'react';
+import { motion, useMotionValue, useSpring, useTransform, AnimatePresence, MotionValue, SpringOptions } from 'framer-motion';
+import { Children, cloneElement, useEffect, useRef, useState, ReactElement } from 'react';
 
 import './Dock.css';
 
@@ -10,7 +10,7 @@ interface DockItemProps {
     className?: string;
     onClick?: () => void;
     mouseX: MotionValue<number>;
-    spring: any;
+    spring: SpringOptions;
     distance: number;
     magnification: number;
     baseItemSize: number;
@@ -75,7 +75,7 @@ function DockItem({
         >
             {Children.map(children, child => {
                 if (typeof child === 'object' && child !== null) {
-                    return cloneElement(child as any, { isHovered });
+                    return cloneElement(child as ReactElement<{ isHovered: MotionValue<number> }>, { isHovered });
                 }
                 return child;
             })}
@@ -83,7 +83,7 @@ function DockItem({
     );
 }
 
-function DockLabel({ children, className = '', ...rest }: { children: React.ReactNode; className?: string;[key: string]: any }) {
+function DockLabel({ children, className = '', ...rest }: { children: React.ReactNode; className?: string; isHovered?: MotionValue<number> }) {
     const isHovered = rest.isHovered as MotionValue<number>;
     const [isVisible, setIsVisible] = useState(false);
 
@@ -135,7 +135,7 @@ export default function Dock({
 }: {
     items: DockItemConfig[];
     className?: string;
-    spring?: any;
+    spring?: SpringOptions;
     magnification?: number;
     distance?: number;
     panelHeight?: number;

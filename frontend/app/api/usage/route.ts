@@ -20,7 +20,7 @@ function getSupabaseClient() {
 
 export async function GET(req: NextRequest) {
     const ip = getClientIp(req.headers);
-    const { allowed, remaining, reset } = await rateLimit(`usage:${ip}`, LIMIT, WINDOW_MS);
+    const { allowed } = await rateLimit(`usage:${ip}`, LIMIT, WINDOW_MS);
     if (!allowed) {
         return NextResponse.json({ error: "Too many requests" }, { status: 429 });
     }
@@ -65,7 +65,7 @@ export async function GET(req: NextRequest) {
             const dateStr = date.toISOString().split('T')[0];
             const dayName = days[date.getDay()];
 
-            const found = (data as any[])?.find((d: any) => d.day === dateStr);
+            const found = (data as Array<{ day: string; request_count: number; total_tokens: number }>)?.find((d) => d.day === dateStr);
             last7Days.push({
                 day: dayName,
                 date: dateStr,

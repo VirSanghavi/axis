@@ -1,12 +1,11 @@
 "use client";
 
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { useState, Suspense } from "react";
 import Link from 'next/link';
 import Navbar from '@/components/Navbar';
 
 function LoginForm() {
-  const router = useRouter();
   const search = useSearchParams();
   const next = search.get("next") || "/dashboard";
   const [email, setEmail] = useState("");

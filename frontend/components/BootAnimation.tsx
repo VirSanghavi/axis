@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 
 const BOOT_LOGS = [
     "[ 0.000000] axis: kernel v1.0.0-prod",

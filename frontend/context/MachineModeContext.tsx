@@ -21,7 +21,7 @@ export function MachineModeProvider({ children }: { children: React.ReactNode })
     useEffect(() => {
         const savedMode = localStorage.getItem('axis-mode') as Mode;
         if (savedMode) {
-            setMode(savedMode);
+            setTimeout(() => setMode(savedMode), 0);
         }
     }, []);
 

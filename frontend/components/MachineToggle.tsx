@@ -2,7 +2,7 @@
 
 import { usePathname } from 'next/navigation';
 import { useMachineMode } from '@/context/MachineModeContext';
-import { motion, AnimatePresence } from 'framer-motion';
+import { AnimatePresence } from 'framer-motion';
 import BootAnimation from './BootAnimation';
 
 export default function MachineToggle() {

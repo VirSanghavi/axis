@@ -18,9 +18,10 @@ export async function POST(req: Request) {
 
     try {
         event = stripe.webhooks.constructEvent(payload, signature, webhookSecret);
-    } catch (err: any) {
-        console.error(`Webhook signature verification failed: ${err.message}`);
-        return NextResponse.json({ error: err.message }, { status: 400 });
+    } catch (err: unknown) {
+        const errorMessage = err instanceof Error ? err.message : "An unknown error occurred";
+        console.error(`Webhook signature verification failed: ${errorMessage}`);
+        return NextResponse.json({ error: errorMessage }, { status: 400 });
     }
 
     const supabase = createClient(
@@ -81,8 +82,9 @@ export async function POST(req: Request) {
         }
 
         return NextResponse.json({ received: true });
-    } catch (err: any) {
-        console.error(`Webhook processing failed: ${err.message}`);
+    } catch (err: unknown) {
+        const errorMessage = err instanceof Error ? err.message : "An unknown error occurred";
+        console.error(`Webhook processing failed: ${errorMessage}`);
         return NextResponse.json({ error: "Webhook handler failed" }, { status: 500 });
     }
 }

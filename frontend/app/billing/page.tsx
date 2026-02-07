@@ -240,6 +240,3 @@ export default function BillingPage() {
     );
 }
 
-function cn(...inputs: (string | boolean | undefined | null)[]) {
-    return inputs.filter(Boolean).join(' ');
-}

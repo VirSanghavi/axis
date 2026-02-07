@@ -11,7 +11,8 @@ type SessionPayload = {
   email: string;
   sub?: string; // User ID
   role?: string;
-  [key: string]: any;
+  keyId?: string;
+  [key: string]: unknown;
 };
 
 export async function createSession(email: string, userId: string | undefined, ttlSeconds: number) {

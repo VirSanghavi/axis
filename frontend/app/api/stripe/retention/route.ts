@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth";
 import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
@@ -7,14 +7,14 @@ import { getClientIp, rateLimit } from "@/lib/rate-limit";
 const WINDOW_MS = 60 * 1000;
 const LIMIT = 5; // 5 req/min for retention offers
 
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
     const ip = getClientIp(req.headers);
-    const { allowed, remaining, reset } = await rateLimit(`retention:${ip}`, LIMIT, WINDOW_MS);
+    const { allowed } = await rateLimit(`retention:${ip}`, LIMIT, WINDOW_MS);
     if (!allowed) {
         return NextResponse.json({ error: "Too many requests" }, { status: 429 });
     }
 
-    const session = await getSessionFromRequest(req as any);
+    const session = await getSessionFromRequest(req);
     if (!session) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
@@ -58,8 +58,9 @@ export async function POST(req: Request) {
         });
 
         return NextResponse.json({ success: true, message: "Retention offer applied" });
-    } catch (error: any) {
+    } catch (error: unknown) {
+        const errorMessage = error instanceof Error ? error.message : "Internal Server Error";
         console.error(error);
-        return NextResponse.json({ error: error.message || "Internal Server Error" }, { status: 500 });
+        return NextResponse.json({ error: errorMessage }, { status: 500 });
     }
 }
