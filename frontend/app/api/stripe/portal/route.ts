@@ -33,12 +33,14 @@ export async function POST(req: NextRequest) {
     const { data: profile } = await supabase
       .from('profiles')
       .select('stripe_customer_id')
-      .eq('email', session.email)
+      .ilike('email', session.email)
       .single();
 
     if (!profile?.stripe_customer_id) {
+      console.log(`[Stripe Portal] No customer ID for ${session.email}, redirecting to /billing`);
       const url = new URL("/billing", req.url);
-      return NextResponse.redirect(url);
+      // Use 303 See Other to ensure the browser converts POST to GET
+      return NextResponse.redirect(url, { status: 303 });
     }
 
     const portalSession = await stripe.billingPortal.sessions.create({
