@@ -74,6 +74,7 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [newKeyName, setNewKeyName] = useState('');
   const [createdKey, setCreatedKey] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
   const [usageData, setUsageData] = useState<{ day: string; requests: number }[]>([]);
   const [subData, setSubData] = useState<SubscriptionData | null>(null);
   const [sessions, setSessions] = useState<SessionRecord[]>([]);
@@ -302,8 +303,22 @@ export default function Dashboard() {
                     {createdKey && (
                       <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3">
                         <div className="text-[10px] font-bold text-emerald-700 uppercase mb-1">key created</div>
-                        <code className="block bg-white p-2 text-[10px] font-mono border border-emerald-100 rounded mb-2 select-all">{createdKey}</code>
-                        <button onClick={() => setCreatedKey(null)} className="text-[9px] uppercase font-mono text-emerald-500">done</button>
+                        <div className="relative">
+                          <code className="block bg-white p-2 text-[10px] font-mono border border-emerald-100 rounded mb-2 select-all pr-12 overflow-x-auto">{createdKey}</code>
+                          <button
+                            onClick={() => {
+                              if (createdKey) {
+                                navigator.clipboard.writeText(createdKey);
+                                setCopied(true);
+                                setTimeout(() => setCopied(false), 2000);
+                              }
+                            }}
+                            className="absolute right-1 top-1 text-[9px] uppercase font-mono bg-emerald-100 hover:bg-emerald-200 text-emerald-700 px-2 py-1 rounded transition-colors"
+                          >
+                            {copied ? 'copied!' : 'copy'}
+                          </button>
+                        </div>
+                        <button onClick={() => setCreatedKey(null)} className="text-[9px] uppercase font-mono text-emerald-500 hover:text-emerald-700">done</button>
                       </div>
                     )}
 
