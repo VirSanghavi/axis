@@ -19,10 +19,25 @@ function getEffectiveInstructionsDir() {
   const axisDir = path.resolve(cwd, ".axis");
   const instructionsDir = path.resolve(axisDir, "instructions");
   const legacyDir = path.resolve(cwd, "agent-instructions");
+  const sharedContextDir = path.resolve(cwd, "shared-context", "agent-instructions");
   try {
     if (fsSync.existsSync(instructionsDir)) {
       console.error(`[ContextManager] Using instructions dir: ${instructionsDir}`);
       return instructionsDir;
+    }
+  } catch {
+  }
+  try {
+    if (fsSync.existsSync(legacyDir)) {
+      console.error(`[ContextManager] Using legacy dir: ${legacyDir}`);
+      return legacyDir;
+    }
+  } catch {
+  }
+  try {
+    if (fsSync.existsSync(sharedContextDir)) {
+      console.error(`[ContextManager] Using shared-context dir: ${sharedContextDir}`);
+      return sharedContextDir;
     }
   } catch {
   }
@@ -219,9 +234,9 @@ var NerveCenter = class {
     this.contextManager = contextManager;
     this.stateFilePath = options.stateFilePath || STATE_FILE;
     this.lockTimeout = options.lockTimeout || LOCK_TIMEOUT_DEFAULT;
-    this.projectName = options.projectName || process.env.PROJECT_NAME || "default";
-    const supabaseUrl = options.supabaseUrl || process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const supabaseKey = options.supabaseServiceRoleKey || process.env.SUPABASE_SERVICE_ROLE_KEY;
+    const hasRemoteApi = !!this.contextManager.apiUrl;
+    const supabaseUrl = options.supabaseUrl !== void 0 ? options.supabaseUrl : hasRemoteApi ? null : process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const supabaseKey = options.supabaseServiceRoleKey !== void 0 ? options.supabaseServiceRoleKey : hasRemoteApi ? null : process.env.SUPABASE_SERVICE_ROLE_KEY;
     if (supabaseUrl && supabaseKey) {
       this.supabase = createClient(supabaseUrl, supabaseKey);
       this.useSupabase = true;
@@ -234,6 +249,12 @@ var NerveCenter = class {
       this.supabase = void 0;
       this.useSupabase = false;
       logger.warn("NerveCenter: Running in local-only mode. Coordination restricted to this machine.");
+    }
+    const explicitProjectName = options.projectName || process.env.PROJECT_NAME;
+    if (explicitProjectName) {
+      this.projectName = explicitProjectName;
+    } else {
+      this.projectName = "default";
     }
     this.state = {
       locks: {},
@@ -249,21 +270,25 @@ var NerveCenter = class {
   }
   async init() {
     await this.loadState();
-    if (this.useSupabase || this.contextManager.apiUrl) {
+    if (this.projectName === "default" && (this.useSupabase || !this.contextManager.apiUrl)) {
       await this.detectProjectName();
     }
     if (this.useSupabase) {
       await this.ensureProjectId();
     }
-    if (this.contextManager.apiUrl && (!this.state.liveNotepad || this.state.liveNotepad.startsWith("Session Start:"))) {
+    if (this.contextManager.apiUrl) {
       try {
-        const { liveNotepad } = await this.callCoordination(`sessions/sync?projectName=${this.projectName}`);
-        if (liveNotepad) {
+        const { liveNotepad, projectId } = await this.callCoordination(`sessions/sync?projectName=${this.projectName}`);
+        if (projectId) {
+          this._projectId = projectId;
+          logger.info(`NerveCenter: Resolved projectId from cloud: ${this._projectId}`);
+        }
+        if (liveNotepad && (!this.state.liveNotepad || this.state.liveNotepad.startsWith("Session Start:"))) {
           this.state.liveNotepad = liveNotepad;
           logger.info(`NerveCenter: Recovered live notepad from cloud for project: ${this.projectName}`);
         }
       } catch (e) {
-        logger.warn("Failed to recover notepad from API. Using local.", e);
+        logger.warn("Failed to sync project/notepad with Remote API. Using local/fallback.", e);
       }
     }
   }
@@ -284,7 +309,7 @@ var NerveCenter = class {
     }
   }
   async ensureProjectId() {
-    if (!this.supabase) return;
+    if (!this.supabase || this._projectId) return;
     const { data: project, error } = await this.supabase.from("projects").select("id").eq("name", this.projectName).maybeSingle();
     if (error) {
       logger.error("Failed to load project", error);
@@ -355,6 +380,22 @@ var NerveCenter = class {
     return Object.values(this.state.jobs);
   }
   async getLocks() {
+    if (this.contextManager.apiUrl) {
+      if (!this.useSupabase || !this.supabase) {
+        try {
+          const res = await this.callCoordination(`locks?projectName=${this.projectName}`);
+          return (res.locks || []).map((row) => ({
+            agentId: row.agent_id,
+            filePath: row.file_path,
+            intent: row.intent,
+            userPrompt: row.user_prompt,
+            timestamp: Date.parse(row.updated_at || row.timestamp)
+          }));
+        } catch (e) {
+          logger.error("Failed to fetch locks from API", e);
+        }
+      }
+    }
     if (this.useSupabase && this.supabase && this._projectId) {
       try {
         await this.supabase.rpc("clean_stale_locks", {
@@ -385,7 +426,7 @@ var NerveCenter = class {
           timestamp: Date.parse(row.updated_at || row.timestamp)
         }));
       } catch (e) {
-        logger.error("Failed to fetch locks from API", e);
+        logger.error("Failed to fetch locks from API in fallback", e);
       }
     }
     return Object.values(this.state.locks);
@@ -411,11 +452,15 @@ var NerveCenter = class {
     }
     if (this.contextManager.apiUrl) {
       try {
-        await this.callCoordination("sessions/sync", "POST", {
+        const res = await this.callCoordination("sessions/sync", "POST", {
           title: `Current Session: ${this.projectName}`,
           context: this.state.liveNotepad,
           metadata: { source: "mcp-server-live" }
         });
+        if (res.projectId && !this._projectId) {
+          this._projectId = res.projectId;
+          logger.info(`NerveCenter: Captured projectId from sync API: ${this._projectId}`);
+        }
       } catch (e) {
         logger.warn("Failed to sync notepad to remote API", e);
       }
@@ -659,50 +704,84 @@ ${notepad}`;
   // --- Decision & Orchestration ---
   async proposeFileAccess(agentId, filePath, intent, userPrompt) {
     return await this.mutex.runExclusive(async () => {
-      if (this.useSupabase && this.supabase && this._projectId) {
-        const { data, error } = await this.supabase.rpc("try_acquire_lock", {
-          p_project_id: this._projectId,
-          p_file_path: filePath,
-          p_agent_id: agentId,
-          p_intent: intent,
-          p_user_prompt: userPrompt,
-          p_timeout_seconds: Math.floor(this.lockTimeout / 1e3)
-        });
-        if (error) {
-          logger.error("Failed to acquire lock via RPC", error);
-          return { status: "ERROR", message: "Database error" };
-        }
-        if (data.status === "GRANTED") {
+      if (this.contextManager.apiUrl && !this.useSupabase) {
+        try {
+          const locks = await this.getLocks();
+          const existing = locks.find((l) => l.filePath === filePath);
+          if (existing) {
+            const isStale = Date.now() - existing.timestamp > this.lockTimeout;
+            if (!isStale && existing.agentId !== agentId) {
+              return {
+                status: "REQUIRES_ORCHESTRATION",
+                message: `Conflict: File '${filePath}' is currently locked by '${existing.agentId}'`,
+                currentLock: existing
+              };
+            }
+          }
+          const result = await this.callCoordination("locks", "POST", {
+            action: "lock",
+            filePath,
+            agentId,
+            intent,
+            userPrompt
+          });
           await this.appendToNotepad(`
 - [LOCK] ${agentId} locked ${filePath}
   Intent: ${intent}`);
           return { status: "GRANTED", message: `Access granted for ${filePath}` };
+        } catch (e) {
+          logger.error("API lock failed", e);
         }
-        return {
-          status: "REQUIRES_ORCHESTRATION",
-          message: `Conflict: File '${filePath}' is currently locked by '${data.owner_id}'`,
-          currentLock: {
-            agentId: data.owner_id,
-            filePath,
-            intent: data.intent,
-            timestamp: Date.parse(data.updated_at)
+      } else if (this.useSupabase && this.supabase && this._projectId) {
+        try {
+          const { data: existing, error: fetchError } = await this.supabase.from("locks").select("*").eq("project_id", this._projectId).eq("file_path", filePath).maybeSingle();
+          if (fetchError) throw fetchError;
+          if (existing) {
+            const isStale = Date.now() - Date.parse(existing.updated_at) > this.lockTimeout;
+            if (!isStale && existing.agent_id !== agentId) {
+              return {
+                status: "REQUIRES_ORCHESTRATION",
+                message: `Conflict: File '${filePath}' is currently locked by '${existing.agent_id}'`,
+                currentLock: {
+                  agentId: existing.agent_id,
+                  filePath,
+                  intent: existing.intent,
+                  timestamp: Date.parse(existing.updated_at)
+                }
+              };
+            }
           }
-        };
-      }
-      const locks = await this.getLocks();
-      const existing = locks.find((l) => l.filePath === filePath);
-      if (existing) {
-        const isStale = Date.now() - existing.timestamp > this.lockTimeout;
-        if (!isStale && existing.agentId !== agentId) {
-          return {
-            status: "REQUIRES_ORCHESTRATION",
-            message: `Conflict: File '${filePath}' is currently locked by '${existing.agentId}'`,
-            currentLock: existing
-          };
+          const { error: upsertError } = await this.supabase.from("locks").upsert({
+            project_id: this._projectId,
+            file_path: filePath,
+            agent_id: agentId,
+            intent,
+            user_prompt: userPrompt,
+            updated_at: (/* @__PURE__ */ new Date()).toISOString()
+          });
+          if (upsertError) throw upsertError;
+          await this.appendToNotepad(`
+- [LOCK] ${agentId} locked ${filePath}
+  Intent: ${intent}`);
+          return { status: "GRANTED", message: `Access granted for ${filePath}` };
+        } catch (e) {
+          logger.warn("[NerveCenter] Lock DB operation failed. Falling back to API or local.", e);
         }
       }
       if (this.contextManager.apiUrl) {
         try {
+          const locks = await this.getLocks();
+          const existing = locks.find((l) => l.filePath === filePath);
+          if (existing) {
+            const isStale = Date.now() - existing.timestamp > this.lockTimeout;
+            if (!isStale && existing.agentId !== agentId) {
+              return {
+                status: "REQUIRES_ORCHESTRATION",
+                message: `Conflict: File '${filePath}' is currently locked by '${existing.agentId}'`,
+                currentLock: existing
+              };
+            }
+          }
           await this.callCoordination("locks", "POST", {
             action: "lock",
             filePath,
@@ -711,9 +790,23 @@ ${notepad}`;
             userPrompt
           });
         } catch (e) {
-          logger.error("API lock failed", e);
+          logger.error("API lock failed in fallback", e);
+          this.state.locks[filePath] = { agentId, filePath, intent, userPrompt, timestamp: Date.now() };
+          await this.saveState();
         }
       } else {
+        const locks = await this.getLocks();
+        const existing = locks.find((l) => l.filePath === filePath);
+        if (existing) {
+          const isStale = Date.now() - existing.timestamp > this.lockTimeout;
+          if (!isStale && existing.agentId !== agentId) {
+            return {
+              status: "REQUIRES_ORCHESTRATION",
+              message: `Conflict: File '${filePath}' is currently locked by '${existing.agentId}'`,
+              currentLock: existing
+            };
+          }
+        }
         this.state.locks[filePath] = { agentId, filePath, intent, userPrompt, timestamp: Date.now() };
         await this.saveState();
       }
@@ -788,6 +881,17 @@ ${conventions}`;
   }
   // --- Billing & Usage ---
   async getSubscriptionStatus(email) {
+    if (this.contextManager.apiUrl) {
+      if (!this.useSupabase || !this.supabase) {
+        try {
+          const result = await this.callCoordination(`usage?email=${encodeURIComponent(email)}`);
+          return result;
+        } catch (e) {
+          logger.error("Failed to fetch subscription status via API", e);
+          return { error: `Failed to fetch subscription status: ${e.message}` };
+        }
+      }
+    }
     if (this.useSupabase && this.supabase) {
       const { data: profile, error } = await this.supabase.from("profiles").select("subscription_status, stripe_customer_id, current_period_end").eq("email", email).single();
       if (error || !profile) {
@@ -801,26 +905,23 @@ ${conventions}`;
         validUntil: profile.current_period_end
       };
     }
-    if (this.contextManager.apiUrl) {
-      try {
-        return await this.callCoordination("usage");
-      } catch (e) {
-        logger.error("Failed to fetch subscription status via API", e);
-      }
-    }
     return { error: "Coordination not configured." };
   }
   async getUsageStats(email) {
+    if (this.contextManager.apiUrl) {
+      if (!this.useSupabase || !this.supabase) {
+        try {
+          const result = await this.callCoordination(`usage?email=${encodeURIComponent(email)}`);
+          return { email, usageCount: result.usageCount || 0 };
+        } catch (e) {
+          logger.error("Failed to fetch usage stats via API", e);
+          return { error: `Failed to fetch usage stats: ${e.message}` };
+        }
+      }
+    }
     if (this.useSupabase && this.supabase) {
       const { data: profile } = await this.supabase.from("profiles").select("usage_count").eq("email", email).single();
       return { email, usageCount: profile?.usage_count || 0 };
-    }
-    if (this.contextManager.apiUrl) {
-      try {
-        return await this.callCoordination("usage");
-      } catch (e) {
-        logger.error("Failed to fetch usage stats via API", e);
-      }
     }
     return { error: "Coordination not configured." };
   }
@@ -883,7 +984,7 @@ var RagEngine = class {
       const embedding = resp.data[0].embedding;
       const { data, error } = await this.supabase.rpc("match_embeddings", {
         query_embedding: embedding,
-        match_threshold: 0.5,
+        match_threshold: 0.1,
         match_count: limit,
         p_project_id: this.projectId
       });
@@ -908,9 +1009,10 @@ var manager = new ContextManager(
   process.env.SHARED_CONTEXT_API_URL || "https://aicontext.vercel.app/api/v1",
   process.env.AXIS_API_KEY || process.env.SHARED_CONTEXT_API_SECRET
 );
+var useRemoteApiOnly = !!process.env.SHARED_CONTEXT_API_URL || !!process.env.AXIS_API_KEY;
 var nerveCenter = new NerveCenter(manager, {
-  supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL,
-  supabaseServiceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
+  supabaseUrl: useRemoteApiOnly ? null : process.env.NEXT_PUBLIC_SUPABASE_URL,
+  supabaseServiceRoleKey: useRemoteApiOnly ? null : process.env.SUPABASE_SERVICE_ROLE_KEY,
   projectName: process.env.PROJECT_NAME || "default"
 });
 var ragEngine;
@@ -1026,35 +1128,35 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     tools: [
       {
         name: READ_CONTEXT_TOOL,
-        description: "Read the shared context files (context.md, conventions.md, activity.md)",
+        description: "**READ THIS FIRST** to understand the project's architecture, coding conventions, and active state.\n- Returns the content of core context files like `context.md` (Project Goals), `conventions.md` (Style Guide), or `activity.md`.\n- Usage: Call with `filename='context.md'` effectively.\n- Note: If you need the *current* runtime state (active locks, jobs), use the distinct resource `mcp://context/current` instead.",
         inputSchema: {
           type: "object",
           properties: {
-            filename: { type: "string", description: "The name of the file to read (e.g., 'context.md')" }
+            filename: { type: "string", description: "The name of the file to read (e.g., 'context.md', 'conventions.md')" }
           },
           required: ["filename"]
         }
       },
       {
         name: UPDATE_CONTEXT_TOOL,
-        description: "Update a shared context file",
+        description: "**APPEND OR OVERWRITE** shared context files.\n- Use this to update the project's long-term memory (e.g., adding a new convention, updating the architectural goal).\n- For short-term updates (like 'I just fixed bug X'), use `update_shared_context` (Notepad) instead.\n- Supports `append: true` (default: false) to add to the end of a file.",
         inputSchema: {
           type: "object",
           properties: {
-            filename: { type: "string", description: "File to update" },
-            content: { type: "string", description: "New content" },
-            append: { type: "boolean", description: "Whether to append or overwrite (default: overwrite)" }
+            filename: { type: "string", description: "File to update (e.g. 'activity.md')" },
+            content: { type: "string", description: "The new content to write or append." },
+            append: { type: "boolean", description: "Whether to append to the end of the file (true) or overwrite it (false). Default: false." }
           },
           required: ["filename", "content"]
         }
       },
       {
         name: SEARCH_CONTEXT_TOOL,
-        description: "Search the codebase using vector similarity.",
+        description: "**SEMANTIC SEARCH** for the codebase.\n- Uses vector similarity to find relevant code snippets or documentation.\n- Best for: 'Where is the auth logic?', 'How do I handle billing?', 'Find the class that manages locks'.\n- Note: This searches *indexed* content only. For exact string matches, use `grep` (if available) or `warpgrep`.",
         inputSchema: {
           type: "object",
           properties: {
-            query: { type: "string", description: "Search query" }
+            query: { type: "string", description: "Natural language search query." }
           },
           required: ["query"]
         }
@@ -1062,7 +1164,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       // --- Billing & Usage ---
       {
         name: "get_subscription_status",
-        description: "Check the subscription status of a user (Pro vs Free).",
+        description: "**BILLING CHECK**: specific to the Axis business logic.\n- Returns the user's subscription tier (Pro vs Free), Stripe customer ID, and current period end.\n- Critical for gating features behind paywalls.\n- Returns 'Profile not found' if the user doesn't exist in the database.",
         inputSchema: {
           type: "object",
           properties: {
@@ -1073,7 +1175,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "get_usage_stats",
-        description: "Get API usage statistics for a user.",
+        description: "**API USAGE**: Returns a user's token usage and request counts.\n- Useful for debugging rate limits or explaining quota usage to users.",
         inputSchema: {
           type: "object",
           properties: {
@@ -1084,11 +1186,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "search_docs",
-        description: "Search the Axis documentation.",
+        description: "**DOCUMENTATION SEARCH**: Searches the official Axis documentation (if indexed).\n- Use this when you need info on *how* to use Axis features, not just codebase structure.\n- Falls back to local RAG search if the remote API is unavailable.",
         inputSchema: {
           type: "object",
           properties: {
-            query: { type: "string", description: "Search query." }
+            query: { type: "string", description: "Natural language search query." }
           },
           required: ["query"]
         }
@@ -1096,7 +1198,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       // --- Decision & Orchestration ---
       {
         name: "propose_file_access",
-        description: "Request a lock on a file. Checks for conflicts with other agents.",
+        description: "**CRITICAL: REQUEST FILE LOCK**.\n- **MUST** be called *before* editing any file to prevent conflicts with other agents.\n- Checks if another agent currently holds a lock.\n- Returns `GRANTED` if safe to proceed, or `REQUIRES_ORCHESTRATION` if someone else is editing.\n- Usage: Provide your `agentId` (e.g., 'cursor-agent'), `filePath` (absolute), and `intent` (what you are doing).\n- Note: Locks expire after 30 minutes. Use `force_unlock` only if you are certain a lock is stale and blocking progress.",
         inputSchema: {
           type: "object",
           properties: {
@@ -1110,7 +1212,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "update_shared_context",
-        description: "Write to the in-memory Live Notepad.",
+        description: "**LIVE NOTEPAD**: The project's short-term working memory.\n- **ALWAYS** call this after completing a significant step (e.g., 'Fixed bug in auth.ts', 'Ran tests, all passed').\n- This content is visible to *all* other agents immediately.\n- Think of this as a team chat or 'standup' update.",
         inputSchema: {
           type: "object",
           properties: {
@@ -1123,32 +1225,32 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       // --- Permanent Memory ---
       {
         name: "finalize_session",
-        description: "End the session, archive the notepad, and clear locks.",
+        description: "**END OF SESSION HOUSEKEEPING**.\n- Archives the current Live Notepad to a permanent session log.\n- Clears all active locks and completed jobs.\n- Resets the Live Notepad for the next session.\n- Call this when the user says 'we are done' or 'start fresh'.",
         inputSchema: { type: "object", properties: {}, required: [] }
       },
       {
         name: "get_project_soul",
-        description: "Get high-level project goals and context.",
+        description: "**HIGH-LEVEL INTENT**: Returns the 'Soul' of the project.\n- Combines `context.md`, `conventions.md`, and other core directives into a single prompt.\n- Use this at the *start* of a conversation to ground yourself in the project's reality.",
         inputSchema: { type: "object", properties: {}, required: [] }
       },
       // --- Job Board (Task Orchestration) ---
       {
         name: "post_job",
-        description: "Post a new job/ticket. Supports priority and dependencies.",
+        description: "**CREATE TICKET**: Post a new task to the Job Board.\n- Use this when you identify work that needs to be done but *cannot* be done right now (e.g., refactoring, new feature).\n- Supports `dependencies` (list of other Job IDs that must be done first).\n- Priority: low, medium, high, critical.",
         inputSchema: {
           type: "object",
           properties: {
             title: { type: "string" },
             description: { type: "string" },
             priority: { type: "string", enum: ["low", "medium", "high", "critical"] },
-            dependencies: { type: "array", items: { type: "string" } }
+            dependencies: { type: "array", items: { type: "string" }, description: "Array of Job IDs that must be completed before this job can be claimed." }
           },
           required: ["title", "description"]
         }
       },
       {
         name: "cancel_job",
-        description: "Cancel a job that is no longer needed.",
+        description: "**KILL TICKET**: Cancel a job that is no longer needed.\n- Requires `jobId` and a `reason`.",
         inputSchema: {
           type: "object",
           properties: {
@@ -1160,7 +1262,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "force_unlock",
-        description: "Admin tool to forcibly remove a lock from a file.",
+        description: "**ADMIN OVERRIDE**: Break a file lock.\n- **WARNING**: Only use this if a lock is clearly stale or the locking agent has crashed.\n- Will forcibly remove the lock from the database.",
         inputSchema: {
           type: "object",
           properties: {
@@ -1172,7 +1274,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "claim_next_job",
-        description: "Auto-assign the next available 'todo' job to yourself.",
+        description: "**AUTO-ASSIGNMENT**: Ask the Job Board for the next most important task.\n- Respects priority (Critical > High > ...) and dependencies (won't assign a job if its deps aren't done).\n- Returns the Job object if successful, or 'NO_JOBS_AVAILABLE'.\n- Use this when you are idle and looking for work.",
         inputSchema: {
           type: "object",
           properties: {
@@ -1183,7 +1285,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "complete_job",
-        description: "Mark your assigned job as done.",
+        description: "**CLOSE TICKET**: Mark a job as done.\n- Requires `outcome` (what was done).\n- If you are not the assigned agent, you must provide the `completionKey`.",
         inputSchema: {
           type: "object",
           properties: {
@@ -1197,7 +1299,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "index_file",
-        description: "Force re-index a file into the RAG vector database.",
+        description: "**UPDATE SEARCH INDEX**: Add a file's content to the RAG vector database.\n- Call this *immediately* after creating a new file or significantly refactoring an existing one.\n- Ensures future `search_codebase` calls return up-to-date results.",
         inputSchema: {
           type: "object",
           properties: {
@@ -1283,9 +1385,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (name === "search_docs") {
     const query = String(args?.query);
     try {
-      const formatted = await manager.searchContext(query);
+      const formatted = await manager.searchContext(query, nerveCenter.currentProjectName);
       return { content: [{ type: "text", text: formatted }] };
     } catch (err) {
+      if (ragEngine) {
+        const results = await ragEngine.search(query);
+        return { content: [{ type: "text", text: results.join("\n---\n") }] };
+      }
       return {
         content: [{ type: "text", text: `Search Error: ${err}` }],
         isError: true

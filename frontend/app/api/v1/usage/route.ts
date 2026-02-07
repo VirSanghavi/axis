@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth";
 import { createClient } from "@supabase/supabase-js";
+import { resolveUserId } from "@/lib/db-utils";
 
 const supabase = createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL || "",
@@ -12,11 +13,32 @@ export async function GET(req: NextRequest) {
     if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     try {
+        const { searchParams } = new URL(req.url);
+        const emailParam = searchParams.get("email");
+        
+        // Determine user ID: use email lookup if provided, otherwise use session
+        let userId: string;
+        let userEmail: string;
+
+        if (emailParam) {
+            // Look up user by email (for MCP tools) - use profiles table
+            const resolvedId = await resolveUserId(emailParam);
+            if (!resolvedId) {
+                return NextResponse.json({ error: "User not found" }, { status: 404 });
+            }
+            userId = resolvedId;
+            userEmail = emailParam;
+        } else {
+            // Use session (for web UI)
+            userId = session.sub!;
+            userEmail = session.email || "unknown";
+        }
+
         // 1. Get Profile (Subscription Status)
         const { data: profile, error: profileError } = await supabase
             .from("profiles")
             .select("subscription_status, current_period_end")
-            .eq("id", session.sub)
+            .eq("id", userId)
             .single();
 
         if (profileError) throw profileError;
@@ -25,7 +47,7 @@ export async function GET(req: NextRequest) {
         const { count, error: usageError } = await supabase
             .from("api_usage")
             .select("*", { count: 'exact', head: true })
-            .eq("user_id", session.sub);
+            .eq("user_id", userId);
 
         if (usageError) throw usageError;
 
@@ -33,7 +55,7 @@ export async function GET(req: NextRequest) {
             (profile.current_period_end && new Date(profile.current_period_end) > new Date());
 
         return NextResponse.json({
-            email: session.email,
+            email: userEmail,
             plan: isActive ? "Pro" : "Free",
             status: profile.subscription_status || "free",
             validUntil: profile.current_period_end,

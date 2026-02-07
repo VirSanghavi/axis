@@ -4,6 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 import OpenAI from "openai";
 import { logUsage } from "@/lib/usage";
 import { getClientIp, rateLimit } from "@/lib/rate-limit";
+import { getOrCreateProjectId } from "@/lib/project-utils";
 
 const WINDOW_MS = 60 * 1000;
 const LIMIT = 50; // Increased limit for syncs
@@ -21,16 +22,21 @@ export async function GET(req: NextRequest) {
             process.env.SUPABASE_SERVICE_ROLE_KEY || ""
         );
 
+        // Auto-create project if it doesn't exist
+        const projectId = await getOrCreateProjectId(projectName, session.sub!);
+        
         const { data: project, error } = await supabase
             .from("projects")
-            .select("live_notepad")
-            .eq("name", projectName)
-            .eq("owner_id", session.sub)
-            .maybeSingle();
+            .select("id, live_notepad")
+            .eq("id", projectId)
+            .single();
 
         if (error) throw error;
 
-        return NextResponse.json({ liveNotepad: project?.live_notepad || "" });
+        return NextResponse.json({
+            liveNotepad: project?.live_notepad || "",
+            projectId: project.id
+        });
     } catch (e: any) {
         return NextResponse.json({ error: e.message }, { status: 500 });
     }
@@ -52,7 +58,8 @@ export async function POST(req: NextRequest) {
 
     try {
         const body = await req.json();
-        const { title, context, projectId, metadata } = body;
+        const { title, context, metadata, projectName = "default" } = body;
+        let { projectId } = body;
 
         if (!title || !context) {
             return NextResponse.json({ error: "Title and context are required" }, { status: 400 });
@@ -62,6 +69,16 @@ export async function POST(req: NextRequest) {
             process.env.NEXT_PUBLIC_SUPABASE_URL || "",
             process.env.SUPABASE_SERVICE_ROLE_KEY || ""
         );
+
+        // Auto-resolve or create project if missing
+        if (!projectId) {
+            try {
+                projectId = await getOrCreateProjectId(projectName, session.sub!);
+            } catch (e: any) {
+                console.error("Failed to resolve project:", e);
+                return NextResponse.json({ error: "Failed to resolve project" }, { status: 500 });
+            }
+        }
 
         const openai = new OpenAI({
             apiKey: process.env.OPENAI_API_KEY,
@@ -115,6 +132,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({
             success: true,
             sessionId: sessionRecord.id,
+            projectId,
             message: "Context synced and indexed for RAG"
         });
 

@@ -4,6 +4,7 @@ import { getSessionFromRequest } from "@/lib/auth";
 import { createClient } from "@supabase/supabase-js";
 import OpenAI from "openai";
 import { logUsage } from "@/lib/usage";
+import { getOrCreateProjectId } from "@/lib/project-utils";
 
 // Force dynamic to ensure we don't cache auth
 export const dynamic = 'force-dynamic';
@@ -30,20 +31,9 @@ export async function POST(req: NextRequest) {
     });
 
     try {
-        // Resolve Project ID
-        // If the user didn't specify a project name, default to 'default'
+        // Resolve Project ID - auto-creates if it doesn't exist
         const effectiveProjectName = projectName || "default";
-
-        const { data: project, error: projectError } = await supabase
-            .from("projects")
-            .select("id")
-            .eq("user_id", session.sub) // session.sub is user_id
-            .eq("name", effectiveProjectName)
-            .single();
-
-        if (projectError || !project) {
-            return NextResponse.json({ error: `Project '${effectiveProjectName}' not found` }, { status: 404 });
-        }
+        const projectId = await getOrCreateProjectId(effectiveProjectName, session.sub!);
 
         // Generate Embedding
         const embeddingResponse = await openai.embeddings.create({
@@ -57,7 +47,7 @@ export async function POST(req: NextRequest) {
             query_embedding: embedding,
             match_threshold: 0.5,
             match_count: 5,
-            p_project_id: project.id
+            p_project_id: projectId
         });
 
         if (searchError) {

@@ -9,6 +9,7 @@ function getEffectiveInstructionsDir() {
     const axisDir = path.resolve(cwd, ".axis");
     const instructionsDir = path.resolve(axisDir, "instructions");
     const legacyDir = path.resolve(cwd, "agent-instructions");
+    const sharedContextDir = path.resolve(cwd, "shared-context", "agent-instructions");
 
     // Prefer .axis/instructions if it exists, otherwise fallback
     try {
@@ -19,6 +20,23 @@ function getEffectiveInstructionsDir() {
         }
     } catch { }
 
+    // Check legacy dir in workspace root
+    try {
+        if (fsSync.existsSync(legacyDir)) {
+            console.error(`[ContextManager] Using legacy dir: ${legacyDir}`);
+            return legacyDir;
+        }
+    } catch { }
+
+    // Fallback to shared-context/agent-instructions if it exists
+    try {
+        if (fsSync.existsSync(sharedContextDir)) {
+            console.error(`[ContextManager] Using shared-context dir: ${sharedContextDir}`);
+            return sharedContextDir;
+        }
+    } catch { }
+
+    // Final fallback to legacy dir (even if it doesn't exist, we'll create it)
     console.error(`[ContextManager] Fallback to legacy dir: ${legacyDir}`);
     return legacyDir;
 }

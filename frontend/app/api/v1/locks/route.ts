@@ -1,31 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth";
 import { createClient } from "@supabase/supabase-js";
+import { getOrCreateProjectId } from "@/lib/project-utils";
 
 const supabase = createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL || "",
     process.env.SUPABASE_SERVICE_ROLE_KEY || ""
 );
-
-async function getOrCreateProjectId(projectName: string, userId: string) {
-    const { data: project } = await supabase
-        .from("projects")
-        .select("id")
-        .eq("name", projectName)
-        .eq("owner_id", userId)
-        .maybeSingle();
-
-    if (project?.id) return project.id;
-
-    const { data: created, error } = await supabase
-        .from("projects")
-        .insert({ name: projectName, owner_id: userId })
-        .select("id")
-        .single();
-
-    if (error) throw error;
-    return created.id;
-}
 
 export async function GET(req: NextRequest) {
     const session = await getSessionFromRequest(req);

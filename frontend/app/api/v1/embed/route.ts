@@ -4,6 +4,7 @@ import { getSessionFromRequest } from "@/lib/auth";
 import { createClient } from "@supabase/supabase-js";
 import OpenAI from "openai";
 import { logUsage } from "@/lib/usage";
+import { getOrCreateProjectId } from "@/lib/project-utils";
 
 export const dynamic = 'force-dynamic';
 
@@ -31,40 +32,8 @@ export async function POST(req: NextRequest) {
     try {
         const effectiveProjectName = projectName || "default";
 
-        // 1. Resolve Project
-        let { data: project, error: projectError } = await supabase
-            .from("projects")
-            .select("id")
-            .eq("user_id", session.sub)
-            .eq("name", effectiveProjectName)
-            .maybeSingle();
-
-        // If project doesn't exist for 'default', should we create it?
-        // For now, let's fail if not found to correct 'axis-init' flow.
-        if (projectError) {
-            console.error("Project lookup error:", projectError);
-            return NextResponse.json({ error: "Project lookup failed" }, { status: 500 });
-        }
-
-        if (!project) {
-            // Auto-create default project if missing?
-            // The NerveCenter logic used to create it.
-            // Let's create it to be safe and seamless.
-            const { data: newProject, error: createError } = await supabase
-                .from("projects")
-                .insert({
-                    user_id: session.sub,
-                    name: effectiveProjectName,
-                    description: "Auto-created via Remote RAG"
-                })
-                .select("id")
-                .single();
-
-            if (createError || !newProject) {
-                return NextResponse.json({ error: `Project '${effectiveProjectName}' not found and creation failed` }, { status: 404 });
-            }
-            project = newProject;
-        }
+        // 1. Resolve Project - auto-creates if it doesn't exist
+        const projectId = await getOrCreateProjectId(effectiveProjectName, session.sub!);
 
         // 2. Process Items
         // We'll process sequentially or strictly limited parallel to avoid rate limits
@@ -83,7 +52,7 @@ export async function POST(req: NextRequest) {
                 await supabase
                     .from("embeddings")
                     .delete()
-                    .eq("project_id", project.id)
+                    .eq("project_id", projectId)
                     .contains("metadata", { filePath });
             }
 
@@ -98,7 +67,7 @@ export async function POST(req: NextRequest) {
             const { error: insertError } = await supabase
                 .from("embeddings")
                 .insert({
-                    project_id: project.id,
+                    project_id: projectId,
                     content,
                     embedding,
                     metadata

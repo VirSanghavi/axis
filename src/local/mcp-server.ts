@@ -25,9 +25,14 @@ const manager = new ContextManager(
   process.env.SHARED_CONTEXT_API_URL || "https://aicontext.vercel.app/api/v1",
   process.env.AXIS_API_KEY || process.env.SHARED_CONTEXT_API_SECRET
 );
+
+// For customer deployments: Only use Supabase if explicitly enabled AND API URL is not the primary
+// If SHARED_CONTEXT_API_URL is set, prioritize remote API (customer mode)
+// Only use direct Supabase if API URL is not set (development mode)
+const useRemoteApiOnly = !!process.env.SHARED_CONTEXT_API_URL || !!process.env.AXIS_API_KEY;
 const nerveCenter = new NerveCenter(manager, {
-  supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL,
-  supabaseServiceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
+  supabaseUrl: useRemoteApiOnly ? null : process.env.NEXT_PUBLIC_SUPABASE_URL,
+  supabaseServiceRoleKey: useRemoteApiOnly ? null : process.env.SUPABASE_SERVICE_ROLE_KEY,
   projectName: process.env.PROJECT_NAME || "default"
 });
 
@@ -169,35 +174,35 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     tools: [
       {
         name: READ_CONTEXT_TOOL,
-        description: "Read the shared context files (context.md, conventions.md, activity.md)",
+        description: "**READ THIS FIRST** to understand the project's architecture, coding conventions, and active state.\n- Returns the content of core context files like `context.md` (Project Goals), `conventions.md` (Style Guide), or `activity.md`.\n- Usage: Call with `filename='context.md'` effectively.\n- Note: If you need the *current* runtime state (active locks, jobs), use the distinct resource `mcp://context/current` instead.",
         inputSchema: {
           type: "object",
           properties: {
-            filename: { type: "string", description: "The name of the file to read (e.g., 'context.md')" }
+            filename: { type: "string", description: "The name of the file to read (e.g., 'context.md', 'conventions.md')" }
           },
           required: ["filename"]
         },
       },
       {
         name: UPDATE_CONTEXT_TOOL,
-        description: "Update a shared context file",
+        description: "**APPEND OR OVERWRITE** shared context files.\n- Use this to update the project's long-term memory (e.g., adding a new convention, updating the architectural goal).\n- For short-term updates (like 'I just fixed bug X'), use `update_shared_context` (Notepad) instead.\n- Supports `append: true` (default: false) to add to the end of a file.",
         inputSchema: {
           type: "object",
           properties: {
-            filename: { type: "string", description: "File to update" },
-            content: { type: "string", description: "New content" },
-            append: { type: "boolean", description: "Whether to append or overwrite (default: overwrite)" }
+            filename: { type: "string", description: "File to update (e.g. 'activity.md')" },
+            content: { type: "string", description: "The new content to write or append." },
+            append: { type: "boolean", description: "Whether to append to the end of the file (true) or overwrite it (false). Default: false." }
           },
           required: ["filename", "content"],
         },
       },
       {
         name: SEARCH_CONTEXT_TOOL,
-        description: "Search the codebase using vector similarity.",
+        description: "**SEMANTIC SEARCH** for the codebase.\n- Uses vector similarity to find relevant code snippets or documentation.\n- Best for: 'Where is the auth logic?', 'How do I handle billing?', 'Find the class that manages locks'.\n- Note: This searches *indexed* content only. For exact string matches, use `grep` (if available) or `warpgrep`.",
         inputSchema: {
           type: "object",
           properties: {
-            query: { type: "string", description: "Search query" },
+            query: { type: "string", description: "Natural language search query." },
           },
           required: ["query"],
         },
@@ -205,7 +210,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       // --- Billing & Usage ---
       {
         name: "get_subscription_status",
-        description: "Check the subscription status of a user (Pro vs Free).",
+        description: "**BILLING CHECK**: specific to the Axis business logic.\n- Returns the user's subscription tier (Pro vs Free), Stripe customer ID, and current period end.\n- Critical for gating features behind paywalls.\n- Returns 'Profile not found' if the user doesn't exist in the database.",
         inputSchema: {
           type: "object",
           properties: {
@@ -216,7 +221,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "get_usage_stats",
-        description: "Get API usage statistics for a user.",
+        description: "**API USAGE**: Returns a user's token usage and request counts.\n- Useful for debugging rate limits or explaining quota usage to users.",
         inputSchema: {
           type: "object",
           properties: {
@@ -227,11 +232,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "search_docs",
-        description: "Search the Axis documentation.",
+        description: "**DOCUMENTATION SEARCH**: Searches the official Axis documentation (if indexed).\n- Use this when you need info on *how* to use Axis features, not just codebase structure.\n- Falls back to local RAG search if the remote API is unavailable.",
         inputSchema: {
           type: "object",
           properties: {
-            query: { type: "string", description: "Search query." }
+            query: { type: "string", description: "Natural language search query." }
           },
           required: ["query"]
         }
@@ -239,7 +244,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       // --- Decision & Orchestration ---
       {
         name: "propose_file_access",
-        description: "Request a lock on a file. Checks for conflicts with other agents.",
+        description: "**CRITICAL: REQUEST FILE LOCK**.\n- **MUST** be called *before* editing any file to prevent conflicts with other agents.\n- Checks if another agent currently holds a lock.\n- Returns `GRANTED` if safe to proceed, or `REQUIRES_ORCHESTRATION` if someone else is editing.\n- Usage: Provide your `agentId` (e.g., 'cursor-agent'), `filePath` (absolute), and `intent` (what you are doing).\n- Note: Locks expire after 30 minutes. Use `force_unlock` only if you are certain a lock is stale and blocking progress.",
         inputSchema: {
           type: "object",
           properties: {
@@ -253,7 +258,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "update_shared_context",
-        description: "Write to the in-memory Live Notepad.",
+        description: "**LIVE NOTEPAD**: The project's short-term working memory.\n- **ALWAYS** call this after completing a significant step (e.g., 'Fixed bug in auth.ts', 'Ran tests, all passed').\n- This content is visible to *all* other agents immediately.\n- Think of this as a team chat or 'standup' update.",
         inputSchema: {
           type: "object",
           properties: {
@@ -266,32 +271,32 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       // --- Permanent Memory ---
       {
         name: "finalize_session",
-        description: "End the session, archive the notepad, and clear locks.",
+        description: "**END OF SESSION HOUSEKEEPING**.\n- Archives the current Live Notepad to a permanent session log.\n- Clears all active locks and completed jobs.\n- Resets the Live Notepad for the next session.\n- Call this when the user says 'we are done' or 'start fresh'.",
         inputSchema: { type: "object", properties: {}, required: [] }
       },
       {
         name: "get_project_soul",
-        description: "Get high-level project goals and context.",
+        description: "**HIGH-LEVEL INTENT**: Returns the 'Soul' of the project.\n- Combines `context.md`, `conventions.md`, and other core directives into a single prompt.\n- Use this at the *start* of a conversation to ground yourself in the project's reality.",
         inputSchema: { type: "object", properties: {}, required: [] }
       },
       // --- Job Board (Task Orchestration) ---
       {
         name: "post_job",
-        description: "Post a new job/ticket. Supports priority and dependencies.",
+        description: "**CREATE TICKET**: Post a new task to the Job Board.\n- Use this when you identify work that needs to be done but *cannot* be done right now (e.g., refactoring, new feature).\n- Supports `dependencies` (list of other Job IDs that must be done first).\n- Priority: low, medium, high, critical.",
         inputSchema: {
           type: "object",
           properties: {
             title: { type: "string" },
             description: { type: "string" },
             priority: { type: "string", enum: ["low", "medium", "high", "critical"] },
-            dependencies: { type: "array", items: { type: "string" } }
+            dependencies: { type: "array", items: { type: "string" }, description: "Array of Job IDs that must be completed before this job can be claimed." }
           },
           required: ["title", "description"]
         }
       },
       {
         name: "cancel_job",
-        description: "Cancel a job that is no longer needed.",
+        description: "**KILL TICKET**: Cancel a job that is no longer needed.\n- Requires `jobId` and a `reason`.",
         inputSchema: {
           type: "object",
           properties: {
@@ -303,7 +308,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "force_unlock",
-        description: "Admin tool to forcibly remove a lock from a file.",
+        description: "**ADMIN OVERRIDE**: Break a file lock.\n- **WARNING**: Only use this if a lock is clearly stale or the locking agent has crashed.\n- Will forcibly remove the lock from the database.",
         inputSchema: {
           type: "object",
           properties: {
@@ -315,7 +320,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "claim_next_job",
-        description: "Auto-assign the next available 'todo' job to yourself.",
+        description: "**AUTO-ASSIGNMENT**: Ask the Job Board for the next most important task.\n- Respects priority (Critical > High > ...) and dependencies (won't assign a job if its deps aren't done).\n- Returns the Job object if successful, or 'NO_JOBS_AVAILABLE'.\n- Use this when you are idle and looking for work.",
         inputSchema: {
           type: "object",
           properties: {
@@ -326,7 +331,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "complete_job",
-        description: "Mark your assigned job as done.",
+        description: "**CLOSE TICKET**: Mark a job as done.\n- Requires `outcome` (what was done).\n- If you are not the assigned agent, you must provide the `completionKey`.",
         inputSchema: {
           type: "object",
           properties: {
@@ -340,7 +345,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "index_file",
-        description: "Force re-index a file into the RAG vector database.",
+        description: "**UPDATE SEARCH INDEX**: Add a file's content to the RAG vector database.\n- Call this *immediately* after creating a new file or significantly refactoring an existing one.\n- Ensures future `search_codebase` calls return up-to-date results.",
         inputSchema: {
           type: "object",
           properties: {
@@ -442,9 +447,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // Since we want "detailed", let's assume the API handles it or fallback.
     // Re-using searchContext for now as it's the RAG interface.
     try {
-      const formatted = await manager.searchContext(query);
+      const formatted = await manager.searchContext(query, nerveCenter.currentProjectName);
       return { content: [{ type: "text", text: formatted }] };
     } catch (err) {
+      if (ragEngine) {
+        const results = await ragEngine.search(query);
+        return { content: [{ type: "text", text: results.join("\n---\n") }] };
+      }
       return {
         content: [{ type: "text", text: `Search Error: ${err}` }],
         isError: true

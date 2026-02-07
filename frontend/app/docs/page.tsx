@@ -177,19 +177,38 @@ function MCPSection() {
                 {/* Step 3: Configuration */}
                 <div className="relative pl-12 border-l-2 border-neutral-100">
                     <div className="absolute -left-[9px] top-0 w-4 h-4 rounded-full bg-neutral-900 border-4 border-white shadow-sm" />
-                    <h3 className="text-[11px] font-bold uppercase tracking-[0.3em] text-neutral-900 mb-4">step 3: add to your ide</h3>
-                    <p className="mb-6">copy and paste the configuration below into your ide&apos;s mcp settings. this works for <strong>cursor, vs code, antigravity, windsurf, and codex</strong>.</p>
+                    <h3 className="text-[11px] font-bold uppercase tracking-[0.3em] text-neutral-900 mb-4">step 3: use the recommended config</h3>
+                    <p className="mb-6">copy and paste the configuration below into your ide&apos;s mcp settings. this works for <strong>cursor, vs code, and windsurf</strong>.</p>
 
                     <CodeBlock lang="json" code={`{
   "mcpServers": {
     "axis": {
       "command": "axis-server",
+      "args": [
+        "${process.env.HOME || '/Users/user'}/path/to/project"
+      ],
       "env": {
-        "AXIS_API_KEY": "sk_sc_YOUR_KEY_HERE"
+        "AXIS_API_KEY": "sk_sc_YOUR_KEY_HERE",
+        "PROJECT_NAME": "default",
+        "SHARED_CONTEXT_API_URL": "https://aicontext.vercel.app/api/v1"
       }
     }
   }
 }`} />
+                </div>
+
+                {/* New Section: Project Switching */}
+                <div className="relative pl-12 border-l-2 border-neutral-100">
+                    <div className="absolute -left-[9px] top-0 w-4 h-4 rounded-full bg-neutral-400 border-4 border-white shadow-sm" />
+                    <h3 className="text-[11px] font-bold uppercase tracking-[0.3em] text-neutral-900 mb-4">switching projects</h3>
+                    <div className="space-y-4 text-[13px] text-neutral-600 leading-relaxed">
+                        <p>axis segregates memory by project. there are two ways to switch context:</p>
+                        <ul className="list-disc pl-5 space-y-2">
+                            <li><strong>Environment Variable</strong>: change the <code>PROJECT_NAME</code> in your mcp config. the server will instantly sync to the new project&apos;s notepad.</li>
+                            <li><strong>Auto-Detection</strong>: if <code>PROJECT_NAME</code> is missing, axis looks for a <code>.axis/axis.json</code> file in your project root to determine the identity.</li>
+                        </ul>
+                        <p className="text-neutral-400 italic">tip: switching projects automatically clears old file locks and resets the live notepad to ensure zero context leakage.</p>
+                    </div>
                 </div>
 
                 {/* Step 3: Location of config */}

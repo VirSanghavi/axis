@@ -51,8 +51,8 @@ const LOCK_TIMEOUT_DEFAULT = 30 * 60 * 1000; // 30 minutes
 interface NerveCenterOptions {
     stateFilePath?: string;
     lockTimeout?: number;
-    supabaseUrl?: string;
-    supabaseServiceRoleKey?: string;
+    supabaseUrl?: string | null;
+    supabaseServiceRoleKey?: string | null;
     projectName?: string;
 }
 
@@ -80,11 +80,18 @@ export class NerveCenter {
         this.contextManager = contextManager; // this handles apiUrl/apiSecret
         this.stateFilePath = options.stateFilePath || STATE_FILE;
         this.lockTimeout = options.lockTimeout || LOCK_TIMEOUT_DEFAULT;
-        this.projectName = options.projectName || process.env.PROJECT_NAME || "default";
-
+        
+        // Check if remote API is configured (customer mode)
+        const hasRemoteApi = !!this.contextManager.apiUrl;
+        
         // Hybrid Persistence: Prefer direct Supabase if available, fallback to Remote API
-        const supabaseUrl = options.supabaseUrl || process.env.NEXT_PUBLIC_SUPABASE_URL;
-        const supabaseKey = options.supabaseServiceRoleKey || process.env.SUPABASE_SERVICE_ROLE_KEY;
+        // If options explicitly set to null OR undefined when remote API is configured, disable Supabase (customer mode)
+        const supabaseUrl = options.supabaseUrl !== undefined
+            ? options.supabaseUrl 
+            : (hasRemoteApi ? null : process.env.NEXT_PUBLIC_SUPABASE_URL);
+        const supabaseKey = options.supabaseServiceRoleKey !== undefined
+            ? options.supabaseServiceRoleKey 
+            : (hasRemoteApi ? null : process.env.SUPABASE_SERVICE_ROLE_KEY);
 
         if (supabaseUrl && supabaseKey) {
             this.supabase = createClient(supabaseUrl, supabaseKey);
@@ -98,6 +105,16 @@ export class NerveCenter {
             this.supabase = undefined;
             this.useSupabase = false;
             logger.warn("NerveCenter: Running in local-only mode. Coordination restricted to this machine.");
+        }
+        
+        // Project name: prioritize explicit option, then env var, then detect from .axis/axis.json, then default
+        // But if remote API is configured (customer mode), prefer env var over detected name
+        const explicitProjectName = options.projectName || process.env.PROJECT_NAME;
+        if (explicitProjectName) {
+            this.projectName = explicitProjectName;
+        } else {
+            // Will be set by detectProjectName() in init() if needed, or default to "default"
+            this.projectName = "default";
         }
 
         this.state = {
@@ -118,8 +135,11 @@ export class NerveCenter {
     async init() {
         await this.loadState();
 
-        // Always try to detect project name if we have API or Supabase
-        if (this.useSupabase || this.contextManager.apiUrl) {
+        // Only detect project name from .axis/axis.json if:
+        // 1. Project name is still "default" (wasn't set explicitly)
+        // 2. We're in dev mode (not using remote API only)
+        // This ensures customer mode uses consistent project names from env vars
+        if (this.projectName === "default" && (this.useSupabase || !this.contextManager.apiUrl)) {
             await this.detectProjectName();
         }
 
@@ -127,16 +147,20 @@ export class NerveCenter {
             await this.ensureProjectId();
         }
 
-        // Recover notepad from cloud if local state is default/empty
-        if (this.contextManager.apiUrl && (!this.state.liveNotepad || this.state.liveNotepad.startsWith("Session Start:"))) {
+        // Recover notepad and projectId from cloud if Remote API is available
+        if (this.contextManager.apiUrl) {
             try {
-                const { liveNotepad } = await this.callCoordination(`sessions/sync?projectName=${this.projectName}`) as { liveNotepad: string };
-                if (liveNotepad) {
+                const { liveNotepad, projectId } = await this.callCoordination(`sessions/sync?projectName=${this.projectName}`) as { liveNotepad: string, projectId: string };
+                if (projectId) {
+                    this._projectId = projectId;
+                    logger.info(`NerveCenter: Resolved projectId from cloud: ${this._projectId}`);
+                }
+                if (liveNotepad && (!this.state.liveNotepad || this.state.liveNotepad.startsWith("Session Start:"))) {
                     this.state.liveNotepad = liveNotepad;
                     logger.info(`NerveCenter: Recovered live notepad from cloud for project: ${this.projectName}`);
                 }
             } catch (e: any) {
-                logger.warn("Failed to recover notepad from API. Using local.", e);
+                logger.warn("Failed to sync project/notepad with Remote API. Using local/fallback.", e);
             }
         }
     }
@@ -159,7 +183,7 @@ export class NerveCenter {
     }
 
     private async ensureProjectId() {
-        if (!this.supabase) return;
+        if (!this.supabase || this._projectId) return; // Skip if already set (e.g. from API)
 
         const { data: project, error } = await this.supabase
             .from("projects")
@@ -177,6 +201,8 @@ export class NerveCenter {
             return;
         }
 
+        // WARNING: This create projects without owner_id if done directly via Service Role.
+        // The Remote API is preferred for project creation.
         const { data: created, error: createError } = await this.supabase
             .from("projects")
             .insert({ name: this.projectName })
@@ -261,7 +287,28 @@ export class NerveCenter {
     }
 
     private async getLocks(): Promise<FileLock[]> {
+        // Priority: Remote API if available (for customers), then Supabase, then local
+        if (this.contextManager.apiUrl) {
+            if (!this.useSupabase || !this.supabase) {
+                // Use remote API when Supabase is not configured (customer mode)
+                try {
+                    const res = await this.callCoordination(`locks?projectName=${this.projectName}`) as { locks: any[] };
+                    return (res.locks || []).map((row: any) => ({
+                        agentId: row.agent_id,
+                        filePath: row.file_path,
+                        intent: row.intent,
+                        userPrompt: row.user_prompt,
+                        timestamp: Date.parse(row.updated_at || row.timestamp)
+                    }));
+                } catch (e: any) {
+                    logger.error("Failed to fetch locks from API", e);
+                    // Fall through to local fallback
+                }
+            }
+        }
+        
         if (this.useSupabase && this.supabase && this._projectId) {
+            // Use direct Supabase when configured (development mode)
             try {
                 // Lazy clean
                 await this.supabase.rpc('clean_stale_locks', {
@@ -285,9 +332,11 @@ export class NerveCenter {
                 }));
             } catch (e) {
                 logger.warn("Failed to fetch locks from DB", e as any);
+                // Fall through to API or local fallback
             }
         }
 
+        // Fallback: Try API if available, otherwise local
         if (this.contextManager.apiUrl) {
             try {
                 const res = await this.callCoordination(`locks?projectName=${this.projectName}`) as { locks: any[] };
@@ -299,7 +348,7 @@ export class NerveCenter {
                     timestamp: Date.parse(row.updated_at || row.timestamp)
                 }));
             } catch (e: any) {
-                logger.error("Failed to fetch locks from API", e);
+                logger.error("Failed to fetch locks from API in fallback", e);
             }
         }
 
@@ -340,11 +389,17 @@ export class NerveCenter {
         if (this.contextManager.apiUrl) {
             // Sync current state to sessions/sync for cloud RAG and backup
             try {
-                await this.callCoordination('sessions/sync', 'POST', {
+                const res = await this.callCoordination('sessions/sync', 'POST', {
                     title: `Current Session: ${this.projectName}`,
                     context: this.state.liveNotepad,
                     metadata: { source: "mcp-server-live" }
-                });
+                }) as { projectId?: string };
+
+                // If the API resolved/created a project, capture its ID
+                if (res.projectId && !this._projectId) {
+                    this._projectId = res.projectId;
+                    logger.info(`NerveCenter: Captured projectId from sync API: ${this._projectId}`);
+                }
             } catch (e: any) {
                 logger.warn("Failed to sync notepad to remote API", e);
             }
@@ -629,55 +684,110 @@ export class NerveCenter {
 
     async proposeFileAccess(agentId: string, filePath: string, intent: string, userPrompt: string) {
         return await this.mutex.runExclusive(async () => {
-            if (this.useSupabase && this.supabase && this._projectId) {
-                const { data, error } = await this.supabase.rpc("try_acquire_lock", {
-                    p_project_id: this._projectId,
-                    p_file_path: filePath,
-                    p_agent_id: agentId,
-                    p_intent: intent,
-                    p_user_prompt: userPrompt,
-                    p_timeout_seconds: Math.floor(this.lockTimeout / 1000)
-                });
+            // Priority: Remote API if available (for customers), then Supabase, then local
+            if (this.contextManager.apiUrl && !this.useSupabase) {
+                // Use remote API when Supabase is not configured (customer mode)
+                try {
+                    // 1. Get current locks to check for conflicts
+                    const locks = await this.getLocks();
+                    const existing = locks.find(l => l.filePath === filePath);
 
-                if (error) {
-                    logger.error("Failed to acquire lock via RPC", error);
-                    return { status: "ERROR", message: "Database error" };
-                }
+                    if (existing) {
+                        const isStale = (Date.now() - existing.timestamp) > this.lockTimeout;
+                        if (!isStale && existing.agentId !== agentId) {
+                            return {
+                                status: "REQUIRES_ORCHESTRATION",
+                                message: `Conflict: File '${filePath}' is currently locked by '${existing.agentId}'`,
+                                currentLock: existing
+                            };
+                        }
+                    }
 
-                if (data.status === "GRANTED") {
+                    // 2. Acquire lock via API
+                    const result = await this.callCoordination("locks", "POST", {
+                        action: "lock",
+                        filePath,
+                        agentId,
+                        intent,
+                        userPrompt
+                    });
+
                     await this.appendToNotepad(`\n- [LOCK] ${agentId} locked ${filePath}\n  Intent: ${intent}`);
                     return { status: "GRANTED", message: `Access granted for ${filePath}` };
+                } catch (e: any) {
+                    logger.error("API lock failed", e);
+                    // Fall through to local fallback
                 }
+            } else if (this.useSupabase && this.supabase && this._projectId) {
+                // Use direct Supabase when configured (development mode)
+                try {
+                    // 1. Check existing lock
+                    const { data: existing, error: fetchError } = await this.supabase
+                        .from("locks")
+                        .select("*")
+                        .eq("project_id", this._projectId)
+                        .eq("file_path", filePath)
+                        .maybeSingle();
 
-                return {
-                    status: "REQUIRES_ORCHESTRATION",
-                    message: `Conflict: File '${filePath}' is currently locked by '${data.owner_id}'`,
-                    currentLock: {
-                        agentId: data.owner_id,
-                        filePath,
-                        intent: data.intent,
-                        timestamp: Date.parse(data.updated_at)
+                    if (fetchError) throw fetchError;
+
+                    if (existing) {
+                        const isStale = (Date.now() - Date.parse(existing.updated_at)) > this.lockTimeout;
+                        if (!isStale && existing.agent_id !== agentId) {
+                            return {
+                                status: "REQUIRES_ORCHESTRATION",
+                                message: `Conflict: File '${filePath}' is currently locked by '${existing.agent_id}'`,
+                                currentLock: {
+                                    agentId: existing.agent_id,
+                                    filePath,
+                                    intent: existing.intent,
+                                    timestamp: Date.parse(existing.updated_at)
+                                }
+                            };
+                        }
+                        // If stale or owned by us, we can overwrite (upsert)
                     }
-                };
-            }
 
-            // 1. Fetch current locks (hybrid fallback)
-            const locks = await this.getLocks();
-            const existing = locks.find(l => l.filePath === filePath);
+                    // 2. Acquire Lock (Upsert)
+                    const { error: upsertError } = await this.supabase
+                        .from("locks")
+                        .upsert({
+                            project_id: this._projectId,
+                            file_path: filePath,
+                            agent_id: agentId,
+                            intent: intent,
+                            user_prompt: userPrompt,
+                            updated_at: new Date().toISOString()
+                        });
 
-            if (existing) {
-                const isStale = (Date.now() - existing.timestamp) > this.lockTimeout;
-                if (!isStale && existing.agentId !== agentId) {
-                    return {
-                        status: "REQUIRES_ORCHESTRATION",
-                        message: `Conflict: File '${filePath}' is currently locked by '${existing.agentId}'`,
-                        currentLock: existing
-                    };
+                    if (upsertError) throw upsertError;
+
+                    await this.appendToNotepad(`\n- [LOCK] ${agentId} locked ${filePath}\n  Intent: ${intent}`);
+                    return { status: "GRANTED", message: `Access granted for ${filePath}` };
+
+                } catch (e) {
+                    logger.warn("[NerveCenter] Lock DB operation failed. Falling back to API or local.", e as any);
+                    // Fall through to API or local fallback
                 }
             }
 
+            // Fallback: Try API if available, otherwise local
             if (this.contextManager.apiUrl) {
                 try {
+                    const locks = await this.getLocks();
+                    const existing = locks.find(l => l.filePath === filePath);
+
+                    if (existing) {
+                        const isStale = (Date.now() - existing.timestamp) > this.lockTimeout;
+                        if (!isStale && existing.agentId !== agentId) {
+                            return {
+                                status: "REQUIRES_ORCHESTRATION",
+                                message: `Conflict: File '${filePath}' is currently locked by '${existing.agentId}'`,
+                                currentLock: existing
+                            };
+                        }
+                    }
+
                     await this.callCoordination("locks", "POST", {
                         action: "lock",
                         filePath,
@@ -686,9 +796,27 @@ export class NerveCenter {
                         userPrompt
                     });
                 } catch (e: any) {
-                    logger.error("API lock failed", e);
+                    logger.error("API lock failed in fallback", e);
+                    // Final fallback to local
+                    this.state.locks[filePath] = { agentId, filePath, intent, userPrompt, timestamp: Date.now() };
+                    await this.saveState();
                 }
             } else {
+                // Local-only fallback
+                const locks = await this.getLocks();
+                const existing = locks.find(l => l.filePath === filePath);
+
+                if (existing) {
+                    const isStale = (Date.now() - existing.timestamp) > this.lockTimeout;
+                    if (!isStale && existing.agentId !== agentId) {
+                        return {
+                            status: "REQUIRES_ORCHESTRATION",
+                            message: `Conflict: File '${filePath}' is currently locked by '${existing.agentId}'`,
+                            currentLock: existing
+                        };
+                    }
+                }
+
                 this.state.locks[filePath] = { agentId, filePath, intent, userPrompt, timestamp: Date.now() };
                 await this.saveState();
             }
@@ -788,7 +916,23 @@ export class NerveCenter {
     // --- Billing & Usage ---
 
     async getSubscriptionStatus(email: string) {
+        // Priority: Remote API if available (for customers), then Supabase, then error
+        // If we have remote API and Supabase is disabled, use remote API
+        if (this.contextManager.apiUrl) {
+            if (!this.useSupabase || !this.supabase) {
+                // Use remote API when Supabase is not configured (customer mode)
+                try {
+                    const result = await this.callCoordination(`usage?email=${encodeURIComponent(email)}`);
+                    return result;
+                } catch (e: any) {
+                    logger.error("Failed to fetch subscription status via API", e);
+                    return { error: `Failed to fetch subscription status: ${e.message}` };
+                }
+            }
+        }
+        
         if (this.useSupabase && this.supabase) {
+            // Use direct Supabase when configured (development mode)
             const { data: profile, error } = await this.supabase
                 .from("profiles")
                 .select("subscription_status, stripe_customer_id, current_period_end")
@@ -810,19 +954,27 @@ export class NerveCenter {
             };
         }
 
-        if (this.contextManager.apiUrl) {
-            try {
-                return await this.callCoordination("usage");
-            } catch (e: any) {
-                logger.error("Failed to fetch subscription status via API", e);
-            }
-        }
-
         return { error: "Coordination not configured." };
     }
 
     async getUsageStats(email: string) {
+        // Priority: Remote API if available (for customers), then Supabase, then error
+        // If we have remote API and Supabase is disabled, use remote API
+        if (this.contextManager.apiUrl) {
+            if (!this.useSupabase || !this.supabase) {
+                // Use remote API when Supabase is not configured (customer mode)
+                try {
+                    const result = await this.callCoordination(`usage?email=${encodeURIComponent(email)}`) as { usageCount?: number };
+                    return { email, usageCount: result.usageCount || 0 };
+                } catch (e: any) {
+                    logger.error("Failed to fetch usage stats via API", e);
+                    return { error: `Failed to fetch usage stats: ${e.message}` };
+                }
+            }
+        }
+        
         if (this.useSupabase && this.supabase) {
+            // Use direct Supabase when configured (development mode)
             const { data: profile } = await this.supabase
                 .from("profiles")
                 .select("usage_count")
@@ -830,14 +982,6 @@ export class NerveCenter {
                 .single();
 
             return { email, usageCount: (profile as any)?.usage_count || 0 };
-        }
-
-        if (this.contextManager.apiUrl) {
-            try {
-                return await this.callCoordination("usage");
-            } catch (e: any) {
-                logger.error("Failed to fetch usage stats via API", e);
-            }
         }
 
         return { error: "Coordination not configured." };

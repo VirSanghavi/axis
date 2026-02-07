@@ -77,7 +77,7 @@ export class RagEngine {
 
             const { data, error } = await this.supabase.rpc('match_embeddings', {
                 query_embedding: embedding,
-                match_threshold: 0.5,
+                match_threshold: 0.1,
                 match_count: limit,
                 p_project_id: this.projectId
             });

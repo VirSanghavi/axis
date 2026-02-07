@@ -1,21 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/auth";
 import { createClient } from "@supabase/supabase-js";
+import { getOrCreateProjectId } from "@/lib/project-utils";
 
 const supabase = createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL || "",
     process.env.SUPABASE_SERVICE_ROLE_KEY || ""
 );
-
-async function getProjectId(projectName: string, userId: string) {
-    const { data: project } = await supabase
-        .from("projects")
-        .select("id")
-        .eq("name", projectName)
-        .eq("owner_id", userId)
-        .maybeSingle();
-    return project?.id;
-}
 
 export async function POST(req: NextRequest) {
     const session = await getSessionFromRequest(req);
@@ -24,9 +15,8 @@ export async function POST(req: NextRequest) {
     try {
         const body = await req.json();
         const { projectName = "default", content } = body;
-        const projectId = await getProjectId(projectName, session.sub!);
-
-        if (!projectId) return NextResponse.json({ error: "Project not found" }, { status: 404 });
+        // Auto-create project if it doesn't exist
+        const projectId = await getOrCreateProjectId(projectName, session.sub!);
 
         // 1. Archive to Sessions
         const { error: sessionError } = await supabase
