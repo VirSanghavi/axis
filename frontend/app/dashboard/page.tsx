@@ -6,6 +6,7 @@ import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import Link from 'next/link';
 import Navbar from '@/components/Navbar';
+import { Activity, Shield, Cpu, Terminal } from 'lucide-react';
 
 // Helper for classes
 function cn(...inputs: (string | undefined | null | false)[]) {
@@ -170,8 +171,8 @@ export default function Dashboard() {
 
       <Navbar />
 
-      <main className="pt-32 pb-20 px-6 relative z-10">
-        <div className="max-w-4xl mx-auto bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl p-8 text-neutral-900 max-h-[85vh] overflow-hidden flex flex-col">
+      <main className="pt-32 pb-20 px-6 relative z-10 flex items-center justify-center">
+        <div className="w-full max-w-5xl bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl p-10 text-neutral-900 flex flex-col min-h-[80vh]">
           <div className="flex justify-between items-end mb-6">
             <div>
               <h1 className="text-3xl font-medium tracking-tight mb-2">dashboard</h1>
@@ -254,9 +255,61 @@ export default function Dashboard() {
                   </div>
                 )}
               </div>
+
+              {/* Context Discovery Feed - NEW */}
+              <div className="mt-8 pt-8 border-t border-neutral-100">
+                <div className="flex items-center gap-2 mb-4">
+                  <Activity size={14} className="text-blue-500" />
+                  <h3 className="text-[10px] font-mono text-neutral-500 uppercase tracking-[0.3em]">live context discovery feed</h3>
+                </div>
+                <div className="space-y-2">
+                  {[
+                    { op: 'MIRROR_SYNC', target: 'shared-context/v1', status: 'success', time: '2m ago' },
+                    { op: 'LOCK_ACQUIRED', target: 'auth.ts', status: 'success', time: '5m ago' },
+                    { op: 'VECTOR_UPSELL', target: 'system-kernel', status: 'queued', time: '12m ago' },
+                  ].map((item, idx) => (
+                    <div key={idx} className="flex items-center justify-between text-[11px] font-mono bg-neutral-50 px-4 py-2 rounded border border-neutral-100">
+                      <div className="flex items-center gap-3">
+                        <div className={cn("w-1.5 h-1.5 rounded-full", item.status === 'success' ? "bg-emerald-500" : "bg-amber-500 animate-pulse")} />
+                        <span className="text-neutral-400">[{item.op}]</span>
+                        <span className="text-neutral-700 font-medium">{item.target}</span>
+                      </div>
+                      <span className="text-neutral-400 text-[9px]">{item.time}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
             </div>
 
-            <div className="md:col-span-5 space-y-4">
+            <div className="md:col-span-5 space-y-6">
+              {/* System Metadata Block - NEW */}
+              <div className="bg-neutral-900 text-white rounded-lg p-6 shadow-xl relative overflow-hidden">
+                <div className="absolute top-0 right-0 p-4 opacity-10">
+                  <Cpu size={80} />
+                </div>
+                <h3 className="text-[9px] font-mono text-neutral-400 uppercase tracking-[0.3em] mb-4 flex items-center gap-2">
+                  <Shield size={10} className="text-blue-400" /> axis kernel status
+                </h3>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <div className="text-[10px] text-neutral-500 uppercase mb-0.5">version</div>
+                    <div className="text-[13px] font-mono text-blue-400">1.0.0-prod</div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] text-neutral-500 uppercase mb-0.5">uptime</div>
+                    <div className="text-[13px] font-mono text-emerald-400">99.98%</div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] text-neutral-500 uppercase mb-0.5">latency</div>
+                    <div className="text-[13px] font-mono">12ms</div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] text-neutral-500 uppercase mb-0.5">sync rate</div>
+                    <div className="text-[13px] font-mono text-amber-400">sub-sec</div>
+                  </div>
+                </div>
+              </div>
+
               <div className="bg-neutral-100 border border-neutral-200 rounded-lg p-5">
                 <h3 className="text-[9px] font-mono text-neutral-500 uppercase tracking-[0.3em] mb-3">subscription</h3>
                 <div className="mb-4">
@@ -278,6 +331,22 @@ export default function Dashboard() {
                 <h3 className="text-[9px] font-mono text-neutral-500 uppercase tracking-[0.3em] mb-2">support</h3>
                 <p className="text-[10px] text-neutral-500 leading-relaxed lowercase mb-3">need help with mcp headers or context governance?</p>
                 <Link href="/support" className="text-[9px] font-mono text-neutral-400 hover:text-neutral-900 uppercase tracking-widest">contact support ↗</Link>
+              </div>
+
+              {/* Quick Integration Guide - NEW */}
+              <div className="pt-4">
+                <div className="flex items-center gap-2 mb-3">
+                  <Terminal size={14} className="text-neutral-400" />
+                  <h3 className="text-[10px] font-mono text-neutral-400 uppercase tracking-[0.3em]">mcp headers guide</h3>
+                </div>
+                <div className="bg-neutral-50 border border-dashed border-neutral-300 rounded p-4 font-mono">
+                  <div className="text-[9px] text-neutral-400 mb-2">{"// use your axis-pro key"}</div>
+                  <div className="text-[10px] text-neutral-600 space-y-1">
+                    <div>Authorization: Bearer <span className="text-blue-600">AXIS_KEY_...</span></div>
+                    <div>X-Axis-Context: mirror-sync</div>
+                    <div>X-Axis-Origin: cluster-7</div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>

@@ -1,7 +1,7 @@
 'use client';
 
 import { usePathname, useRouter } from "next/navigation";
-import { Home, Info, MessageCircle, BookOpen, Github, LogOut, LogIn } from "lucide-react";
+import { Home, Info, MessageCircle, BookOpen, Github, LogOut, LogIn, LayoutDashboard } from "lucide-react";
 import Dock, { DockItemConfig } from "./Dock";
 import { useRef, useState, useEffect, useMemo, useCallback } from "react";
 
@@ -19,7 +19,7 @@ export default function Navbar() {
                     const data = await res.json();
                     setIsAuthenticated(data.authenticated);
                 }
-            } catch (e) {
+            } catch {
                 setIsAuthenticated(false);
             }
         };
@@ -69,6 +69,11 @@ export default function Navbar() {
         ];
 
         if (isAuthenticated === true) {
+            items.push({
+                icon: <LayoutDashboard size={20} />,
+                label: "dashboard",
+                onClick: () => router.push("/dashboard")
+            });
             items.push({
                 icon: <LogOut size={20} />,
                 label: "logout",
