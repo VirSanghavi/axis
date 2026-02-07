@@ -86,7 +86,7 @@ export async function GET(req: NextRequest) {
         }
 
         // Final fallback: check profile.current_period_end
-        if (profile.current_period_end && new Date(profile.current_period_end) > new Date()) {
+        if (profile?.current_period_end && new Date(profile.current_period_end) > new Date()) {
             isPro = true;
         }
 
