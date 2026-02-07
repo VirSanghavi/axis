@@ -149,26 +149,68 @@ axis-server`} />
 
 function MCPSection() {
     return (
-        <Section title="mcp config" subtitle="model context protocol integration">
-            <p className="mb-6">
-                add this configuration to your mcp settings file (e.g., <code className="bg-neutral-100 px-1 rounded text-neutral-900">claude_desktop_config.json</code>).
+        <Section title="mcp config" subtitle="integrate axis with your ide in seconds">
+            <p className="mb-10 text-lg text-neutral-500">
+                axis works with any ide that supports the model context protocol (mcp). follow these steps to connect your agent swarm.
             </p>
 
-            <h3 className="text-[11px] font-bold uppercase tracking-[0.3em] text-neutral-900 mb-4">visual studio code / cursor</h3>
-            <CodeBlock lang="json" code={`{
+            <div className="space-y-16">
+                {/* Step 1: Installation */}
+                <div className="relative pl-12 border-l-2 border-neutral-100">
+                    <div className="absolute -left-[9px] top-0 w-4 h-4 rounded-full bg-neutral-900 border-4 border-white shadow-sm" />
+                    <h3 className="text-[11px] font-bold uppercase tracking-[0.3em] text-neutral-900 mb-4">step 1: install the axis server</h3>
+                    <p className="mb-4">you need the axis server package installed globally to bridge your local terminal with the axis control plane.</p>
+                    <CodeBlock code="npm install -g @virsanghavi/axis-server" />
+                </div>
+
+                {/* Step 2: Configuration */}
+                <div className="relative pl-12 border-l-2 border-neutral-100">
+                    <div className="absolute -left-[9px] top-0 w-4 h-4 rounded-full bg-neutral-900 border-4 border-white shadow-sm" />
+                    <h3 className="text-[11px] font-bold uppercase tracking-[0.3em] text-neutral-900 mb-4">step 2: add to your ide</h3>
+                    <p className="mb-6">copy and paste the configuration below into your ide&apos;s mcp settings. this works for <strong>cursor, vs code, antigravity, windsurf, and codex</strong>.</p>
+
+                    <div className="bg-neutral-50 rounded-2xl p-8 border border-neutral-100">
+                        <div className="flex items-center gap-2 mb-4 opacity-40">
+                            <div className="w-2 h-2 rounded-full bg-red-400" />
+                            <div className="w-2 h-2 rounded-full bg-amber-400" />
+                            <div className="w-2 h-2 rounded-full bg-emerald-400" />
+                            <span className="text-[10px] font-mono ml-2 uppercase tracking-widest">mcp_config.json</span>
+                        </div>
+                        <CodeBlock lang="json" code={`{
   "mcpServers": {
     "axis": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "@virsanghavi/axis-server"
-      ],
+      "command": "axis-server",
       "env": {
         "AXIS_API_KEY": "sk_ax_YOUR_KEY_HERE"
       }
     }
   }
 }`} />
+                        <div className="mt-6 p-4 bg-amber-50 border border-amber-100 rounded-lg flex gap-3">
+                            <span className="text-amber-600 text-[14px]">⚠️</span>
+                            <p className="text-[11px] text-amber-700 leading-relaxed uppercase tracking-tighter font-bold">
+                                important: replace <code className="bg-amber-100 px-1 rounded">sk_ax_YOUR_KEY_HERE</code> with your real key from the <Link href="/dashboard" className="underline">dashboard</Link>.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
+                {/* Step 3: Location of config */}
+                <div className="relative pl-12 border-l-2 border-neutral-100">
+                    <div className="absolute -left-[9px] top-0 w-4 h-4 rounded-full bg-neutral-900 border-4 border-white shadow-sm" />
+                    <h3 className="text-[11px] font-bold uppercase tracking-[0.3em] text-neutral-900 mb-4">where to find settings?</h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="p-4 bg-neutral-50 rounded-xl border border-neutral-100">
+                            <div className="font-bold text-[11px] uppercase tracking-widest mb-1">cursor / vs code</div>
+                            <p className="text-[11px] text-neutral-500">settings → features → mcp → add new server</p>
+                        </div>
+                        <div className="p-4 bg-neutral-50 rounded-xl border border-neutral-100">
+                            <div className="font-bold text-[11px] uppercase tracking-widest mb-1">windsurf / codex</div>
+                            <p className="text-[11px] text-neutral-500">preferences → ai path → mcp configuration</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
 
             <div className="mt-12 space-y-12">
                 <div>
