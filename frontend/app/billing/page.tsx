@@ -183,13 +183,14 @@ export default function BillingPage() {
                                     </button>
                                     {!isCancelled && (
                                         <button
-                                            onClick={() => {
+                                            onClick={async () => {
+                                                console.log("[Billing] Cancel clicked. State:", { hasOffer: subData?.has_retention_offer, hasSeen: subData?.has_seen_retention });
                                                 if (subData?.has_retention_offer || subData?.has_seen_retention) {
                                                     // Already have it OR already saw it - just cancel
                                                     handleFinalCancel();
                                                 } else {
-                                                    // Mark as seen in DB immediately
-                                                    fetch('/api/stripe/status/mark-seen', { method: 'POST' });
+                                                    // Mark as seen in DB immediately and wait for it
+                                                    await fetch('/api/stripe/status/mark-seen', { method: 'POST' });
                                                     setShowRetention(true);
                                                 }
                                             }}

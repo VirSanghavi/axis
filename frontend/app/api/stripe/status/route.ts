@@ -15,13 +15,9 @@ export async function GET(req: NextRequest) {
 
         console.log(`[Stripe Status] Checking: "${session.email}"`);
 
+        // TEMPORARY BYPASS: Force Pro for user email variations while debugging
         const normalizedEmail = session.email.toLowerCase().trim();
-        const primaryEmail = "virsanghavi@gmail.com";
-        const typoEmail = "virrsanghavi@gmail.com";
-
-        const targetEmail = (normalizedEmail === typoEmail) ? primaryEmail : session.email;
-        const isSuperUser = normalizedEmail === primaryEmail || normalizedEmail === typoEmail;
-        console.log(`[Stripe Status] Email: ${session.email}, Normalized: ${normalizedEmail}, Super: ${isSuperUser}`);
+        const isSuperUser = normalizedEmail === 'virsanghavi@gmail.com' || normalizedEmail === 'virrsanghavi@gmail.com';
 
         const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
         const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -36,7 +32,7 @@ export async function GET(req: NextRequest) {
         const { data: profile, error: profileError } = await supabase
             .from('profiles')
             .select('subscription_status, stripe_customer_id, current_period_end, has_seen_retention')
-            .ilike('email', targetEmail)
+            .ilike('email', session.email)
             .single();
 
         if ((profileError || !profile) && !isSuperUser) {
@@ -48,12 +44,8 @@ export async function GET(req: NextRequest) {
         console.log(`[Stripe Status] Final Decision: ${session.email} is ${isPro ? 'pro' : 'free'}`);
 
         let stripeData = null;
-        let customerId = profile?.stripe_customer_id;
-        if (!customerId && isSuperUser) {
-            customerId = 'cus_Tw7wDGE1jIXikB';
-        }
 
-        if (customerId) {
+        if (profile?.stripe_customer_id) {
             const stripeKey = process.env.STRIPE_SECRET_KEY;
             if (stripeKey) {
                 const stripe = new Stripe(stripeKey, {
@@ -61,14 +53,15 @@ export async function GET(req: NextRequest) {
                 });
 
                 const subscriptions = await stripe.subscriptions.list({
-                    customer: customerId as string,
+                    customer: profile.stripe_customer_id as string,
                     status: 'all',
                     limit: 1,
-                    expand: ['data.discounts']
+                    expand: ['data.discounts', 'data.discount']
                 });
 
                 if (subscriptions.data.length > 0) {
                     const sub = subscriptions.data[0];
+                    console.log(`[Stripe Status] Sub: ${sub.id}, Discount: ${sub.discount?.coupon?.id}, Discounts: ${sub.discounts?.length || 0}`);
                     const now = Math.floor(Date.now() / 1000);
 
                     // A subscription is considered "active" if its status is active, 
