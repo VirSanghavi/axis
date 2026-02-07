@@ -6,7 +6,7 @@ import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import Link from 'next/link';
 import Navbar from '@/components/Navbar';
-import { Activity, Terminal } from 'lucide-react';
+import { Radar, Terminal } from 'lucide-react';
 
 // Helper for classes
 function cn(...inputs: (string | undefined | null | false)[]) {
@@ -256,10 +256,9 @@ export default function Dashboard() {
                 )}
               </div>
 
-              {/* Context Discovery Feed - NEW */}
               <div className="mt-8 pt-8 border-t border-neutral-100">
                 <div className="flex items-center gap-2 mb-4">
-                  <Activity size={14} className="text-blue-500" />
+                  <Radar size={14} className="text-blue-500" />
                   <h3 className="text-[10px] font-mono text-neutral-500 uppercase tracking-[0.3em]">live context discovery feed</h3>
                 </div>
                 <div className="space-y-2">
