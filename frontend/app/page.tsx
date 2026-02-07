@@ -51,8 +51,10 @@ export default function Home() {
         return (
             <div className="min-h-screen bg-black text-white font-mono p-10 leading-relaxed selection:bg-white/20">
                 <div className="max-w-3xl mx-auto space-y-8">
-                    <pre className="text-emerald-500 mb-10">
-                        {`
+                    <div className="flex items-center gap-6 mb-12">
+                        <img src="/alogo.jpg" alt="Axis" className="w-16 h-16 rounded-full border border-emerald-500/20 grayscale" />
+                        <pre className="text-emerald-500 m-0">
+                            {`
     ___                _     
    / _ \\__  _____  ___| |    
   / /_\\ \\ \\/ / _ \\/ __| |    
@@ -60,7 +62,8 @@ export default function Home() {
  \\____/  \\_\\/\\___||___(_)    
                              
 `}
-                    </pre>
+                        </pre>
+                    </div>
                     <div className="prose prose-invert prose-emerald max-w-none">
                         <ReactMarkdown>{`
 # Axis Intelligence Kernel v1.0.0-prod
@@ -317,7 +320,10 @@ Axis speaks the **Model Context Protocol** natively. By mounting Axis as an MCP 
 
                 <div className="mt-28 bg-black/80 backdrop-blur-md border-t border-white/5 w-full py-10 md:py-12 px-6 md:px-10 flex flex-col md:flex-row items-center justify-between gap-8 md:gap-10 opacity-70 text-[10px] font-mono tracking-widest uppercase font-bold text-white relative z-20 mb-8 rounded-xl max-w-[calc(100%-32px)] md:max-w-[calc(100%-48px)] mx-auto shadow-2xl">
                     <div className="flex flex-col md:flex-row gap-6 md:gap-10 items-center text-center md:text-left">
-                        <span>© 2026 axis intelligence</span>
+                        <div className="flex items-center gap-3">
+                            <img src="/alogo.jpg" alt="Axis" className="w-5 h-5 rounded-full object-cover border border-white/10" />
+                            <span>© 2026 axis intelligence</span>
+                        </div>
                         <div className="hidden md:block w-8 h-[1px] bg-white/10" />
                         <div className="flex flex-wrap justify-center gap-6 md:gap-10">
                             <Link href="/about" className="hover:text-white transition-colors">about</Link>

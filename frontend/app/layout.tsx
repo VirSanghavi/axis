@@ -16,6 +16,10 @@ const jetbrainsMono = JetBrains_Mono({
 export const metadata: Metadata = {
   title: "Axis - AI Agent Context",
   description: "Governance layer for AI agent context.",
+  icons: {
+    icon: "/alogo.jpg",
+    apple: "/alogo.jpg",
+  },
 };
 
 import { MachineModeProvider } from "@/context/MachineModeContext";
@@ -28,6 +32,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <head>
+        <link rel="icon" href="/alogo.jpg" />
         <link rel="preload" as="image" href="/avalanche.gif" />
         <link rel="preload" as="image" href="/avalanche2.gif" />
       </head>

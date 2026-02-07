@@ -42,6 +42,11 @@ export default function Navbar() {
     const navItems = useMemo(() => {
         const items: DockItemConfig[] = [
             {
+                icon: <img src="/alogo.jpg" alt="Axis" className="w-full h-full object-cover rounded-full" />,
+                label: "axis",
+                onClick: () => router.push("/")
+            },
+            {
                 icon: <Home size={20} />,
                 label: "home",
                 onClick: () => router.push("/")
