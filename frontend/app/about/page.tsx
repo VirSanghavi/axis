@@ -158,7 +158,7 @@ export default function AboutPage() {
                             </p>
                             <div className="flex gap-8">
                                 <a href="https://github.com/VirSanghavi/shared-context" target="_blank" rel="noopener noreferrer" className="text-[11px] font-bold uppercase tracking-widest hover:text-neutral-900 transition-colors">github ↗</a>
-                                <a href="https://twitter.com/virsanghavi" target="_blank" rel="noopener noreferrer" className="text-[11px] font-bold uppercase tracking-widest hover:text-neutral-900 transition-colors">twitter ↗</a>
+                                <a href="https://twitter.com/VirSanghavi13" target="_blank" rel="noopener noreferrer" className="text-[11px] font-bold uppercase tracking-widest hover:text-neutral-900 transition-colors">twitter ↗</a>
                             </div>
                         </div>
                     </div>
