@@ -214,8 +214,21 @@ var NerveCenter = class {
   }
   async init() {
     await this.loadState();
+    await this.detectProjectName();
     if (this.useSupabase) {
       await this.ensureProjectId();
+    }
+  }
+  async detectProjectName() {
+    try {
+      const axisConfigPath = path2.join(process.cwd(), ".axis", "axis.json");
+      const configData = await fs2.readFile(axisConfigPath, "utf-8");
+      const config = JSON.parse(configData);
+      if (config.project) {
+        this.projectName = config.project;
+        logger.info(`Detected project name from .axis/axis.json: ${this.projectName}`);
+      }
+    } catch (e) {
     }
   }
   async ensureProjectId() {
