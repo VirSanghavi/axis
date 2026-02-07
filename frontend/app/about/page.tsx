@@ -74,8 +74,10 @@ export default function AboutPage() {
         return (
             <div className="min-h-screen bg-black text-white font-mono p-10 leading-relaxed selection:bg-white/20">
                 <div className="max-w-3xl mx-auto space-y-8">
-                    <pre className="text-emerald-500 mb-10">
-                        {`
+                    <div className="flex items-center gap-6 mb-12">
+                        <img src="/alogo.jpg" alt="Axis" className="w-16 h-16 rounded-full border border-emerald-500/20 grayscale" />
+                        <pre className="text-emerald-500 m-0">
+                            {`
     ___                _     
    / _ \\__  _____  ___| |    
   / /_\\ \\ \\/ / _ \\/ __| |    
@@ -83,7 +85,8 @@ export default function AboutPage() {
  \\____/  \\_\\/\\___||___(_)    
                              
 `}
-                    </pre>
+                        </pre>
+                    </div>
                     <div className="prose prose-invert prose-emerald max-w-none">
                         <ReactMarkdown>{ABOUT_CONTENT}</ReactMarkdown>
                     </div>

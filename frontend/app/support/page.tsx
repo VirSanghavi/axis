@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { motion } from 'framer-motion';
 import Link from 'next/link';
+import Navbar from '@/components/Navbar';
 
 export default function SupportPage() {
     const [subject, setSubject] = useState('');
@@ -35,14 +36,7 @@ export default function SupportPage() {
             {/* Avalanche background */}
             <div className="bg-avalanche" />
 
-            {/* Minimal inline navbar */}
-            <nav className="w-full fixed top-0 z-50 py-6 px-8 flex items-center justify-between">
-                <Link href="/" className="font-bold text-lg tracking-tight">axis</Link>
-                <div className="flex items-center gap-6 text-[11px] font-medium tracking-[0.2em] opacity-60">
-                    <Link href="/dashboard" className="hover:text-white transition-colors">dashboard</Link>
-                    <Link href="/feedback" className="hover:text-white transition-colors">thoughts?</Link>
-                </div>
-            </nav>
+            <Navbar />
 
             {/* White modal container */}
             <main className="pt-32 pb-20 px-6 relative z-10">

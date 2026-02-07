@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import Navbar from '@/components/Navbar';
 
 export default function PrivacyPage() {
     return (
@@ -8,15 +9,7 @@ export default function PrivacyPage() {
             {/* Avalanche background */}
             <div className="bg-avalanche" />
 
-            {/* Minimal inline navbar */}
-            <nav className="w-full fixed top-0 z-50 py-6 px-8 flex items-center justify-between">
-                <Link href="/" className="font-bold text-lg tracking-tight">axis</Link>
-                <div className="flex items-center gap-6 text-[11px] font-medium tracking-[0.2em] opacity-60">
-                    <Link href="/dashboard" className="hover:text-white transition-colors">dashboard</Link>
-                    <Link href="/docs" className="hover:text-white transition-colors">docs</Link>
-                    <Link href="https://github.com/VirSanghavi/shared-context" className="hover:text-white transition-colors">github</Link>
-                </div>
-            </nav>
+            <Navbar />
 
             <main className="pt-32 pb-20 px-6 relative z-10">
                 <div className="max-w-2xl mx-auto bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl p-12 text-neutral-900">
