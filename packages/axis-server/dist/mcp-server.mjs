@@ -1161,23 +1161,370 @@ var RagEngine = class {
 };
 
 // ../../src/local/mcp-server.ts
+import path4 from "path";
+import fs4 from "fs";
+
+// ../../src/local/local-search.ts
+import fs3 from "fs/promises";
+import fsSync2 from "fs";
 import path3 from "path";
-import fs3 from "fs";
+var SKIP_DIRS = /* @__PURE__ */ new Set([
+  "node_modules",
+  ".git",
+  ".next",
+  ".nuxt",
+  ".svelte-kit",
+  "dist",
+  "build",
+  "out",
+  ".output",
+  "coverage",
+  "__pycache__",
+  ".pytest_cache",
+  ".mypy_cache",
+  ".venv",
+  "venv",
+  "env",
+  ".turbo",
+  ".cache",
+  ".parcel-cache",
+  ".axis",
+  "history",
+  ".DS_Store"
+]);
+var SKIP_EXTENSIONS = /* @__PURE__ */ new Set([
+  // Binary / media
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".gif",
+  ".webp",
+  ".ico",
+  ".svg",
+  ".mp3",
+  ".mp4",
+  ".wav",
+  ".webm",
+  ".ogg",
+  ".woff",
+  ".woff2",
+  ".ttf",
+  ".eot",
+  ".pdf",
+  ".zip",
+  ".tar",
+  ".gz",
+  ".br",
+  // Compiled / generated
+  ".pyc",
+  ".pyo",
+  ".so",
+  ".dylib",
+  ".dll",
+  ".exe",
+  ".class",
+  ".jar",
+  ".war",
+  ".wasm",
+  // Lock files (huge, not useful for search)
+  ".lock"
+]);
+var SKIP_FILENAMES = /* @__PURE__ */ new Set([
+  "package-lock.json",
+  "yarn.lock",
+  "pnpm-lock.yaml",
+  "Cargo.lock",
+  "Gemfile.lock",
+  "poetry.lock",
+  ".DS_Store",
+  "Thumbs.db"
+]);
+var STOP_WORDS = /* @__PURE__ */ new Set([
+  "a",
+  "an",
+  "the",
+  "is",
+  "are",
+  "was",
+  "were",
+  "be",
+  "been",
+  "being",
+  "have",
+  "has",
+  "had",
+  "do",
+  "does",
+  "did",
+  "will",
+  "would",
+  "could",
+  "should",
+  "may",
+  "might",
+  "shall",
+  "can",
+  "i",
+  "me",
+  "my",
+  "we",
+  "our",
+  "you",
+  "your",
+  "he",
+  "she",
+  "it",
+  "they",
+  "them",
+  "their",
+  "this",
+  "that",
+  "these",
+  "those",
+  "what",
+  "which",
+  "who",
+  "whom",
+  "where",
+  "when",
+  "how",
+  "why",
+  "in",
+  "on",
+  "at",
+  "to",
+  "for",
+  "of",
+  "with",
+  "by",
+  "from",
+  "up",
+  "about",
+  "into",
+  "through",
+  "during",
+  "before",
+  "after",
+  "and",
+  "but",
+  "or",
+  "nor",
+  "not",
+  "so",
+  "if",
+  "then",
+  "all",
+  "each",
+  "every",
+  "both",
+  "few",
+  "more",
+  "most",
+  "some",
+  "any",
+  "there",
+  "here",
+  "just",
+  "also",
+  "very",
+  "really",
+  "quite",
+  "show",
+  "look",
+  "locate",
+  "using",
+  "used",
+  "need",
+  "want"
+]);
+var MAX_FILE_SIZE = 256 * 1024;
+var MAX_RESULTS = 20;
+var CONTEXT_LINES = 2;
+var MAX_MATCHES_PER_FILE = 6;
+function extractKeywords(query) {
+  const words = query.toLowerCase().replace(/[^\w\s\-_.]/g, " ").split(/\s+/).filter((w) => w.length >= 2);
+  const filtered = words.filter((w) => !STOP_WORDS.has(w));
+  const result = filtered.length > 0 ? filtered : words.filter((w) => w.length >= 3);
+  return [...new Set(result)];
+}
+var PROJECT_ROOT_MARKERS = [
+  ".git",
+  ".axis",
+  "package.json",
+  "Cargo.toml",
+  "go.mod",
+  "pyproject.toml",
+  "setup.py",
+  "Gemfile",
+  "pom.xml",
+  "tsconfig.json",
+  ".cursorrules",
+  "AGENTS.md"
+];
+function detectProjectRoot(startDir) {
+  let current = startDir;
+  const root = path3.parse(current).root;
+  while (current !== root) {
+    for (const marker of PROJECT_ROOT_MARKERS) {
+      try {
+        fsSync2.accessSync(path3.join(current, marker));
+        return current;
+      } catch {
+      }
+    }
+    const parent = path3.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return startDir;
+}
+async function walkDir(dir, maxDepth = 12) {
+  const results = [];
+  async function recurse(current, depth) {
+    if (depth > maxDepth) return;
+    let entries;
+    try {
+      entries = await fs3.readdir(current, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.name.startsWith(".") && entry.name !== ".env.example") {
+        if (SKIP_DIRS.has(entry.name) || entry.isDirectory()) continue;
+      }
+      const fullPath = path3.join(current, entry.name);
+      if (entry.isDirectory()) {
+        if (SKIP_DIRS.has(entry.name)) continue;
+        await recurse(fullPath, depth + 1);
+      } else if (entry.isFile()) {
+        if (SKIP_FILENAMES.has(entry.name)) continue;
+        const ext = path3.extname(entry.name).toLowerCase();
+        if (SKIP_EXTENSIONS.has(ext)) continue;
+        try {
+          const stat = await fs3.stat(fullPath);
+          if (stat.size > MAX_FILE_SIZE || stat.size === 0) continue;
+        } catch {
+          continue;
+        }
+        results.push(fullPath);
+      }
+    }
+  }
+  await recurse(dir, 0);
+  return results;
+}
+async function searchFile(filePath, rootDir, keywords) {
+  let content;
+  try {
+    content = await fs3.readFile(filePath, "utf-8");
+  } catch {
+    return null;
+  }
+  const contentLower = content.toLowerCase();
+  const relativePath = path3.relative(rootDir, filePath);
+  const matchedKeywords = keywords.filter((kw) => contentLower.includes(kw));
+  if (matchedKeywords.length === 0) return null;
+  const lines = content.split("\n");
+  let score = matchedKeywords.length;
+  const relLower = relativePath.toLowerCase();
+  for (const kw of keywords) {
+    if (relLower.includes(kw)) score += 2;
+  }
+  const matchingLineIndices = [];
+  for (let i = 0; i < lines.length; i++) {
+    const lineLower = lines[i].toLowerCase();
+    if (matchedKeywords.some((kw) => lineLower.includes(kw))) {
+      matchingLineIndices.push(i);
+    }
+  }
+  score += Math.min(matchingLineIndices.length, 20) * 0.1;
+  const regions = [];
+  let lastEnd = -1;
+  for (const idx of matchingLineIndices) {
+    if (regions.length >= MAX_MATCHES_PER_FILE) break;
+    const start = Math.max(0, idx - CONTEXT_LINES);
+    const end = Math.min(lines.length - 1, idx + CONTEXT_LINES);
+    if (start <= lastEnd) continue;
+    const regionLines = lines.slice(start, end + 1).map((line, i) => {
+      const lineNum = start + i + 1;
+      const marker = start + i === idx ? ">" : " ";
+      return `${marker} ${lineNum.toString().padStart(4)}| ${line}`;
+    }).join("\n");
+    regions.push({ lineNumber: idx + 1, lines: regionLines });
+    lastEnd = end;
+  }
+  return { filePath, relativePath, score, matchedKeywords, regions };
+}
+async function localSearch(query, rootDir) {
+  const rawCwd = rootDir || process.cwd();
+  const cwd = detectProjectRoot(rawCwd);
+  const keywords = extractKeywords(query);
+  if (cwd !== rawCwd) {
+    logger.info(`[localSearch] Detected project root: ${cwd} (CWD was: ${rawCwd})`);
+  }
+  if (keywords.length === 0) {
+    return "Could not extract meaningful search terms from the query. Try being more specific (e.g. 'authentication middleware' instead of 'how does it work').";
+  }
+  logger.info(`[localSearch] Query: "${query}" \u2192 Keywords: [${keywords.join(", ")}] in ${cwd}`);
+  const files = await walkDir(cwd);
+  logger.info(`[localSearch] Scanning ${files.length} files`);
+  const BATCH_SIZE = 50;
+  const allMatches = [];
+  for (let i = 0; i < files.length; i += BATCH_SIZE) {
+    const batch = files.slice(i, i + BATCH_SIZE);
+    const results = await Promise.all(
+      batch.map((f) => searchFile(f, cwd, keywords))
+    );
+    for (const r of results) {
+      if (r) allMatches.push(r);
+    }
+  }
+  allMatches.sort((a, b) => b.score - a.score);
+  const topMatches = allMatches.slice(0, MAX_RESULTS);
+  if (topMatches.length === 0) {
+    return `No matches found for: "${query}" (searched ${files.length} files for keywords: ${keywords.join(", ")}).
+Try different terms or check if the code exists in this project.`;
+  }
+  let output = `Found ${allMatches.length} matching file${allMatches.length === 1 ? "" : "s"} (showing top ${topMatches.length}, searched ${files.length} files)
+`;
+  output += `Keywords: ${keywords.join(", ")}
+`;
+  output += "\u2550".repeat(60) + "\n\n";
+  for (const match of topMatches) {
+    output += `\u{1F4C4} ${match.relativePath}
+`;
+    output += `   Keywords matched: ${match.matchedKeywords.join(", ")} | Score: ${match.score.toFixed(1)}
+`;
+    if (match.regions.length > 0) {
+      output += "   \u2500\u2500\u2500\u2500\u2500\n";
+      for (const region of match.regions) {
+        output += region.lines.split("\n").map((l) => `   ${l}`).join("\n") + "\n";
+        if (region !== match.regions[match.regions.length - 1]) {
+          output += "   ...\n";
+        }
+      }
+    }
+    output += "\n";
+  }
+  return output;
+}
+
+// ../../src/local/mcp-server.ts
 if (process.env.SHARED_CONTEXT_API_URL || process.env.AXIS_API_KEY) {
   logger.info("Using configuration from MCP client (mcp.json)");
 } else {
   const cwd = process.cwd();
   const possiblePaths = [
-    path3.join(cwd, ".env.local"),
-    path3.join(cwd, "..", ".env.local"),
-    path3.join(cwd, "..", "..", ".env.local"),
-    path3.join(cwd, "shared-context", ".env.local"),
-    path3.join(cwd, "..", "shared-context", ".env.local")
+    path4.join(cwd, ".env.local"),
+    path4.join(cwd, "..", ".env.local"),
+    path4.join(cwd, "..", "..", ".env.local"),
+    path4.join(cwd, "shared-context", ".env.local"),
+    path4.join(cwd, "..", "shared-context", ".env.local")
   ];
   let envLoaded = false;
   for (const envPath of possiblePaths) {
     try {
-      if (fs3.existsSync(envPath)) {
+      if (fs4.existsSync(envPath)) {
         logger.info(`[Fallback] Loading .env.local from: ${envPath}`);
         dotenv2.config({ path: envPath });
         envLoaded = true;
@@ -1230,6 +1577,120 @@ var nerveCenter = new NerveCenter(manager, {
   projectName: process.env.PROJECT_NAME || "default"
 });
 logger.info("=== Axis MCP Server Initialized ===");
+var RECHECK_INTERVAL_MS = 30 * 60 * 1e3;
+var GRACE_PERIOD_MS = 5 * 60 * 1e3;
+var subscription = {
+  checked: false,
+  valid: true,
+  // Assume valid until proven otherwise (for startup)
+  plan: "unknown",
+  reason: "",
+  checkedAt: 0
+};
+async function verifySubscription() {
+  if (!apiSecret) {
+    const hasDirectSupabase = !useRemoteApiOnly && !!process.env.NEXT_PUBLIC_SUPABASE_URL && !!process.env.SUPABASE_SERVICE_ROLE_KEY;
+    if (hasDirectSupabase) {
+      subscription = { checked: true, valid: true, plan: "developer", reason: "Direct Supabase mode \u2014 no API key needed", checkedAt: Date.now() };
+      logger.info("[subscription] Direct Supabase credentials found \u2014 developer mode, skipping verification");
+      return subscription;
+    }
+    subscription = {
+      checked: true,
+      valid: false,
+      plan: "none",
+      reason: "no_api_key",
+      checkedAt: Date.now()
+    };
+    logger.error("[subscription] No API key configured. Axis requires an API key from https://useaxis.dev/dashboard");
+    return subscription;
+  }
+  const verifyUrl = apiUrl.endsWith("/v1") ? `${apiUrl}/verify` : `${apiUrl}/v1/verify`;
+  logger.info(`[subscription] Verifying subscription at ${verifyUrl}`);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 1e4);
+  try {
+    const response = await fetch(verifyUrl, {
+      method: "GET",
+      headers: {
+        "Authorization": `Bearer ${apiSecret}`
+      },
+      signal: controller.signal
+    });
+    clearTimeout(timeout);
+    const data = await response.json();
+    logger.info(`[subscription] Verify response: ${JSON.stringify(data)}`);
+    if (data.valid === true) {
+      subscription = {
+        checked: true,
+        valid: true,
+        plan: data.plan || "Pro",
+        reason: "",
+        checkedAt: Date.now(),
+        validUntil: data.validUntil
+      };
+    } else {
+      subscription = {
+        checked: true,
+        valid: false,
+        plan: data.plan || "Free",
+        reason: data.reason || "subscription_invalid",
+        checkedAt: Date.now()
+      };
+      logger.warn(`[subscription] Subscription NOT valid: ${data.reason}`);
+    }
+  } catch (e) {
+    clearTimeout(timeout);
+    logger.warn(`[subscription] Verification failed (network): ${e.message}`);
+    if (!subscription.checked) {
+      subscription = {
+        checked: true,
+        valid: true,
+        // Grace period
+        plan: "unverified",
+        reason: "Verification endpoint unreachable \u2014 grace period active",
+        checkedAt: Date.now()
+      };
+      logger.warn("[subscription] First check failed \u2014 allowing grace period");
+    }
+  }
+  return subscription;
+}
+function isSubscriptionStale() {
+  return Date.now() - subscription.checkedAt > RECHECK_INTERVAL_MS;
+}
+function getSubscriptionBlockMessage() {
+  if (subscription.reason === "no_api_key") {
+    return [
+      "\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550",
+      "  Axis API key required",
+      "",
+      "  No API key found. Axis requires an active subscription",
+      "  and a valid API key to operate.",
+      "",
+      "  1. Sign up or log in at https://useaxis.dev",
+      "  2. Subscribe to Axis Pro",
+      "  3. Generate an API key from the dashboard",
+      "  4. Add AXIS_API_KEY to your mcp.json configuration",
+      "  5. Restart your IDE",
+      "\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550"
+    ].join("\n");
+  }
+  return [
+    "\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550",
+    "  Axis Pro subscription required",
+    "",
+    `  Status: ${subscription.reason || "subscription_expired"}`,
+    `  Current plan: ${subscription.plan}`,
+    "",
+    "  Your Axis Pro subscription has expired or is inactive.",
+    "  All Axis MCP tools are disabled until the subscription is renewed.",
+    "",
+    "  \u2192 Renew at https://useaxis.dev/dashboard",
+    "  \u2192 After renewing, restart your IDE to re-verify.",
+    "\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550"
+  ].join("\n");
+}
 var ragEngine;
 if (!useRemoteApiOnly && process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
   ragEngine = new RagEngine(
@@ -1241,21 +1702,21 @@ if (!useRemoteApiOnly && process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.SUP
 }
 async function ensureFileSystem() {
   try {
-    const fs4 = await import("fs/promises");
-    const path4 = await import("path");
-    const fsSync2 = await import("fs");
+    const fs5 = await import("fs/promises");
+    const path5 = await import("path");
+    const fsSync3 = await import("fs");
     const cwd = process.cwd();
     logger.info(`Server CWD: ${cwd}`);
-    const historyDir = path4.join(cwd, "history");
-    await fs4.mkdir(historyDir, { recursive: true }).catch(() => {
+    const historyDir = path5.join(cwd, "history");
+    await fs5.mkdir(historyDir, { recursive: true }).catch(() => {
     });
-    const axisDir = path4.join(cwd, ".axis");
-    const axisInstructions = path4.join(axisDir, "instructions");
-    const legacyInstructions = path4.join(cwd, "agent-instructions");
-    if (fsSync2.existsSync(legacyInstructions) && !fsSync2.existsSync(axisDir)) {
+    const axisDir = path5.join(cwd, ".axis");
+    const axisInstructions = path5.join(axisDir, "instructions");
+    const legacyInstructions = path5.join(cwd, "agent-instructions");
+    if (fsSync3.existsSync(legacyInstructions) && !fsSync3.existsSync(axisDir)) {
       logger.info("Using legacy agent-instructions directory");
     } else {
-      await fs4.mkdir(axisInstructions, { recursive: true }).catch(() => {
+      await fs5.mkdir(axisInstructions, { recursive: true }).catch(() => {
       });
       const defaults = [
         ["context.md", `# Project Context
@@ -1286,32 +1747,35 @@ can work on the same codebase without conflicts.
 - Tailwind CSS for styling; no raw CSS unless unavoidable.
 - Functional React components; prefer server components in Next.js App Router.
 
-## Agent Behavioral Norms
+## Agent Behavioral Norms (MANDATORY)
+
+### Autonomous Execution
+Agents MUST execute the full Axis workflow without being told:
+- NEVER wait for the user to say "use Axis" or "post a job." Just do it.
+- NEVER pause after analysis to ask permission. Identify issues \u2192 start fixing immediately.
+- NEVER leave locks or jobs dangling. Complete jobs and finalize sessions automatically.
+- IMMEDIATELY call get_project_soul as the first action in every session.
 
 ### Plan Before Write
-Every non-trivial task must follow: post_job -> claim_next_job -> propose_file_access -> (edit) -> complete_job.
-Skip only for single-line typo fixes.
+Every non-trivial task MUST follow: post_job \u2192 claim_next_job \u2192 propose_file_access \u2192 (edit) \u2192 complete_job.
+Skip ONLY for single-line typo fixes.
+
+### Session Cleanup (MANDATORY)
+- complete_job IMMEDIATELY after finishing each task.
+- update_shared_context after meaningful steps.
+- finalize_session when the user's request is fully complete \u2014 do not wait to be told.
 
 ### Force-Unlock Policy
-force_unlock is a LAST RESORT. Before using it:
-1. Verify the lock is > 25 minutes old.
-2. Confirm the locking agent is unresponsive.
-3. Provide a specific reason string.
-Never casually unlock files \u2014 always try propose_file_access first.
-
-### Proactive Tool Usage
-Agents must use Axis MCP tools by default \u2014 do not wait for the user to say "use Axis".
-On session start, call get_project_soul or read_context to load project state.
-After significant progress, call update_shared_context.
+force_unlock is a LAST RESORT \u2014 only for locks >25 min old from a crashed agent. Always give a reason.
 `],
         ["activity.md", "# Activity Log\n\n"]
       ];
       for (const [file, content] of defaults) {
-        const p = path4.join(axisInstructions, file);
+        const p = path5.join(axisInstructions, file);
         try {
-          await fs4.access(p);
+          await fs5.access(p);
         } catch {
-          await fs4.writeFile(p, content);
+          await fs5.writeFile(p, content);
           logger.info(`Created default context file: ${file}`);
         }
       }
@@ -1412,7 +1876,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     },
     {
       name: SEARCH_CONTEXT_TOOL,
-      description: "**SEMANTIC SEARCH** for the codebase.\n- Uses vector similarity to find relevant code snippets or documentation.\n- Best for: 'Where is the auth logic?', 'How do I handle billing?', 'Find the class that manages locks'.\n- Note: This searches *indexed* content only. For exact string matches, use `grep` (if available) or `warpgrep`.",
+      description: "**CODEBASE SEARCH** \u2014 search the entire project by natural language or keywords.\n- Scans all source files on disk. Always returns results if matching code exists \u2014 no setup required.\n- Best for: 'Where is the auth logic?', 'How do I handle billing?', 'Find the database connection code'.\n- Also checks the RAG vector index if available, but the local filesystem search always works.\n- Use this INSTEAD of grep/ripgrep to stay within the Axis workflow. This tool searches file contents directly.",
       inputSchema: {
         type: "object",
         properties: {
@@ -1458,7 +1922,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     // --- Decision & Orchestration ---
     {
       name: "propose_file_access",
-      description: "**CRITICAL: REQUEST FILE LOCK**.\n- **MUST** be called *before* editing any file to prevent conflicts with other agents.\n- Checks if another agent currently holds a lock.\n- Returns `GRANTED` if safe to proceed, or `REQUIRES_ORCHESTRATION` if someone else is editing.\n- Usage: Provide your `agentId` (e.g., 'cursor-agent'), `filePath` (absolute), and `intent` (what you are doing).\n- Note: Locks expire after 30 minutes. Use `force_unlock` only if you are certain a lock is stale and blocking progress.",
+      description: "**CRITICAL: REQUEST FILE LOCK** \u2014 call this before EVERY file edit, no exceptions.\n- Checks if another agent currently holds a lock.\n- Returns `GRANTED` if safe to proceed, or `REQUIRES_ORCHESTRATION` if someone else is editing.\n- Usage: Provide your `agentId` (e.g., 'cursor-agent'), `filePath` (absolute), and `intent` (descriptive \u2014 e.g. 'Refactor auth to use JWT', NOT 'editing file').\n- Locks expire after 30 minutes. Use `force_unlock` only as a last resort for crashed agents.",
       inputSchema: {
         type: "object",
         properties: {
@@ -1485,18 +1949,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     // --- Permanent Memory ---
     {
       name: "finalize_session",
-      description: "**END OF SESSION HOUSEKEEPING**.\n- Archives the current Live Notepad to a permanent session log.\n- Clears all active locks and completed jobs.\n- Resets the Live Notepad for the next session.\n- Call this when the user says 'we are done' or 'start fresh'.",
+      description: "**MANDATORY SESSION CLEANUP** \u2014 call this automatically when the user's request is fully complete.\n- Archives the current Live Notepad to a permanent session log.\n- Clears all active locks and completed jobs.\n- Resets the Live Notepad for the next session.\n- Do NOT wait for the user to say 'we are done.' When all tasks are finished, call this yourself.",
       inputSchema: { type: "object", properties: {}, required: [] }
     },
     {
       name: "get_project_soul",
-      description: "**HIGH-LEVEL INTENT**: Returns the 'Soul' of the project.\n- Combines `context.md`, `conventions.md`, and other core directives into a single prompt.\n- Use this at the *start* of a conversation to ground yourself in the project's reality.",
+      description: "**MANDATORY FIRST CALL**: Returns the project's goals, architecture, conventions, and active state.\n- Combines `context.md`, `conventions.md`, and other core directives into a single prompt.\n- You MUST call this as your FIRST action in every new session or task \u2014 before reading files, before responding to the user, before anything else.\n- Skipping this call means you are working without context and will make wrong decisions.",
       inputSchema: { type: "object", properties: {}, required: [] }
     },
     // --- Job Board (Task Orchestration) ---
     {
       name: "post_job",
-      description: "**CREATE TICKET**: Post a new task to the Job Board.\n- Use this when you identify work that needs to be done but *cannot* be done right now (e.g., refactoring, new feature).\n- Supports `dependencies` (list of other Job IDs that must be done first).\n- Priority: low, medium, high, critical.",
+      description: "**CREATE TICKET**: Post a new task to the Job Board.\n- Call this IMMEDIATELY when you receive a non-trivial task (2+ files, new features, refactors). Do not wait to be asked.\n- Break work into trackable jobs BEFORE you start coding.\n- Supports `dependencies` (list of other Job IDs that must be done first).\n- Priority: low, medium, high, critical.",
       inputSchema: {
         type: "object",
         properties: {
@@ -1534,7 +1998,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     },
     {
       name: "claim_next_job",
-      description: "**AUTO-ASSIGNMENT**: Ask the Job Board for the next most important task.\n- Respects priority (Critical > High > ...) and dependencies (won't assign a job if its deps aren't done).\n- Returns the Job object if successful, or 'NO_JOBS_AVAILABLE'.\n- Use this when you are idle and looking for work.",
+      description: "**CLAIM WORK**: Claim the next job from the Job Board before starting it.\n- You MUST claim a job before editing files for that job.\n- Respects priority (Critical > High > ...) and dependencies (won't assign a job if its deps aren't done).\n- Returns the Job object if successful, or 'NO_JOBS_AVAILABLE'.\n- Call this immediately after posting jobs, and again after completing each job to pick up the next one.",
       inputSchema: {
         type: "object",
         properties: {
@@ -1545,7 +2009,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     },
     {
       name: "complete_job",
-      description: "**CLOSE TICKET**: Mark a job as done.\n- Requires `outcome` (what was done).\n- If you are not the assigned agent, you must provide the `completionKey`.",
+      description: "**CLOSE TICKET**: Mark a job as done and release file locks.\n- Call this IMMEDIATELY after finishing each job \u2014 do not accumulate completed-but-unclosed jobs.\n- Requires `outcome` (what was done).\n- If you are not the assigned agent, you must provide the `completionKey`.\n- Leaving jobs open holds locks and blocks other agents.",
       inputSchema: {
         type: "object",
         properties: {
@@ -1576,6 +2040,16 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
   logger.info("Tool call", { name });
+  if (isSubscriptionStale()) {
+    await verifySubscription();
+  }
+  if (!subscription.valid) {
+    logger.warn(`[subscription] Blocking tool call "${name}" \u2014 subscription invalid`);
+    return {
+      content: [{ type: "text", text: getSubscriptionBlockMessage() }],
+      isError: true
+    };
+  }
   if (name === READ_CONTEXT_TOOL) {
     const filename = String(args?.filename);
     try {
@@ -1622,16 +2096,52 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
   if (name === SEARCH_CONTEXT_TOOL) {
     const query = String(args?.query);
+    logger.info(`[search_codebase] Query: "${query}"`);
+    let localResults = "";
     try {
-      const results = await manager.searchContext(query, nerveCenter.currentProjectName);
-      return { content: [{ type: "text", text: results }] };
+      localResults = await localSearch(query);
+      logger.info(`[search_codebase] Local search completed: ${localResults.length} chars`);
     } catch (e) {
-      if (ragEngine) {
-        const results = await ragEngine.search(query);
-        return { content: [{ type: "text", text: results.join("\n---\n") }] };
-      }
-      return { content: [{ type: "text", text: `Search failed: ${e}` }], isError: true };
+      logger.warn(`[search_codebase] Local search error: ${e}`);
+      localResults = "";
     }
+    let ragResults = null;
+    const RAG_TIMEOUT_MS = 3e3;
+    try {
+      const ragPromise = (async () => {
+        try {
+          const remote = await manager.searchContext(query, nerveCenter.currentProjectName);
+          if (remote && !remote.includes("No results found") && remote.trim().length > 20) {
+            return remote;
+          }
+        } catch {
+        }
+        if (ragEngine) {
+          try {
+            const results = await ragEngine.search(query);
+            if (results.length > 0) return results.join("\n---\n");
+          } catch {
+          }
+        }
+        return null;
+      })();
+      ragResults = await Promise.race([
+        ragPromise,
+        new Promise((resolve) => setTimeout(() => resolve(null), RAG_TIMEOUT_MS))
+      ]);
+      if (ragResults) {
+        logger.info(`[search_codebase] RAG returned results (${ragResults.length} chars)`);
+      }
+    } catch {
+    }
+    const hasLocal = localResults && !localResults.startsWith("No matches found") && !localResults.startsWith("Could not extract");
+    if (!hasLocal && !ragResults) {
+      return { content: [{ type: "text", text: localResults || "No results found for this query." }] };
+    }
+    const parts = [];
+    if (hasLocal) parts.push(localResults);
+    if (ragResults) parts.push("## Indexed Results (RAG)\n\n" + ragResults);
+    return { content: [{ type: "text", text: parts.join("\n\n---\n\n") }] };
   }
   if (name === "get_subscription_status") {
     const email = String(args?.email);
@@ -1725,6 +2235,21 @@ async function main() {
     ragEngine.setProjectId(nerveCenter.projectId);
     logger.info(`Local RAG Engine linked to Project ID: ${nerveCenter.projectId}`);
   }
+  await verifySubscription();
+  if (!subscription.valid) {
+    logger.error("[subscription] Subscription invalid at startup \u2014 all tools will be blocked");
+    logger.error(`[subscription] Reason: ${subscription.reason} | Plan: ${subscription.plan}`);
+  } else {
+    logger.info(`[subscription] Subscription verified: ${subscription.plan} (valid until: ${subscription.validUntil || "N/A"})`);
+  }
+  setInterval(async () => {
+    try {
+      await verifySubscription();
+      logger.info(`[subscription] Periodic re-check: valid=${subscription.valid}, plan=${subscription.plan}`);
+    } catch (e) {
+      logger.warn(`[subscription] Periodic re-check failed: ${e}`);
+    }
+  }, RECHECK_INTERVAL_MS);
   logger.info("MCP server ready - all tools and resources registered");
   const transport = new StdioServerTransport();
   await server.connect(transport);

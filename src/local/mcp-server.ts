@@ -13,6 +13,7 @@ import { RagEngine } from "./rag-engine.js";
 import { logger } from "../utils/logger.js";
 import path from "path";
 import fs from "fs";
+import { localSearch } from "./local-search.js";
 
 // MCP servers receive configuration via environment variables passed by the MCP client (Cursor)
 // These come from the mcp.json config file, not from .env.local
@@ -106,6 +107,152 @@ const nerveCenter = new NerveCenter(manager, {
 
 logger.info("=== Axis MCP Server Initialized ===");
 
+// ── Subscription Verification (server-level gate — prompt-injection proof) ──
+// This runs in the Node.js process, not in the LLM context.
+// No amount of prompt engineering can bypass a hard return before tool dispatch.
+
+interface SubscriptionState {
+  checked: boolean;
+  valid: boolean;
+  plan: string;
+  reason: string;
+  checkedAt: number; // epoch ms
+  validUntil?: string;
+}
+
+const RECHECK_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
+const GRACE_PERIOD_MS = 5 * 60 * 1000; // 5 min grace if verify endpoint is unreachable on first try
+
+let subscription: SubscriptionState = {
+  checked: false,
+  valid: true, // Assume valid until proven otherwise (for startup)
+  plan: "unknown",
+  reason: "",
+  checkedAt: 0,
+};
+
+async function verifySubscription(): Promise<SubscriptionState> {
+  // No API key — only allow if direct Supabase credentials are configured (Axis developer mode)
+  if (!apiSecret) {
+    const hasDirectSupabase = !useRemoteApiOnly
+      && !!process.env.NEXT_PUBLIC_SUPABASE_URL
+      && !!process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+    if (hasDirectSupabase) {
+      subscription = { checked: true, valid: true, plan: "developer", reason: "Direct Supabase mode — no API key needed", checkedAt: Date.now() };
+      logger.info("[subscription] Direct Supabase credentials found — developer mode, skipping verification");
+      return subscription;
+    }
+
+    // No API key AND no Supabase = unauthorized
+    subscription = {
+      checked: true,
+      valid: false,
+      plan: "none",
+      reason: "no_api_key",
+      checkedAt: Date.now(),
+    };
+    logger.error("[subscription] No API key configured. Axis requires an API key from https://useaxis.dev/dashboard");
+    return subscription;
+  }
+
+  const verifyUrl = apiUrl.endsWith("/v1") ? `${apiUrl}/verify` : `${apiUrl}/v1/verify`;
+  logger.info(`[subscription] Verifying subscription at ${verifyUrl}`);
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10_000);
+
+  try {
+    const response = await fetch(verifyUrl, {
+      method: "GET",
+      headers: {
+        "Authorization": `Bearer ${apiSecret}`,
+      },
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+
+    const data = await response.json() as any;
+    logger.info(`[subscription] Verify response: ${JSON.stringify(data)}`);
+
+    if (data.valid === true) {
+      subscription = {
+        checked: true,
+        valid: true,
+        plan: data.plan || "Pro",
+        reason: "",
+        checkedAt: Date.now(),
+        validUntil: data.validUntil,
+      };
+    } else {
+      subscription = {
+        checked: true,
+        valid: false,
+        plan: data.plan || "Free",
+        reason: data.reason || "subscription_invalid",
+        checkedAt: Date.now(),
+      };
+      logger.warn(`[subscription] Subscription NOT valid: ${data.reason}`);
+    }
+  } catch (e: any) {
+    clearTimeout(timeout);
+    logger.warn(`[subscription] Verification failed (network): ${e.message}`);
+
+    // If we've never successfully checked, allow a grace period
+    if (!subscription.checked) {
+      subscription = {
+        checked: true,
+        valid: true, // Grace period
+        plan: "unverified",
+        reason: "Verification endpoint unreachable — grace period active",
+        checkedAt: Date.now(),
+      };
+      logger.warn("[subscription] First check failed — allowing grace period");
+    }
+    // If we have a previous result, keep it (don't flip to invalid on transient network issues)
+  }
+
+  return subscription;
+}
+
+function isSubscriptionStale(): boolean {
+  return Date.now() - subscription.checkedAt > RECHECK_INTERVAL_MS;
+}
+
+function getSubscriptionBlockMessage(): string {
+  if (subscription.reason === "no_api_key") {
+    return [
+      "═══════════════════════════════════════════════════════════",
+      "  Axis API key required",
+      "",
+      "  No API key found. Axis requires an active subscription",
+      "  and a valid API key to operate.",
+      "",
+      "  1. Sign up or log in at https://useaxis.dev",
+      "  2. Subscribe to Axis Pro",
+      "  3. Generate an API key from the dashboard",
+      "  4. Add AXIS_API_KEY to your mcp.json configuration",
+      "  5. Restart your IDE",
+      "═══════════════════════════════════════════════════════════",
+    ].join("\n");
+  }
+
+  return [
+    "═══════════════════════════════════════════════════════════",
+    "  Axis Pro subscription required",
+    "",
+    `  Status: ${subscription.reason || "subscription_expired"}`,
+    `  Current plan: ${subscription.plan}`,
+    "",
+    "  Your Axis Pro subscription has expired or is inactive.",
+    "  All Axis MCP tools are disabled until the subscription is renewed.",
+    "",
+    "  → Renew at https://useaxis.dev/dashboard",
+    "  → After renewing, restart your IDE to re-verify.",
+    "═══════════════════════════════════════════════════════════",
+  ].join("\n");
+}
+
 // Initialize RAG Engine (Optional - only if local Supabase credentials present AND not in remote mode)
 let ragEngine: RagEngine | undefined;
 if (!useRemoteApiOnly && process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
@@ -176,23 +323,26 @@ can work on the same codebase without conflicts.
 - Tailwind CSS for styling; no raw CSS unless unavoidable.
 - Functional React components; prefer server components in Next.js App Router.
 
-## Agent Behavioral Norms
+## Agent Behavioral Norms (MANDATORY)
+
+### Autonomous Execution
+Agents MUST execute the full Axis workflow without being told:
+- NEVER wait for the user to say "use Axis" or "post a job." Just do it.
+- NEVER pause after analysis to ask permission. Identify issues → start fixing immediately.
+- NEVER leave locks or jobs dangling. Complete jobs and finalize sessions automatically.
+- IMMEDIATELY call get_project_soul as the first action in every session.
 
 ### Plan Before Write
-Every non-trivial task must follow: post_job -> claim_next_job -> propose_file_access -> (edit) -> complete_job.
-Skip only for single-line typo fixes.
+Every non-trivial task MUST follow: post_job → claim_next_job → propose_file_access → (edit) → complete_job.
+Skip ONLY for single-line typo fixes.
+
+### Session Cleanup (MANDATORY)
+- complete_job IMMEDIATELY after finishing each task.
+- update_shared_context after meaningful steps.
+- finalize_session when the user's request is fully complete — do not wait to be told.
 
 ### Force-Unlock Policy
-force_unlock is a LAST RESORT. Before using it:
-1. Verify the lock is > 25 minutes old.
-2. Confirm the locking agent is unresponsive.
-3. Provide a specific reason string.
-Never casually unlock files — always try propose_file_access first.
-
-### Proactive Tool Usage
-Agents must use Axis MCP tools by default — do not wait for the user to say "use Axis".
-On session start, call get_project_soul or read_context to load project state.
-After significant progress, call update_shared_context.
+force_unlock is a LAST RESORT — only for locks >25 min old from a crashed agent. Always give a reason.
 `],
         ["activity.md", "# Activity Log\n\n"]
       ];
@@ -312,7 +462,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: SEARCH_CONTEXT_TOOL,
-        description: "**SEMANTIC SEARCH** for the codebase.\n- Uses vector similarity to find relevant code snippets or documentation.\n- Best for: 'Where is the auth logic?', 'How do I handle billing?', 'Find the class that manages locks'.\n- Note: This searches *indexed* content only. For exact string matches, use `grep` (if available) or `warpgrep`.",
+        description: "**CODEBASE SEARCH** — search the entire project by natural language or keywords.\n- Scans all source files on disk. Always returns results if matching code exists — no setup required.\n- Best for: 'Where is the auth logic?', 'How do I handle billing?', 'Find the database connection code'.\n- Also checks the RAG vector index if available, but the local filesystem search always works.\n- Use this INSTEAD of grep/ripgrep to stay within the Axis workflow. This tool searches file contents directly.",
         inputSchema: {
           type: "object",
           properties: {
@@ -358,7 +508,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       // --- Decision & Orchestration ---
       {
         name: "propose_file_access",
-        description: "**CRITICAL: REQUEST FILE LOCK**.\n- **MUST** be called *before* editing any file to prevent conflicts with other agents.\n- Checks if another agent currently holds a lock.\n- Returns `GRANTED` if safe to proceed, or `REQUIRES_ORCHESTRATION` if someone else is editing.\n- Usage: Provide your `agentId` (e.g., 'cursor-agent'), `filePath` (absolute), and `intent` (what you are doing).\n- Note: Locks expire after 30 minutes. Use `force_unlock` only if you are certain a lock is stale and blocking progress.",
+        description: "**CRITICAL: REQUEST FILE LOCK** — call this before EVERY file edit, no exceptions.\n- Checks if another agent currently holds a lock.\n- Returns `GRANTED` if safe to proceed, or `REQUIRES_ORCHESTRATION` if someone else is editing.\n- Usage: Provide your `agentId` (e.g., 'cursor-agent'), `filePath` (absolute), and `intent` (descriptive — e.g. 'Refactor auth to use JWT', NOT 'editing file').\n- Locks expire after 30 minutes. Use `force_unlock` only as a last resort for crashed agents.",
         inputSchema: {
           type: "object",
           properties: {
@@ -385,18 +535,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       // --- Permanent Memory ---
       {
         name: "finalize_session",
-        description: "**END OF SESSION HOUSEKEEPING**.\n- Archives the current Live Notepad to a permanent session log.\n- Clears all active locks and completed jobs.\n- Resets the Live Notepad for the next session.\n- Call this when the user says 'we are done' or 'start fresh'.",
+        description: "**MANDATORY SESSION CLEANUP** — call this automatically when the user's request is fully complete.\n- Archives the current Live Notepad to a permanent session log.\n- Clears all active locks and completed jobs.\n- Resets the Live Notepad for the next session.\n- Do NOT wait for the user to say 'we are done.' When all tasks are finished, call this yourself.",
         inputSchema: { type: "object", properties: {}, required: [] }
       },
       {
         name: "get_project_soul",
-        description: "**HIGH-LEVEL INTENT**: Returns the 'Soul' of the project.\n- Combines `context.md`, `conventions.md`, and other core directives into a single prompt.\n- Use this at the *start* of a conversation to ground yourself in the project's reality.",
+        description: "**MANDATORY FIRST CALL**: Returns the project's goals, architecture, conventions, and active state.\n- Combines `context.md`, `conventions.md`, and other core directives into a single prompt.\n- You MUST call this as your FIRST action in every new session or task — before reading files, before responding to the user, before anything else.\n- Skipping this call means you are working without context and will make wrong decisions.",
         inputSchema: { type: "object", properties: {}, required: [] }
       },
       // --- Job Board (Task Orchestration) ---
       {
         name: "post_job",
-        description: "**CREATE TICKET**: Post a new task to the Job Board.\n- Use this when you identify work that needs to be done but *cannot* be done right now (e.g., refactoring, new feature).\n- Supports `dependencies` (list of other Job IDs that must be done first).\n- Priority: low, medium, high, critical.",
+        description: "**CREATE TICKET**: Post a new task to the Job Board.\n- Call this IMMEDIATELY when you receive a non-trivial task (2+ files, new features, refactors). Do not wait to be asked.\n- Break work into trackable jobs BEFORE you start coding.\n- Supports `dependencies` (list of other Job IDs that must be done first).\n- Priority: low, medium, high, critical.",
         inputSchema: {
           type: "object",
           properties: {
@@ -434,7 +584,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "claim_next_job",
-        description: "**AUTO-ASSIGNMENT**: Ask the Job Board for the next most important task.\n- Respects priority (Critical > High > ...) and dependencies (won't assign a job if its deps aren't done).\n- Returns the Job object if successful, or 'NO_JOBS_AVAILABLE'.\n- Use this when you are idle and looking for work.",
+        description: "**CLAIM WORK**: Claim the next job from the Job Board before starting it.\n- You MUST claim a job before editing files for that job.\n- Respects priority (Critical > High > ...) and dependencies (won't assign a job if its deps aren't done).\n- Returns the Job object if successful, or 'NO_JOBS_AVAILABLE'.\n- Call this immediately after posting jobs, and again after completing each job to pick up the next one.",
         inputSchema: {
           type: "object",
           properties: {
@@ -445,7 +595,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "complete_job",
-        description: "**CLOSE TICKET**: Mark a job as done.\n- Requires `outcome` (what was done).\n- If you are not the assigned agent, you must provide the `completionKey`.",
+        description: "**CLOSE TICKET**: Mark a job as done and release file locks.\n- Call this IMMEDIATELY after finishing each job — do not accumulate completed-but-unclosed jobs.\n- Requires `outcome` (what was done).\n- If you are not the assigned agent, you must provide the `completionKey`.\n- Leaving jobs open holds locks and blocks other agents.",
         inputSchema: {
           type: "object",
           properties: {
@@ -479,6 +629,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
   logger.info("Tool call", { name });
+
+  // ── Subscription gate (runs before ANY tool logic) ──
+  // Re-check if stale (every 30 min)
+  if (isSubscriptionStale()) {
+    await verifySubscription();
+  }
+
+  // Hard block if subscription is invalid — no tool executes
+  if (!subscription.valid) {
+    logger.warn(`[subscription] Blocking tool call "${name}" — subscription invalid`);
+    return {
+      content: [{ type: "text", text: getSubscriptionBlockMessage() }],
+      isError: true,
+    };
+  }
 
   if (name === READ_CONTEXT_TOOL) {
     const filename = String(args?.filename);
@@ -531,16 +696,71 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   if (name === SEARCH_CONTEXT_TOOL) {
     const query = String(args?.query);
+    logger.info(`[search_codebase] Query: "${query}"`);
+
+    // ── LOCAL SEARCH FIRST (fast, always works, zero config) ──
+    let localResults: string = "";
     try {
-      const results = await manager.searchContext(query, nerveCenter.currentProjectName);
-      return { content: [{ type: "text", text: results }] };
+      localResults = await localSearch(query);
+      logger.info(`[search_codebase] Local search completed: ${localResults.length} chars`);
     } catch (e) {
-      if (ragEngine) {
-        const results = await ragEngine.search(query);
-        return { content: [{ type: "text", text: results.join("\n---\n") }] };
-      }
-      return { content: [{ type: "text", text: `Search failed: ${e}` }], isError: true };
+      logger.warn(`[search_codebase] Local search error: ${e}`);
+      localResults = "";
     }
+
+    // ── RAG as a non-blocking bonus (3s timeout — do NOT hold up results) ──
+    let ragResults: string | null = null;
+    const RAG_TIMEOUT_MS = 3000;
+
+    try {
+      const ragPromise = (async () => {
+        // Try remote API
+        try {
+          const remote = await manager.searchContext(query, nerveCenter.currentProjectName);
+          if (remote && !remote.includes("No results found") && remote.trim().length > 20) {
+            return remote;
+          }
+        } catch { /* fall through */ }
+
+        // Try local RAG engine
+        if (ragEngine) {
+          try {
+            const results = await ragEngine.search(query);
+            if (results.length > 0) return results.join("\n---\n");
+          } catch { /* fall through */ }
+        }
+
+        return null;
+      })();
+
+      // Race RAG against a timeout — never wait more than 3 seconds
+      ragResults = await Promise.race([
+        ragPromise,
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), RAG_TIMEOUT_MS)),
+      ]);
+
+      if (ragResults) {
+        logger.info(`[search_codebase] RAG returned results (${ragResults.length} chars)`);
+      }
+    } catch {
+      // RAG failed entirely — local results are already ready
+    }
+
+    // ── Combine results ──
+    const hasLocal = localResults
+      && !localResults.startsWith("No matches found")
+      && !localResults.startsWith("Could not extract");
+
+    if (!hasLocal && !ragResults) {
+      // Both empty — return the local search message (explains what happened)
+      return { content: [{ type: "text", text: localResults || "No results found for this query." }] };
+    }
+
+    const parts: string[] = [];
+    if (hasLocal) parts.push(localResults);
+    if (ragResults) parts.push("## Indexed Results (RAG)\n\n" + ragResults);
+
+    return { content: [{ type: "text", text: parts.join("\n\n---\n\n") }] };
   }
 
   if (name === "get_subscription_status") {
@@ -645,6 +865,26 @@ async function main() {
     ragEngine.setProjectId(nerveCenter.projectId);
     logger.info(`Local RAG Engine linked to Project ID: ${nerveCenter.projectId}`);
   }
+
+  // ── Verify subscription on startup ──
+  await verifySubscription();
+  if (!subscription.valid) {
+    logger.error("[subscription] Subscription invalid at startup — all tools will be blocked");
+    logger.error(`[subscription] Reason: ${subscription.reason} | Plan: ${subscription.plan}`);
+    // Don't exit — still connect so the agent gets the error message when it tries to use tools
+  } else {
+    logger.info(`[subscription] Subscription verified: ${subscription.plan} (valid until: ${subscription.validUntil || "N/A"})`);
+  }
+
+  // Periodic re-check (runs silently in background)
+  setInterval(async () => {
+    try {
+      await verifySubscription();
+      logger.info(`[subscription] Periodic re-check: valid=${subscription.valid}, plan=${subscription.plan}`);
+    } catch (e) {
+      logger.warn(`[subscription] Periodic re-check failed: ${e}`);
+    }
+  }, RECHECK_INTERVAL_MS);
   
   // Log that tools are registered before connecting
   logger.info("MCP server ready - all tools and resources registered");

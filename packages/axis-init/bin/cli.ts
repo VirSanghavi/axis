@@ -14,65 +14,70 @@ program
 
 // ── Shared protocol content (used by all IDE rule files) ──
 
-const AGENT_PROTOCOL = `You have access to the **Axis MCP tools**. Use them proactively — they are your standard workflow, not optional add-ons. Never wait for the user to say "use Axis."
+const AGENT_PROTOCOL = `## CRITICAL: AUTONOMOUS EXECUTION RULES
 
-## 1. Orient — Read Before Acting
+These rules are mandatory. They are not suggestions. Violating them degrades the user experience and forces manual intervention.
 
-Before doing anything on a new task:
-- Call \`get_project_soul\` to understand the project's goals, architecture, and conventions.
-- Call \`search_codebase\` to check if similar patterns exist before writing new code.
+1. **NEVER** wait for the user to tell you to use Axis tools. They are your default workflow the instant a session begins.
+2. **IMMEDIATELY** call \`get_project_soul\` as your very first action when you receive a task. Do not read files, do not respond to the user — call this tool first.
+3. **ALWAYS** post jobs via \`post_job\` before starting non-trivial work (2+ files, new features, refactors). Do this automatically. The user should never have to remind you.
+4. **NEVER** pause to report findings and wait for permission to continue. When you identify issues, fixes needed, or work to do — start building immediately. The user asked you to act, not narrate and wait.
+5. **ALWAYS** complete jobs (\`complete_job\`) as soon as you finish each task. This releases file locks. Do not leave locks dangling.
+6. **ALWAYS** call \`finalize_session\` when the user's entire request is fully complete. This is mandatory — not optional cleanup.
 
-## 2. Plan Before Write — The Core Invariant
+## Session Lifecycle
 
-**No agent writes code unless it either owns a file lock OR has explicitly declined the job board for a scoped reason.**
+Execute this sequence automatically. Do not wait for the user to walk you through it.
 
-On non-trivial tasks (anything touching 2+ files, any new feature, any refactor):
-1. **Break work into jobs** — \`post_job\` with clear titles and descriptions.
-2. **Claim before editing** — \`claim_next_job\` to pick up work.
-3. **Lock before writing** — \`propose_file_access\` with a **descriptive intent**.
-4. **Complete when done** — \`complete_job\` with a concise outcome.
+### START (do this immediately when you receive a task)
+1. \`get_project_soul\` — load project context, goals, conventions
+2. \`search_codebase\` — check for existing patterns relevant to the task
 
-Direct edits without a job are allowed only for:
-- Single-line fixes, typos, config tweaks
-- Clearly scoped changes the user asked for directly
+### WORK (for each unit of work)
+1. \`post_job\` — break the task into trackable jobs (skip ONLY for single-line typo fixes)
+2. \`claim_next_job\` — claim the first job
+3. \`propose_file_access\` — lock each file before editing (with descriptive intent)
+4. Make the changes
+5. \`complete_job\` — report outcome (this releases the lock)
+6. \`update_shared_context\` — log what you did and why
+7. Repeat from step 2 for remaining jobs
 
-## 3. Lock Protocol
+### CLEANUP (do this when the user's request is fully complete)
+1. Verify all jobs are completed
+2. \`update_shared_context\` — final summary of what was accomplished
+3. \`finalize_session\` — archive context, clear all locks, reset state
 
-- Always provide a descriptive \`intent\` when locking (e.g. "Refactor auth middleware to use JWT" — not "editing file").
-- Locks carry metadata visible to humans and other agents: agentId, intent, expires_in (30 min TTL).
-- If \`propose_file_access\` returns \`REQUIRES_ORCHESTRATION\`, **do not edit that file**. Work on something else.
+## Lock Protocol
+
+- Provide a descriptive \`intent\` when locking (e.g. "Refactor auth middleware to use JWT" — not "editing file").
+- If \`propose_file_access\` returns \`REQUIRES_ORCHESTRATION\` — do NOT edit that file. Work on a different file or job instead.
+- Release locks early by completing jobs promptly. Do not hold locks while doing unrelated work.
 
 ### Force Unlock Policy
-\`force_unlock\` is a **last resort**, not a convenience tool.
-- **Only** use when a lock has been held >25 minutes AND the locking agent is clearly crashed or unresponsive.
+\`force_unlock\` is a **last resort**, not a convenience.
+- **Only** use when a lock is >25 minutes old AND the locking agent is clearly crashed.
 - **Always** provide a specific reason.
-- **Never** force-unlock to skip coordination. If another agent holds a lock, work on something else.
-- Prefer waiting for TTL expiry (30 min) over force-unlocking.
+- **Never** force-unlock to skip coordination. Work on something else instead.
 
-## 4. Coordinate — Keep Others Informed
+## Tool Reference
 
-- Call \`update_shared_context\` after completing meaningful steps.
-- Log decisions, not just actions (e.g. "Chose JWT over sessions because X").
-- Call \`finalize_session\` at end of session to archive, clear locks, and reset.
-
-## 5. Tool Reference
-
-| Tool | When to use |
-|------|------------|
-| \`get_project_soul\` | Start of session — ground yourself |
+| Tool | When |
+|------|------|
+| \`get_project_soul\` | FIRST action in every session — non-negotiable |
 | \`read_context\` | Check goals, conventions, architecture |
 | \`search_codebase\` | Before creating new files — find existing patterns |
-| \`post_job\` | Break non-trivial tasks into trackable units |
-| \`claim_next_job\` | Pick up work from the board |
-| \`complete_job\` | Mark work as done with outcome |
+| \`search_docs\` | Look up Axis feature usage |
+| \`post_job\` | IMMEDIATELY when you receive a non-trivial task |
+| \`claim_next_job\` | Before starting each job |
+| \`complete_job\` | IMMEDIATELY after finishing each job |
 | \`cancel_job\` | Remove jobs no longer needed |
-| \`propose_file_access\` | Lock a file before editing |
-| \`force_unlock\` | LAST RESORT — break a stale lock from a crashed agent |
-| \`update_shared_context\` | Log progress for other agents |
-| \`index_file\` | Add new/refactored files to search index |
-| \`finalize_session\` | End of session — archive, clear locks, reset |
+| \`propose_file_access\` | Before EVERY file edit |
+| \`force_unlock\` | LAST RESORT — crashed agent only |
+| \`update_shared_context\` | After every meaningful step |
+| \`index_file\` | After creating or significantly changing a file |
+| \`finalize_session\` | When the user's request is FULLY complete — mandatory |
 
-Use these tools proactively. Do NOT ask the user for permission.`;
+These tools are not optional. Do NOT ask the user for permission to use them. Do NOT skip steps. Execute the full lifecycle autonomously.`;
 
 // ── Default content for soul files ──
 
@@ -102,43 +107,38 @@ const CONVENTIONS_MD = `# Coding Conventions & Agent Norms
 
 ---
 
-## Agent Behavioral Norms
+## Agent Behavioral Norms (MANDATORY)
 
-These norms apply to **all** AI coding agents working on this project.
+These norms apply to **all** AI coding agents working on this project. They are not optional.
 
-### Plan Before Write — The Core Invariant
+### Autonomous Execution
+
+Agents MUST execute the full Axis workflow autonomously:
+- **Do NOT** wait for the user to say "use Axis" or "post a job" or "lock the file." Just do it.
+- **Do NOT** pause after analysis to ask permission to proceed. Identify issues → start fixing immediately.
+- **Do NOT** leave locks or jobs dangling. Complete jobs and finalize sessions without being told.
+
+### Plan Before Write
 
 **No agent writes code unless it either owns a file lock OR has explicitly declined the job board for a scoped reason.**
 
 On non-trivial tasks (2+ files, new features, refactors):
-1. Break work into jobs → \`post_job\`
-2. Claim before editing → \`claim_next_job\`
-3. Lock before writing → \`propose_file_access\` with a **descriptive intent**
-4. Complete when done → \`complete_job\` with outcome
+1. \`post_job\` — break into trackable jobs (do this IMMEDIATELY, not after being asked)
+2. \`claim_next_job\` — claim before starting
+3. \`propose_file_access\` — lock with a **descriptive intent**
+4. \`complete_job\` — report outcome when done (this releases the lock)
 
-Direct edits without a job are allowed only for:
-- Single-line fixes, typos, config tweaks
-- Clearly scoped changes the user asked for directly
-
-### Force Unlock Policy
-
-\`force_unlock\` is a **last resort, not a convenience tool.**
-
-Rules:
-1. **Never** call \`force_unlock\` on a file you didn't lock unless the lock is >25 minutes old AND the locking agent is clearly crashed.
-2. **Always** provide a specific reason.
-3. **Never** force-unlock to skip coordination. Work on something else.
-4. Prefer waiting for TTL expiry (30 min) over force-unlocking.
+Skip jobs ONLY for: single-line fixes, typos, config tweaks.
 
 ### Lock Hygiene
-- Always provide descriptive \`intent\` when locking.
-- Release locks early by completing jobs.
-- Call \`finalize_session\` at end of session to clean up.
+- Descriptive \`intent\` when locking (not "editing file").
+- Release locks IMMEDIATELY by completing jobs. Never hold a lock while doing unrelated work.
+- \`force_unlock\` is a **last resort** — only for locks >25 min old from a crashed agent.
 
-### Shared Memory
-- Call \`update_shared_context\` after meaningful steps.
-- Log decisions, not just actions.
-- Other agents read the notepad in real-time — write for them.
+### Session Cleanup (MANDATORY)
+- \`complete_job\` after EVERY finished task — do not accumulate incomplete jobs.
+- \`update_shared_context\` after meaningful steps — log decisions, not just actions.
+- \`finalize_session\` when the user's request is fully complete — this is required, not optional.
 `;
 
 const ACTIVITY_MD = `# Activity Log
