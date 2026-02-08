@@ -6,7 +6,6 @@ import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import Link from 'next/link';
 import Navbar from '@/components/Navbar';
-import { Terminal } from 'lucide-react';
 import { supabase } from '@/lib/supabase-client';
 
 // Helper for classes
@@ -54,21 +53,36 @@ interface SubscriptionData {
   };
 }
 
-// Simple bar chart component for usage
+// Bar chart component for usage — fills available space
 function UsageChart({ data }: { data: { day: string; requests: number }[] }) {
   const max = Math.max(...data.map(d => d.requests), 1);
+  // Scale bar heights: use a power curve so small differences are visible
+  // When max is low (e.g. <10), bars get a generous minimum so they don't look flat
+  const getBarPercent = (requests: number) => {
+    if (requests === 0) return 0;
+    // Use sqrt scale so small values get amplified relative to large ones
+    const ratio = Math.sqrt(requests / max);
+    // Ensure minimum visible bar of 12% for any non-zero value
+    return Math.max(12, ratio * 100);
+  };
 
   return (
-    <div className="h-24 flex items-end gap-1">
+    <div className="flex-1 flex items-end gap-1.5 min-h-0">
       {data.map((d, i) => (
-        <div key={i} className="flex-1 flex flex-col items-center gap-1">
-          <motion.div
-            initial={{ height: 0 }}
-            animate={{ height: `${(d.requests / max) * 100}%` }}
-            transition={{ duration: 0.5, delay: i * 0.05 }}
-            className="w-full bg-blue-400 rounded-t min-h-[2px]"
-          />
-          <span className="text-[8px] text-neutral-400 font-mono">{d.day}</span>
+        <div key={i} className="flex-1 flex flex-col items-center gap-1.5 h-full">
+          <div className="flex-1 flex items-end w-full">
+            <motion.div
+              initial={{ height: 0 }}
+              animate={{ height: `${getBarPercent(d.requests)}%` }}
+              transition={{ duration: 0.5, delay: i * 0.05 }}
+              className="w-full bg-neutral-900 rounded-t"
+              style={{ minHeight: d.requests > 0 ? 4 : 0 }}
+            />
+          </div>
+          <div className="flex flex-col items-center">
+            <span className="text-[9px] font-mono text-neutral-900 font-medium">{d.requests}</span>
+            <span className="text-[8px] text-neutral-400 font-mono">{d.day}</span>
+          </div>
         </div>
       ))}
     </div>
@@ -360,7 +374,7 @@ export default function Dashboard() {
                 )}
 
                 {activeTab === 'usage' && (
-                  <div>
+                  <div className="flex flex-col h-full">
                     <div className="flex justify-between items-center mb-4">
                       <span className="text-[11px] font-mono text-neutral-500 uppercase tracking-widest">total requests</span>
                       <span className="text-[11px] font-mono font-bold">{totalRequests}</span>
@@ -410,7 +424,7 @@ export default function Dashboard() {
                 )}
               </div>
 
-              <div className="mt-8 pt-8 border-t border-neutral-100">
+              <div className="mt-4 pt-4 border-t border-neutral-100">
                 <div className="flex items-center gap-2 mb-4">
                   <h3 className="text-[10px] font-mono text-neutral-500 uppercase tracking-[0.3em]">live activity feed</h3>
                 </div>
@@ -461,7 +475,6 @@ export default function Dashboard() {
               {/* Quick Integration Guide - NEW */}
               <div className="pt-4">
                 <div className="flex items-center gap-2 mb-3">
-                  <Terminal size={14} className="text-neutral-400" />
                   <h3 className="text-[10px] font-mono text-neutral-400 uppercase tracking-[0.3em]">mcp headers guide</h3>
                 </div>
                 <div className="bg-neutral-50 border border-dashed border-neutral-300 rounded p-4 font-mono">
