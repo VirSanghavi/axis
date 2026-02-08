@@ -329,25 +329,37 @@ var NerveCenter = class {
     this._projectId = created.id;
   }
   async callCoordination(endpoint, method = "GET", body) {
+    logger.info(`[callCoordination] Starting - endpoint: ${endpoint}, method: ${method}`);
+    logger.info(`[callCoordination] apiUrl: ${this.contextManager.apiUrl}, apiSecret: ${this.contextManager.apiSecret ? "SET (" + this.contextManager.apiSecret.substring(0, 10) + "...)" : "NOT SET"}`);
     if (!this.contextManager.apiUrl) {
-      logger.error("Remote API not configured - apiUrl is:", this.contextManager.apiUrl);
+      logger.error("[callCoordination] Remote API not configured - apiUrl is:", this.contextManager.apiUrl);
       throw new Error("Remote API not configured");
     }
     const url = this.contextManager.apiUrl.endsWith("/v1") ? `${this.contextManager.apiUrl}/${endpoint}` : `${this.contextManager.apiUrl}/v1/${endpoint}`;
-    logger.info(`Calling coordination API: ${method} ${url}`);
-    const response = await fetch(url, {
-      method,
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${this.contextManager.apiSecret || ""}`
-      },
-      body: body ? JSON.stringify({ ...body, projectName: this.projectName }) : void 0
-    });
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`Coordination API Error (${response.status}): ${text}`);
+    logger.info(`[callCoordination] Full URL: ${method} ${url}`);
+    logger.info(`[callCoordination] Request body: ${body ? JSON.stringify({ ...body, projectName: this.projectName }) : "none"}`);
+    try {
+      const response = await fetch(url, {
+        method,
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${this.contextManager.apiSecret || ""}`
+        },
+        body: body ? JSON.stringify({ ...body, projectName: this.projectName }) : void 0
+      });
+      logger.info(`[callCoordination] Response status: ${response.status} ${response.statusText}`);
+      if (!response.ok) {
+        const text = await response.text();
+        logger.error(`[callCoordination] API Error Response: ${text}`);
+        throw new Error(`Coordination API Error (${response.status}): ${text}`);
+      }
+      const jsonResult = await response.json();
+      logger.info(`[callCoordination] Success - Response: ${JSON.stringify(jsonResult).substring(0, 200)}...`);
+      return jsonResult;
+    } catch (e) {
+      logger.error(`[callCoordination] Fetch failed: ${e.message}`, e);
+      throw e;
     }
-    return await response.json();
   }
   jobFromRecord(record) {
     return {
@@ -386,10 +398,14 @@ var NerveCenter = class {
     return Object.values(this.state.jobs);
   }
   async getLocks() {
+    logger.info(`[getLocks] Starting - projectName: ${this.projectName}`);
+    logger.info(`[getLocks] Config - apiUrl: ${this.contextManager.apiUrl}, useSupabase: ${this.useSupabase}, hasSupabase: ${!!this.supabase}`);
     if (this.contextManager.apiUrl) {
       if (!this.useSupabase || !this.supabase) {
         try {
+          logger.info(`[getLocks] Fetching locks from API for project: ${this.projectName}`);
           const res = await this.callCoordination(`locks?projectName=${this.projectName}`);
+          logger.info(`[getLocks] API returned ${res.locks?.length || 0} locks`);
           return (res.locks || []).map((row) => ({
             agentId: row.agent_id,
             filePath: row.file_path,
@@ -398,7 +414,7 @@ var NerveCenter = class {
             timestamp: Date.parse(row.updated_at || row.timestamp)
           }));
         } catch (e) {
-          logger.error("Failed to fetch locks from API", e);
+          logger.error(`[getLocks] Failed to fetch locks from API: ${e.message}`, e);
         }
       }
     }
@@ -710,9 +726,13 @@ ${notepad}`;
   // --- Decision & Orchestration ---
   async proposeFileAccess(agentId, filePath, intent, userPrompt) {
     return await this.mutex.runExclusive(async () => {
+      logger.info(`[proposeFileAccess] Starting - agentId: ${agentId}, filePath: ${filePath}`);
+      logger.info(`[proposeFileAccess] Config - apiUrl: ${this.contextManager.apiUrl}, apiSecret: ${this.contextManager.apiSecret ? "SET" : "NOT SET"}, useSupabase: ${this.useSupabase}`);
       if (this.contextManager.apiUrl) {
         try {
+          logger.info(`[proposeFileAccess] Getting current locks...`);
           const locks = await this.getLocks();
+          logger.info(`[proposeFileAccess] Found ${locks.length} existing locks`);
           const existing = locks.find((l) => l.filePath === filePath);
           if (existing) {
             const isStale = Date.now() - existing.timestamp > this.lockTimeout;
@@ -724,6 +744,7 @@ ${notepad}`;
               };
             }
           }
+          logger.info(`[proposeFileAccess] Attempting to acquire lock via API...`);
           const result = await this.callCoordination("locks", "POST", {
             action: "lock",
             filePath,
@@ -731,13 +752,17 @@ ${notepad}`;
             intent,
             userPrompt
           });
+          logger.info(`[proposeFileAccess] Lock acquired successfully: ${JSON.stringify(result)}`);
           await this.appendToNotepad(`
 - [LOCK] ${agentId} locked ${filePath}
   Intent: ${intent}`);
           return { status: "GRANTED", message: `Access granted for ${filePath}` };
         } catch (e) {
-          logger.error("API lock failed", e);
+          logger.error(`[proposeFileAccess] API lock failed: ${e.message}`, e);
+          return { error: `Failed to acquire lock via API: ${e.message}` };
         }
+      } else {
+        logger.warn("[proposeFileAccess] No API URL configured");
       }
       if (this.useSupabase && this.supabase && this._projectId) {
         try {
@@ -888,17 +913,20 @@ ${conventions}`;
   }
   // --- Billing & Usage ---
   async getSubscriptionStatus(email) {
-    logger.info(`getSubscriptionStatus: apiUrl=${this.contextManager.apiUrl}, useSupabase=${this.useSupabase}`);
+    logger.info(`[getSubscriptionStatus] Starting - email: ${email}`);
+    logger.info(`[getSubscriptionStatus] Config - apiUrl: ${this.contextManager.apiUrl}, apiSecret: ${this.contextManager.apiSecret ? "SET" : "NOT SET"}, useSupabase: ${this.useSupabase}`);
     if (this.contextManager.apiUrl) {
       try {
+        logger.info(`[getSubscriptionStatus] Attempting API call to: usage?email=${encodeURIComponent(email)}`);
         const result = await this.callCoordination(`usage?email=${encodeURIComponent(email)}`);
-        logger.info("getSubscriptionStatus: API call successful");
+        logger.info(`[getSubscriptionStatus] API call successful: ${JSON.stringify(result).substring(0, 200)}`);
         return result;
       } catch (e) {
-        logger.error("Failed to fetch subscription status via API", e);
+        logger.error(`[getSubscriptionStatus] API call failed: ${e.message}`, e);
+        return { error: `API call failed: ${e.message}` };
       }
     } else {
-      logger.warn("getSubscriptionStatus: No API URL configured");
+      logger.warn("[getSubscriptionStatus] No API URL configured");
     }
     if (this.useSupabase && this.supabase) {
       const { data: profile, error } = await this.supabase.from("profiles").select("subscription_status, stripe_customer_id, current_period_end").eq("email", email).single();
@@ -913,22 +941,27 @@ ${conventions}`;
         validUntil: profile.current_period_end
       };
     }
-    return { error: "Coordination not configured." };
+    return { error: "Coordination not configured. API URL not set and Supabase not available." };
   }
   async getUsageStats(email) {
+    logger.info(`[getUsageStats] Starting - email: ${email}`);
+    logger.info(`[getUsageStats] Config - apiUrl: ${this.contextManager.apiUrl}, apiSecret: ${this.contextManager.apiSecret ? "SET" : "NOT SET"}, useSupabase: ${this.useSupabase}`);
     if (this.contextManager.apiUrl) {
       try {
+        logger.info(`[getUsageStats] Attempting API call to: usage?email=${encodeURIComponent(email)}`);
         const result = await this.callCoordination(`usage?email=${encodeURIComponent(email)}`);
+        logger.info(`[getUsageStats] API call successful: ${JSON.stringify(result).substring(0, 200)}`);
         return { email, usageCount: result.usageCount || 0 };
       } catch (e) {
-        logger.error("Failed to fetch usage stats via API", e);
+        logger.error(`[getUsageStats] API call failed: ${e.message}`, e);
+        return { error: `API call failed: ${e.message}` };
       }
     }
     if (this.useSupabase && this.supabase) {
       const { data: profile } = await this.supabase.from("profiles").select("usage_count").eq("email", email).single();
       return { email, usageCount: profile?.usage_count || 0 };
     }
-    return { error: "Coordination not configured." };
+    return { error: "Coordination not configured. API URL not set and Supabase not available." };
   }
 };
 

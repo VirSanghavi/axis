@@ -8,6 +8,21 @@ import { getOrCreateProjectId } from "@/lib/project-utils";
 
 // Force dynamic to ensure we don't cache auth
 export const dynamic = 'force-dynamic';
+// Force Node runtime (Supabase service role doesn't work in Edge)
+export const runtime = "nodejs";
+
+// Create Supabase client inside function to avoid stale clients on Vercel cold starts
+function getSupabase() {
+    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    
+    if (!url || !key) {
+        console.error("[search] Missing Supabase env vars:", { hasUrl: !!url, hasKey: !!key });
+        throw new Error("Supabase configuration missing");
+    }
+    
+    return createClient(url, key);
+}
 
 export async function POST(req: NextRequest) {
     const session = await getSessionFromRequest(req);
@@ -21,10 +36,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: "Query is required" }, { status: 400 });
     }
 
-    const supabase = createClient(
-        process.env.NEXT_PUBLIC_SUPABASE_URL!,
-        process.env.SUPABASE_SERVICE_ROLE_KEY!
-    );
+    const supabase = getSupabase();
 
     const openai = new OpenAI({
         apiKey: process.env.OPENAI_API_KEY,

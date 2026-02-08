@@ -4,10 +4,21 @@ import { createClient } from "@supabase/supabase-js";
 import { logUsage } from "@/lib/usage";
 import { getOrCreateProjectId } from "@/lib/project-utils";
 
-const supabase = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL || "",
-    process.env.SUPABASE_SERVICE_ROLE_KEY || ""
-);
+// Force Node runtime (Supabase service role doesn't work in Edge)
+export const runtime = "nodejs";
+
+// Create Supabase client inside function to avoid stale clients on Vercel cold starts
+function getSupabase() {
+    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    
+    if (!url || !key) {
+        console.error("[jobs] Missing Supabase env vars:", { hasUrl: !!url, hasKey: !!key });
+        throw new Error("Supabase configuration missing");
+    }
+    
+    return createClient(url, key);
+}
 
 export async function GET(req: NextRequest) {
     const session = await getSessionFromRequest(req);
@@ -17,6 +28,7 @@ export async function GET(req: NextRequest) {
     const projectName = searchParams.get("projectName") || "default";
 
     try {
+        const supabase = getSupabase();
         const projectId = await getOrCreateProjectId(projectName, session.sub!);
 
         const { data: jobs, error } = await supabase
@@ -38,6 +50,7 @@ export async function POST(req: NextRequest) {
     if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     try {
+        const supabase = getSupabase();
         const body = await req.json();
         const { projectName = "default", action, ...jobData } = body;
         const projectId = await getOrCreateProjectId(projectName, session.sub!);

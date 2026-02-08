@@ -3,10 +3,21 @@ import { getSessionFromRequest } from "@/lib/auth";
 import { createClient } from "@supabase/supabase-js";
 import { resolveUserId } from "@/lib/db-utils";
 
-const supabase = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL || "",
-    process.env.SUPABASE_SERVICE_ROLE_KEY || ""
-);
+// Force Node runtime (Supabase service role doesn't work in Edge)
+export const runtime = "nodejs";
+
+// Create Supabase client inside function to avoid stale clients on Vercel cold starts
+function getSupabase() {
+    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    
+    if (!url || !key) {
+        console.error("[usage] Missing Supabase env vars:", { hasUrl: !!url, hasKey: !!key });
+        throw new Error("Supabase configuration missing");
+    }
+    
+    return createClient(url, key);
+}
 
 export async function GET(req: NextRequest) {
     const session = await getSessionFromRequest(req);
@@ -34,6 +45,8 @@ export async function GET(req: NextRequest) {
             userEmail = session.email || "unknown";
         }
 
+        const supabase = getSupabase();
+        
         // 1. Get Profile (Subscription Status)
         const { data: profile, error: profileError } = await supabase
             .from("profiles")

@@ -9,6 +9,22 @@ import { getOrCreateProjectId } from "@/lib/project-utils";
 const WINDOW_MS = 60 * 1000;
 const LIMIT = 50; // Increased limit for syncs
 
+// Force Node runtime (Supabase service role doesn't work in Edge)
+export const runtime = "nodejs";
+
+// Create Supabase client inside function to avoid stale clients on Vercel cold starts
+function getSupabase() {
+    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    
+    if (!url || !key) {
+        console.error("[sessions/sync] Missing Supabase env vars:", { hasUrl: !!url, hasKey: !!key });
+        throw new Error("Supabase configuration missing");
+    }
+    
+    return createClient(url, key);
+}
+
 export async function GET(req: NextRequest) {
     const session = await getSessionFromRequest(req);
     if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -17,10 +33,7 @@ export async function GET(req: NextRequest) {
     const projectName = searchParams.get("projectName") || "default";
 
     try {
-        const supabase = createClient(
-            process.env.NEXT_PUBLIC_SUPABASE_URL || "",
-            process.env.SUPABASE_SERVICE_ROLE_KEY || ""
-        );
+        const supabase = getSupabase();
 
         // Auto-create project if it doesn't exist
         const projectId = await getOrCreateProjectId(projectName, session.sub!);
@@ -65,10 +78,7 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ error: "Title and context are required" }, { status: 400 });
         }
 
-        const supabase = createClient(
-            process.env.NEXT_PUBLIC_SUPABASE_URL || "",
-            process.env.SUPABASE_SERVICE_ROLE_KEY || ""
-        );
+        const supabase = getSupabase();
 
         // Auto-resolve or create project if missing
         if (!projectId) {

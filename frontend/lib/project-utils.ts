@@ -1,9 +1,17 @@
 import { createClient } from "@supabase/supabase-js";
 
-const supabase = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL || "",
-    process.env.SUPABASE_SERVICE_ROLE_KEY || ""
-);
+// Create Supabase client inside function to avoid stale clients on Vercel cold starts
+function getSupabase() {
+    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    
+    if (!url || !key) {
+        console.error("[project-utils] Missing Supabase env vars:", { hasUrl: !!url, hasKey: !!key });
+        throw new Error("Supabase configuration missing");
+    }
+    
+    return createClient(url, key);
+}
 
 /**
  * Get or create a project ID for a user and project name.
@@ -11,6 +19,8 @@ const supabase = createClient(
  * making the MCP experience seamless for users.
  */
 export async function getOrCreateProjectId(projectName: string, userId: string): Promise<string> {
+    const supabase = getSupabase();
+    
     // Try to find existing project
     // Note: Using owner_id as that's the correct field name in the projects table
     const { data: project, error: findError } = await supabase

@@ -218,8 +218,11 @@ export class NerveCenter {
     }
 
     private async callCoordination(endpoint: string, method: string = "GET", body?: any) {
+        logger.info(`[callCoordination] Starting - endpoint: ${endpoint}, method: ${method}`);
+        logger.info(`[callCoordination] apiUrl: ${this.contextManager.apiUrl}, apiSecret: ${this.contextManager.apiSecret ? 'SET (' + this.contextManager.apiSecret.substring(0, 10) + '...)' : 'NOT SET'}`);
+        
         if (!this.contextManager.apiUrl) {
-            logger.error("Remote API not configured - apiUrl is:", this.contextManager.apiUrl);
+            logger.error("[callCoordination] Remote API not configured - apiUrl is:", this.contextManager.apiUrl);
             throw new Error("Remote API not configured");
         }
 
@@ -227,22 +230,34 @@ export class NerveCenter {
             ? `${this.contextManager.apiUrl}/${endpoint}`
             : `${this.contextManager.apiUrl}/v1/${endpoint}`;
 
-        logger.info(`Calling coordination API: ${method} ${url}`);
-        const response = await fetch(url, {
-            method,
-            headers: {
-                "Content-Type": "application/json",
-                "Authorization": `Bearer ${this.contextManager.apiSecret || ""}`
-            },
-            body: body ? JSON.stringify({ ...body, projectName: this.projectName }) : undefined
-        });
+        logger.info(`[callCoordination] Full URL: ${method} ${url}`);
+        logger.info(`[callCoordination] Request body: ${body ? JSON.stringify({ ...body, projectName: this.projectName }) : 'none'}`);
+        
+        try {
+            const response = await fetch(url, {
+                method,
+                headers: {
+                    "Content-Type": "application/json",
+                    "Authorization": `Bearer ${this.contextManager.apiSecret || ""}`
+                },
+                body: body ? JSON.stringify({ ...body, projectName: this.projectName }) : undefined
+            });
 
-        if (!response.ok) {
-            const text = await response.text();
-            throw new Error(`Coordination API Error (${response.status}): ${text}`);
+            logger.info(`[callCoordination] Response status: ${response.status} ${response.statusText}`);
+            
+            if (!response.ok) {
+                const text = await response.text();
+                logger.error(`[callCoordination] API Error Response: ${text}`);
+                throw new Error(`Coordination API Error (${response.status}): ${text}`);
+            }
+
+            const jsonResult = await response.json();
+            logger.info(`[callCoordination] Success - Response: ${JSON.stringify(jsonResult).substring(0, 200)}...`);
+            return jsonResult;
+        } catch (e: any) {
+            logger.error(`[callCoordination] Fetch failed: ${e.message}`, e);
+            throw e;
         }
-
-        return await response.json();
     }
 
     private jobFromRecord(record: JobRecord): Job {
@@ -292,11 +307,16 @@ export class NerveCenter {
 
     private async getLocks(): Promise<FileLock[]> {
         // Priority: Remote API if available (for customers), then Supabase, then local
+        logger.info(`[getLocks] Starting - projectName: ${this.projectName}`);
+        logger.info(`[getLocks] Config - apiUrl: ${this.contextManager.apiUrl}, useSupabase: ${this.useSupabase}, hasSupabase: ${!!this.supabase}`);
+        
         if (this.contextManager.apiUrl) {
             if (!this.useSupabase || !this.supabase) {
                 // Use remote API when Supabase is not configured (customer mode)
                 try {
+                    logger.info(`[getLocks] Fetching locks from API for project: ${this.projectName}`);
                     const res = await this.callCoordination(`locks?projectName=${this.projectName}`) as { locks: any[] };
+                    logger.info(`[getLocks] API returned ${res.locks?.length || 0} locks`);
                     return (res.locks || []).map((row: any) => ({
                         agentId: row.agent_id,
                         filePath: row.file_path,
@@ -305,7 +325,7 @@ export class NerveCenter {
                         timestamp: Date.parse(row.updated_at || row.timestamp)
                     }));
                 } catch (e: any) {
-                    logger.error("Failed to fetch locks from API", e);
+                    logger.error(`[getLocks] Failed to fetch locks from API: ${e.message}`, e);
                     // Fall through to local fallback
                 }
             }
@@ -690,10 +710,15 @@ export class NerveCenter {
         return await this.mutex.runExclusive(async () => {
             // Priority: Remote API if available (for customers), then Supabase, then local
             // Always try remote API first if available
+            logger.info(`[proposeFileAccess] Starting - agentId: ${agentId}, filePath: ${filePath}`);
+            logger.info(`[proposeFileAccess] Config - apiUrl: ${this.contextManager.apiUrl}, apiSecret: ${this.contextManager.apiSecret ? 'SET' : 'NOT SET'}, useSupabase: ${this.useSupabase}`);
+            
             if (this.contextManager.apiUrl) {
                 try {
+                    logger.info(`[proposeFileAccess] Getting current locks...`);
                     // 1. Get current locks to check for conflicts
                     const locks = await this.getLocks();
+                    logger.info(`[proposeFileAccess] Found ${locks.length} existing locks`);
                     const existing = locks.find(l => l.filePath === filePath);
 
                     if (existing) {
@@ -708,6 +733,7 @@ export class NerveCenter {
                     }
 
                     // 2. Acquire lock via API
+                    logger.info(`[proposeFileAccess] Attempting to acquire lock via API...`);
                     const result = await this.callCoordination("locks", "POST", {
                         action: "lock",
                         filePath,
@@ -716,12 +742,16 @@ export class NerveCenter {
                         userPrompt
                     });
 
+                    logger.info(`[proposeFileAccess] Lock acquired successfully: ${JSON.stringify(result)}`);
                     await this.appendToNotepad(`\n- [LOCK] ${agentId} locked ${filePath}\n  Intent: ${intent}`);
                     return { status: "GRANTED", message: `Access granted for ${filePath}` };
                 } catch (e: any) {
-                    logger.error("API lock failed", e);
-                    // Fall through to Supabase or local fallback
+                    logger.error(`[proposeFileAccess] API lock failed: ${e.message}`, e);
+                    // Return the error instead of falling through silently
+                    return { error: `Failed to acquire lock via API: ${e.message}` };
                 }
+            } else {
+                logger.warn("[proposeFileAccess] No API URL configured");
             }
             
             if (this.useSupabase && this.supabase && this._projectId) {
@@ -924,18 +954,22 @@ export class NerveCenter {
     async getSubscriptionStatus(email: string) {
         // Priority: Remote API if available (for customers), then Supabase, then error
         // Always try remote API first if available, regardless of Supabase state
-        logger.info(`getSubscriptionStatus: apiUrl=${this.contextManager.apiUrl}, useSupabase=${this.useSupabase}`);
+        logger.info(`[getSubscriptionStatus] Starting - email: ${email}`);
+        logger.info(`[getSubscriptionStatus] Config - apiUrl: ${this.contextManager.apiUrl}, apiSecret: ${this.contextManager.apiSecret ? 'SET' : 'NOT SET'}, useSupabase: ${this.useSupabase}`);
+        
         if (this.contextManager.apiUrl) {
             try {
+                logger.info(`[getSubscriptionStatus] Attempting API call to: usage?email=${encodeURIComponent(email)}`);
                 const result = await this.callCoordination(`usage?email=${encodeURIComponent(email)}`);
-                logger.info("getSubscriptionStatus: API call successful");
+                logger.info(`[getSubscriptionStatus] API call successful: ${JSON.stringify(result).substring(0, 200)}`);
                 return result;
             } catch (e: any) {
-                logger.error("Failed to fetch subscription status via API", e);
-                // Fall through to Supabase if available
+                logger.error(`[getSubscriptionStatus] API call failed: ${e.message}`, e);
+                // Return the API error instead of falling through
+                return { error: `API call failed: ${e.message}` };
             }
         } else {
-            logger.warn("getSubscriptionStatus: No API URL configured");
+            logger.warn("[getSubscriptionStatus] No API URL configured");
         }
         
         if (this.useSupabase && this.supabase) {
@@ -961,19 +995,25 @@ export class NerveCenter {
             };
         }
 
-        return { error: "Coordination not configured." };
+        return { error: "Coordination not configured. API URL not set and Supabase not available." };
     }
 
     async getUsageStats(email: string) {
         // Priority: Remote API if available (for customers), then Supabase, then error
         // Always try remote API first if available, regardless of Supabase state
+        logger.info(`[getUsageStats] Starting - email: ${email}`);
+        logger.info(`[getUsageStats] Config - apiUrl: ${this.contextManager.apiUrl}, apiSecret: ${this.contextManager.apiSecret ? 'SET' : 'NOT SET'}, useSupabase: ${this.useSupabase}`);
+        
         if (this.contextManager.apiUrl) {
             try {
-                const result = await this.callCoordination(`usage?email=${encodeURIComponent(email)}`) as { usageCount?: number };
+                logger.info(`[getUsageStats] Attempting API call to: usage?email=${encodeURIComponent(email)}`);
+                const result = await this.callCoordination(`usage?email=${encodeURIComponent(email)}`) as { usageCount?: number; email?: string; plan?: string; status?: string };
+                logger.info(`[getUsageStats] API call successful: ${JSON.stringify(result).substring(0, 200)}`);
                 return { email, usageCount: result.usageCount || 0 };
             } catch (e: any) {
-                logger.error("Failed to fetch usage stats via API", e);
-                // Fall through to Supabase if available
+                logger.error(`[getUsageStats] API call failed: ${e.message}`, e);
+                // Return the API error instead of falling through
+                return { error: `API call failed: ${e.message}` };
             }
         }
         
@@ -988,6 +1028,6 @@ export class NerveCenter {
             return { email, usageCount: (profile as any)?.usage_count || 0 };
         }
 
-        return { error: "Coordination not configured." };
+        return { error: "Coordination not configured. API URL not set and Supabase not available." };
     }
 }

@@ -3,10 +3,21 @@ import { getSessionFromRequest } from "@/lib/auth";
 import { createClient } from "@supabase/supabase-js";
 import { getOrCreateProjectId } from "@/lib/project-utils";
 
-const supabase = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL || "",
-    process.env.SUPABASE_SERVICE_ROLE_KEY || ""
-);
+// Force Node runtime (Supabase service role doesn't work in Edge)
+export const runtime = "nodejs";
+
+// Create Supabase client inside function to avoid stale clients on Vercel cold starts
+function getSupabase() {
+    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    
+    if (!url || !key) {
+        console.error("[sessions/finalize] Missing Supabase env vars:", { hasUrl: !!url, hasKey: !!key });
+        throw new Error("Supabase configuration missing");
+    }
+    
+    return createClient(url, key);
+}
 
 export async function POST(req: NextRequest) {
     const session = await getSessionFromRequest(req);
@@ -15,6 +26,8 @@ export async function POST(req: NextRequest) {
     try {
         const body = await req.json();
         const { projectName = "default", content } = body;
+        const supabase = getSupabase();
+        
         // Auto-create project if it doesn't exist
         const projectId = await getOrCreateProjectId(projectName, session.sub!);
 
