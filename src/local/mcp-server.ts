@@ -184,17 +184,18 @@ const SEARCH_CONTEXT_TOOL = "search_codebase"; // Renamed for clarity
 
 server.setRequestHandler(ListResourcesRequestSchema, async () => {
   try {
-    return {
-      resources: [
-        {
-          uri: "mcp://context/current",
-          name: "Live Session Context",
-          mimeType: "text/markdown",
-          description: "The realtime state of the Nerve Center (Notepad + Locks)"
-        },
-        ...(await manager.listFiles())
-      ]
-    };
+    const files = await manager.listFiles();
+    const resources = [
+      {
+        uri: "mcp://context/current",
+        name: "Live Session Context",
+        mimeType: "text/markdown",
+        description: "The realtime state of the Nerve Center (Notepad + Locks)"
+      },
+      ...files
+    ];
+    logger.info(`[ListResources] Returning ${resources.length} resources to MCP client`);
+    return { resources };
   } catch (error) {
     logger.error("Error listing resources", error as Error);
     return { resources: [] };
@@ -235,8 +236,7 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
 });
 
 server.setRequestHandler(ListToolsRequestSchema, async () => {
-  return {
-    tools: [
+  const tools = [
       {
         name: READ_CONTEXT_TOOL,
         description: "**READ THIS FIRST** to understand the project's architecture, coding conventions, and active state.\n- Returns the content of core context files like `context.md` (Project Goals), `conventions.md` (Style Guide), or `activity.md`.\n- Usage: Call with `filename='context.md'` effectively.\n- Note: If you need the *current* runtime state (active locks, jobs), use the distinct resource `mcp://context/current` instead.",
@@ -420,8 +420,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           required: ["filePath", "content"]
         }
       }
-    ],
-  };
+    ];
+  
+  logger.info(`[ListTools] Returning ${tools.length} tools to MCP client`);
+  return { tools };
 });
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
@@ -594,9 +596,14 @@ async function main() {
     ragEngine.setProjectId(nerveCenter.projectId);
     logger.info(`Local RAG Engine linked to Project ID: ${nerveCenter.projectId}`);
   }
+  
+  // Log that tools are registered before connecting
+  logger.info("MCP server ready - all tools and resources registered");
+  
   const transport = new StdioServerTransport();
   await server.connect(transport);
   logger.info("Shared Context MCP Server running on stdio");
+  logger.info("Server is now accepting tool calls from MCP clients");
 }
 
 main().catch((error) => {
