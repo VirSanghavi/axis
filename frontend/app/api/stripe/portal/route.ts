@@ -46,10 +46,11 @@ export async function POST(req: NextRequest) {
     }
 
     if (!customerId) {
-      console.log(`[Stripe Portal] No customer ID for ${session.email}, redirecting to /billing`);
-      const url = new URL("/billing", req.url);
-      // Use 303 See Other to ensure the browser converts POST to GET
-      return NextResponse.redirect(url, { status: 303 });
+      console.log(`[Stripe Portal] No customer ID for ${session.email}`);
+      return NextResponse.json(
+        { error: "no billing account found. subscribe first to manage payment methods." },
+        { status: 400 }
+      );
     }
 
     const portalSession = await stripe.billingPortal.sessions.create({

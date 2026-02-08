@@ -95,6 +95,7 @@ export async function GET(req: NextRequest) {
             subscription_status: isPro ? 'pro' : 'free',
             current_period_end: profile?.current_period_end,
             has_seen_retention: profile?.has_seen_retention || false,
+            has_retention_offer: stripeData?.has_retention_offer || false,
             stripe: stripeData
         });
 

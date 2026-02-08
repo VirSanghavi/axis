@@ -31,7 +31,6 @@ export default function BillingPage() {
     async function fetchStatus() {
         setLoading(true);
         try {
-            // Use no-store to ensure we get the latest status after payment
             const res = await fetch('/api/stripe/status', { cache: 'no-store' });
             if (res.ok) {
                 const data = await res.json();
@@ -46,14 +45,19 @@ export default function BillingPage() {
 
     async function handleSubscribe() {
         setProcessing(true);
+        setMessage(null);
         try {
             const res = await fetch('/api/stripe/checkout', { method: 'POST' });
             if (res.ok) {
                 const data = await res.json();
                 if (data.url) window.location.href = data.url;
+            } else {
+                const d = await res.json();
+                setMessage(d.error || "failed to start checkout");
             }
         } catch (e) {
             console.error(e);
+            setMessage("something went wrong");
         } finally {
             setProcessing(false);
         }
@@ -61,18 +65,21 @@ export default function BillingPage() {
 
     async function handleApplyOffer() {
         setProcessing(true);
+        setMessage(null);
         try {
             const res = await fetch('/api/stripe/retention', { method: 'POST' });
             if (res.ok) {
-                setMessage("offer applied! 50% discount will show on your next bill.");
+                await fetch('/api/stripe/status/mark-seen', { method: 'POST' });
+                setMessage("offer applied. 50% off will appear on your next bill.");
                 setShowRetention(false);
                 fetchStatus();
             } else {
                 const data = await res.json();
-                setMessage(data.error || "failed to apply offer.");
+                setMessage(data.error || "failed to apply offer");
             }
         } catch (e) {
             console.error(e);
+            setMessage("something went wrong");
         } finally {
             setProcessing(false);
         }
@@ -80,15 +87,41 @@ export default function BillingPage() {
 
     async function handleFinalCancel() {
         setProcessing(true);
+        setMessage(null);
         try {
             const res = await fetch('/api/stripe/cancel', { method: 'POST' });
             if (res.ok) {
                 setMessage("subscription will be cancelled at the end of the current period.");
                 setShowRetention(false);
                 fetchStatus();
+            } else {
+                const d = await res.json();
+                setMessage(d.error || "failed to cancel");
             }
         } catch (e) {
             console.error(e);
+            setMessage("something went wrong");
+        } finally {
+            setProcessing(false);
+        }
+    }
+
+    async function handleManagePaymentMethods() {
+        setProcessing(true);
+        setMessage(null);
+        try {
+            const res = await fetch('/api/stripe/portal', { method: 'POST' });
+            const data = await res.json().catch(() => ({}));
+            if (res.ok && data?.url) {
+                window.location.href = data.url;
+                return;
+            }
+            if (res.status === 401) setMessage("sign in required");
+            else if (res.status === 429) setMessage("too many requests — try again shortly");
+            else setMessage(data?.error || "could not open billing portal");
+        } catch (e) {
+            console.error(e);
+            setMessage("something went wrong");
         } finally {
             setProcessing(false);
         }
@@ -113,88 +146,89 @@ export default function BillingPage() {
             <Navbar />
 
             <main className="pt-32 pb-20 px-6 relative z-10 flex flex-col items-center">
-                <div className="w-full max-w-lg bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl p-12 text-neutral-900">
-                    <div className="mb-10 text-center">
-                        <h1 className="text-4xl font-medium tracking-tight mb-2">billing</h1>
-                        <p className="text-[11px] text-neutral-500 uppercase tracking-[0.2em]">manage your axis subscription</p>
+                <div className="w-full max-w-md bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl p-6 text-neutral-900">
+                    <div className="mb-6">
+                        <h1 className="text-2xl font-medium tracking-tight mb-1">billing</h1>
+                        <p className="text-[10px] text-neutral-500 uppercase tracking-[0.2em]">manage your axis subscription</p>
                     </div>
 
-                    <div className="space-y-8">
+                    <div className="space-y-4">
                         {/* Status Card */}
-                        <div className="bg-neutral-50 border border-neutral-100 rounded-xl p-8">
-                            <div className="flex justify-between items-start mb-6">
-                                <div>
-                                    <div className="text-[10px] font-bold uppercase tracking-[0.3em] text-neutral-400 mb-2">current plan</div>
-                                    <div className="text-2xl font-black text-neutral-900 tracking-tighter">axis pro</div>
-                                </div>
-                                <div className={isActive ? (isCancelled ? "bg-amber-100 text-amber-700 px-3 py-1 rounded-full text-[9px] font-bold uppercase tracking-widest" : "bg-emerald-100 text-emerald-700 px-3 py-1 rounded-full text-[9px] font-bold uppercase tracking-widest") : "bg-neutral-200 text-neutral-500 px-3 py-1 rounded-full text-[9px] font-bold uppercase tracking-widest"}>
-                                    {isActive ? (isCancelled ? "cancelling" : "active") : "inactive"}
-                                </div>
+                        <div className="bg-neutral-50 border border-neutral-200 rounded-lg p-5">
+                            <div className="text-[9px] font-bold uppercase tracking-[0.2em] text-neutral-400 mb-1">current plan</div>
+                            <div className="text-xl font-semibold text-neutral-900 tracking-tight mb-1">
+                                {isActive ? 'axis pro' : 'axis free'}
                             </div>
+                            <div className="text-[10px] text-neutral-500 font-mono">
+                                {isActive
+                                    ? isCancelled
+                                        ? `cancelling — expires ${subData?.stripe?.current_period_end ? new Date(subData.stripe.current_period_end * 1000).toLocaleDateString() : ''}`
+                                        : subData?.stripe?.current_period_end
+                                            ? `active — renews ${new Date(subData.stripe.current_period_end * 1000).toLocaleDateString()}`
+                                            : 'active'
+                                    : 'no active subscription'}
+                            </div>
+                        </div>
 
-                            {isActive && subData.stripe?.current_period_end && (
-                                <div className="text-[11px] text-neutral-500 font-mono tracking-wider">
-                                    {isCancelled ? "expires on: " : "next billing date: "}
-                                    {new Date(subData.stripe.current_period_end * 1000).toLocaleDateString()}
-                                </div>
-                            )}
-
-                            {!isActive && (
-                                <div className="text-[11px] text-neutral-500 leading-relaxed mb-6">
-                                    you are currently on the legacy tier. subscribe to axis pro for unlimited mcp connectors and live streaming.
+                        {/* Plan Details */}
+                        <div className="bg-neutral-50 border border-neutral-200 rounded-lg p-5">
+                            <div className="text-[9px] font-bold uppercase tracking-[0.2em] text-neutral-400 mb-3">
+                                {isActive ? 'your plan includes' : 'upgrade to pro'}
+                            </div>
+                            <div className="space-y-2">
+                                {[
+                                    { feature: 'api keys', free: 'none', pro: 'unlimited' },
+                                    { feature: 'mcp tool calls', free: 'none', pro: 'unlimited' },
+                                    { feature: 'parallel agents', free: 'none', pro: 'unlimited' },
+                                    { feature: 'file locking', free: 'none', pro: 'atomic, cross-ide' },
+                                    { feature: 'job board', free: 'none', pro: 'priority + dependencies' },
+                                    { feature: 'session history', free: 'none', pro: 'unlimited + rag search' },
+                                ].map(row => (
+                                    <div key={row.feature} className="flex justify-between items-center text-[11px]">
+                                        <span className="text-neutral-600">{row.feature}</span>
+                                        <span className={`font-mono text-[10px] ${isActive ? 'text-neutral-900' : 'text-neutral-400'}`}>
+                                            {isActive ? row.pro : row.free}
+                                        </span>
+                                    </div>
+                                ))}
+                            </div>
+                            {isActive && subData?.has_retention_offer && (
+                                <div className="mt-3 pt-3 border-t border-neutral-200 text-[10px] text-neutral-500 font-mono">
+                                    discount active — 50% off applied
                                 </div>
                             )}
                         </div>
 
                         {/* Actions */}
-                        <div className="space-y-3">
+                        <div className="space-y-2">
                             {!isActive ? (
                                 <button
                                     onClick={handleSubscribe}
                                     disabled={processing}
-                                    className="w-full bg-neutral-900 text-white py-4 rounded-xl text-[12px] font-black tracking-[0.4em] uppercase hover:bg-black transition-all shadow-xl"
+                                    className="w-full bg-neutral-900 text-white py-2.5 rounded-lg text-[11px] font-medium uppercase tracking-wider hover:bg-black transition-colors disabled:opacity-60"
                                 >
                                     {processing ? "processing..." : "subscribe — $5/mo"}
                                 </button>
                             ) : (
                                 <>
                                     <button
-                                        onClick={async () => {
-                                            setProcessing(true);
-                                            try {
-                                                const res = await fetch('/api/stripe/portal', { method: 'POST' });
-                                                if (res.redirected) {
-                                                    window.location.href = res.url;
-                                                } else if (res.ok) {
-                                                    // In case it doesn't auto-redirect but returns JSON or similar
-                                                    const data = await res.json();
-                                                    if (data.url) window.location.href = data.url;
-                                                }
-                                            } catch (e) {
-                                                console.error(e);
-                                            } finally {
-                                                setProcessing(false);
-                                            }
-                                        }}
+                                        onClick={handleManagePaymentMethods}
                                         disabled={processing}
-                                        className="w-full bg-neutral-900 text-white py-4 rounded-xl text-[12px] font-black tracking-[0.4em] uppercase hover:bg-black transition-all shadow-xl disabled:opacity-50"
+                                        className="w-full bg-neutral-900 text-white py-2.5 rounded-lg text-[11px] font-medium uppercase tracking-wider hover:bg-black transition-colors disabled:opacity-60"
                                     >
                                         {processing ? "loading..." : "manage payment methods"}
                                     </button>
                                     {!isCancelled && (
                                         <button
                                             onClick={async () => {
-                                                console.log("[Billing] Cancel clicked. State:", { hasOffer: subData?.has_retention_offer, hasSeen: subData?.has_seen_retention });
                                                 if (subData?.has_retention_offer || subData?.has_seen_retention) {
-                                                    // Already have it OR already saw it - just cancel
                                                     handleFinalCancel();
                                                 } else {
-                                                    // Mark as seen in DB immediately and wait for it
                                                     await fetch('/api/stripe/status/mark-seen', { method: 'POST' });
                                                     setShowRetention(true);
                                                 }
                                             }}
-                                            className="w-full text-[10px] text-neutral-400 hover:text-rose-500 transition-colors uppercase tracking-widest font-mono mt-4"
+                                            className="block w-full text-[10px] text-neutral-400 hover:text-rose-600 transition-colors uppercase tracking-wider font-mono py-1"
                                         >
                                             cancel subscription
                                         </button>
@@ -206,66 +240,74 @@ export default function BillingPage() {
 
                     {message && (
                         <motion.div
-                            initial={{ opacity: 0, y: 10 }}
+                            initial={{ opacity: 0, y: 6 }}
                             animate={{ opacity: 1, y: 0 }}
-                            className="mt-8 p-4 bg-neutral-100 rounded-lg text-[11px] text-neutral-600 text-center font-mono"
+                            className="mt-4 p-3 bg-neutral-100 rounded-lg text-[11px] text-neutral-600 text-center font-mono"
                         >
                             {message}
                         </motion.div>
                     )}
 
-                    <div className="mt-12 pt-8 border-t border-neutral-100">
-                        <Link href="/dashboard" className="text-[11px] font-bold uppercase tracking-[0.2em] text-neutral-400 hover:text-neutral-900 transition-colors">
+                    <div className="mt-6 pt-4 border-t border-neutral-200">
+                        <Link href="/dashboard" className="text-[10px] font-medium uppercase tracking-wider text-neutral-400 hover:text-neutral-900 transition-colors">
                             ← back to dashboard
                         </Link>
                     </div>
                 </div>
-            </main >
+            </main>
 
             {/* Retention Modal */}
             <AnimatePresence>
-                {
-                    showRetention && (
-                        <div className="fixed inset-0 z-[100] flex items-center justify-center p-6">
-                            <motion.div
-                                initial={{ opacity: 0 }}
-                                animate={{ opacity: 1 }}
-                                exit={{ opacity: 0 }}
-                                className="absolute inset-0 bg-black/60 backdrop-blur-sm"
-                                onClick={() => setShowRetention(false)}
-                            />
-                            <motion.div
-                                initial={{ opacity: 0, scale: 0.95, y: 20 }}
-                                animate={{ opacity: 1, scale: 1, y: 0 }}
-                                exit={{ opacity: 0, scale: 0.95, y: 20 }}
-                                className="relative w-full max-w-md bg-white rounded-3xl p-12 text-center shadow-[0_32px_120px_rgba(0,0,0,0.5)]"
-                            >
-                                <h2 className="text-3xl font-black text-neutral-900 tracking-tighter mb-4">wait! before you go...</h2>
-                                <p className="text-[14px] text-neutral-600 leading-relaxed mb-10">
-                                    we&apos;d love to keep you on axis. accept this one-time offer: get <b>50% off</b> for the next 3 months.
-                                </p>
-
-                                <div className="space-y-4">
-                                    <button
-                                        onClick={handleApplyOffer}
-                                        disabled={processing}
-                                        className="w-full bg-emerald-600 text-white py-4 rounded-xl text-[12px] font-black tracking-[0.3em] uppercase hover:bg-emerald-700 transition-all shadow-lg"
-                                    >
-                                        {processing ? "applying..." : "accept offer — $2.50/mo"}
-                                    </button>
-                                    <button
-                                        onClick={handleFinalCancel}
-                                        disabled={processing}
-                                        className="w-full text-[10px] text-neutral-400 hover:text-rose-500 transition-colors uppercase tracking-widest font-mono"
-                                    >
-                                        no thanks, cancel subscription
-                                    </button>
-                                </div>
-                            </motion.div>
-                        </div>
-                    )
-                }
-            </AnimatePresence >
+                {showRetention && (
+                    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+                        <motion.div
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            className="absolute inset-0 bg-black/50"
+                            onClick={() => setShowRetention(false)}
+                        />
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.98, y: 10 }}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            exit={{ opacity: 0, scale: 0.98, y: 10 }}
+                            className="relative w-full max-w-sm bg-white rounded-xl p-6 shadow-xl"
+                        >
+                            <h2 className="text-lg font-semibold text-neutral-900 tracking-tight mb-1">before you go</h2>
+                            <p className="text-[12px] text-neutral-500 mb-4">
+                                cancelling means losing access to these on your next billing cycle:
+                            </p>
+                            <ul className="text-[11px] text-neutral-600 space-y-1.5 mb-5 list-none">
+                                <li className="flex items-start gap-2"><span className="text-neutral-300 mt-0.5">—</span>unlimited api keys and mcp tool calls</li>
+                                <li className="flex items-start gap-2"><span className="text-neutral-300 mt-0.5">—</span>atomic file locking across parallel agents</li>
+                                <li className="flex items-start gap-2"><span className="text-neutral-300 mt-0.5">—</span>job board with dependency-aware claiming</li>
+                                <li className="flex items-start gap-2"><span className="text-neutral-300 mt-0.5">—</span>semantic search over past sessions (rag)</li>
+                                <li className="flex items-start gap-2"><span className="text-neutral-300 mt-0.5">—</span>priority support and early feature access</li>
+                            </ul>
+                            <div className="bg-neutral-50 border border-neutral-200 rounded-lg p-3 mb-4">
+                                <p className="text-[11px] text-neutral-700 font-medium">one-time offer: 50% off for the next 3 months</p>
+                                <p className="text-[10px] text-neutral-400 mt-0.5">$2.50/mo instead of $5/mo. applied automatically.</p>
+                            </div>
+                            <div className="space-y-2">
+                                <button
+                                    onClick={handleApplyOffer}
+                                    disabled={processing}
+                                    className="w-full bg-neutral-900 text-white py-2.5 rounded-lg text-[11px] font-medium uppercase tracking-wider hover:bg-black transition-colors disabled:opacity-60"
+                                >
+                                    {processing ? "applying..." : "stay — $2.50/mo"}
+                                </button>
+                                <button
+                                    onClick={handleFinalCancel}
+                                    disabled={processing}
+                                    className="w-full text-[10px] text-neutral-400 hover:text-rose-600 transition-colors uppercase tracking-wider font-mono py-2"
+                                >
+                                    cancel anyway
+                                </button>
+                            </div>
+                        </motion.div>
+                    </div>
+                )}
+            </AnimatePresence>
         </div >
     );
 }
