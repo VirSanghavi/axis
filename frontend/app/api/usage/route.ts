@@ -42,40 +42,66 @@ export async function GET(req: NextRequest) {
             return NextResponse.json({ error: "User not found" }, { status: 404 });
         }
 
-        // Get usage data for the last 7 days
-        const { data, error } = await supabase.rpc('get_daily_usage', {
-            p_user_id: userId,
-            p_days: 7
-        });
+        // Timezone offset from the browser (minutes ahead of UTC, e.g. 480 for PST)
+        // getTimezoneOffset() returns positive for behind-UTC zones.
+        const tzParam = req.nextUrl.searchParams.get('tz');
+        const tzOffsetMin = tzParam ? parseInt(tzParam, 10) : 0;
+
+        // "Today" in the user's local timezone
+        const nowMs = Date.now();
+        const localNowMs = nowMs - tzOffsetMin * 60_000;
+        const localNow = new Date(localNowMs);
+        const localTodayStr = localNow.toISOString().split('T')[0]; // YYYY-MM-DD in user's local tz
+
+        // Build the 7 local-date strings (oldest → newest)
+        const dayNames = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+        const localDates: { dateStr: string; dayName: string }[] = [];
+        for (let i = 6; i >= 0; i--) {
+            const d = new Date(localNow);
+            d.setUTCDate(d.getUTCDate() - i);
+            const dateStr = d.toISOString().split('T')[0];
+            localDates.push({ dateStr, dayName: dayNames[d.getUTCDay()] });
+        }
+
+        // Query window: from the start of the earliest local day to the end of today (in UTC)
+        const rangeStartLocal = localDates[0].dateStr + 'T00:00:00';
+        const rangeEndLocal = localTodayStr + 'T23:59:59.999';
+        // Convert local boundaries back to UTC for the DB query
+        const rangeStartUTC = new Date(new Date(rangeStartLocal).getTime() + tzOffsetMin * 60_000).toISOString();
+        const rangeEndUTC = new Date(new Date(rangeEndLocal).getTime() + tzOffsetMin * 60_000).toISOString();
+
+        // Fetch raw timestamps from api_usage
+        const { data: rows, error } = await supabase
+            .from('api_usage')
+            .select('created_at, tokens_used')
+            .eq('user_id', userId)
+            .gte('created_at', rangeStartUTC)
+            .lte('created_at', rangeEndUTC);
 
         if (error) {
             console.error("Usage fetch error:", error);
-            // If function doesn't exist or no data, return empty array
             return NextResponse.json({ usage: [] });
         }
 
-        // Fill in missing days with 0
-        // Use UTC methods consistently — Supabase stores dates in UTC,
-        // so local timezone offsets would shift days (yesterday shows as today, etc.)
-        const now = new Date();
-        const todayUTC = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-        const days = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
-        const last7Days = [];
-
-        for (let i = 6; i >= 0; i--) {
-            const date = new Date(todayUTC);
-            date.setUTCDate(date.getUTCDate() - i);
-            const dateStr = date.toISOString().split('T')[0];
-            const dayName = days[date.getUTCDay()];
-
-            const found = (data as Array<{ day: string; request_count: number; total_tokens: number }>)?.find((d) => d.day === dateStr);
-            last7Days.push({
-                day: dayName,
-                date: dateStr,
-                requests: found?.request_count || 0,
-                tokens: found?.total_tokens || 0
-            });
+        // Group rows by the user's local date
+        const countByDate: Record<string, { requests: number; tokens: number }> = {};
+        for (const row of (rows || [])) {
+            // Convert UTC timestamp → user's local date
+            const utcMs = new Date(row.created_at).getTime();
+            const localMs = utcMs - tzOffsetMin * 60_000;
+            const localDateStr = new Date(localMs).toISOString().split('T')[0];
+            if (!countByDate[localDateStr]) countByDate[localDateStr] = { requests: 0, tokens: 0 };
+            countByDate[localDateStr].requests += 1;
+            countByDate[localDateStr].tokens += (row.tokens_used || 0);
         }
+
+        // Build final array with 0-fills for missing days
+        const last7Days = localDates.map(({ dateStr, dayName }) => ({
+            day: dayName,
+            date: dateStr,
+            requests: countByDate[dateStr]?.requests || 0,
+            tokens: countByDate[dateStr]?.tokens || 0,
+        }));
 
         return NextResponse.json({ usage: last7Days });
     } catch (err: unknown) {

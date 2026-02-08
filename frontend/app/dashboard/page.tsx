@@ -289,7 +289,8 @@ export default function Dashboard() {
 
   async function fetchUsage() {
     try {
-      const res = await fetch('/api/usage');
+      const tz = new Date().getTimezoneOffset();
+      const res = await fetch(`/api/usage?tz=${tz}`);
       if (res.ok) {
         const data = await res.json();
         setUsageData(data.usage || []);
