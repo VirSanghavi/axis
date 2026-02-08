@@ -409,7 +409,7 @@ function MCPSection() {
 
 function MultiIDESection() {
     return (
-        <Section title="multi-ide setup" subtitle="run cursor, claude code & windsurf together">
+        <Section title="multi-ide setup" subtitle="run cursor, antigravity, claude code, windsurf, and more together (anything that supports mcp)">
             <p className="text-lg text-neutral-500 leading-relaxed mb-8">
                 axis lets multiple ai coding agents work on the same project at the same time without stepping on each other.
                 here&apos;s how to set it up. it&apos;s the same 3 steps for every ide.
