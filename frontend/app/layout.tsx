@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
+import { Analytics } from "@vercel/analytics/react";
 import "./globals.css";
 import Snowflakes from "@/components/Snowflakes";
 
@@ -58,6 +59,7 @@ export default function RootLayout({
           <Snowflakes />
           {children}
         </MachineModeProvider>
+        <Analytics />
       </body>
     </html>
   );
