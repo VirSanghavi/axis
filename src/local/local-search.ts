@@ -185,15 +185,28 @@ async function searchFile(
   const matchedKeywords = keywords.filter(kw => contentLower.includes(kw));
   if (matchedKeywords.length === 0) return null;
 
+  // ── Relevance gate: require minimum keyword coverage ──
+  // With 3+ keywords, require at least 40% keyword match (rounds up).
+  // This prevents files matching only one generic word (e.g. "handler")
+  // from appearing in results for "authentication login route handler".
+  const coverage = matchedKeywords.length / keywords.length;
+  if (keywords.length >= 3 && coverage < 0.4) return null;
+  if (keywords.length === 2 && matchedKeywords.length < 1) return null;
+
   const lines = content.split("\n");
 
-  // Score: number of distinct keyword matches + bonus for filename matches
-  let score = matchedKeywords.length;
+  // ── Scoring: reward coverage, not just raw match count ──
+  // Base score = coverage² × matchCount — strongly rewards matching more keywords
+  let score = coverage * coverage * matchedKeywords.length;
 
-  // Bonus for keyword in filename/path
+  // Bonus for keyword in filename/path (these files are almost always relevant)
   const relLower = relativePath.toLowerCase();
+  let pathMatches = 0;
   for (const kw of keywords) {
-    if (relLower.includes(kw)) score += 2;
+    if (relLower.includes(kw)) {
+      score += 3;
+      pathMatches++;
+    }
   }
 
   // Find matching line regions
@@ -205,7 +218,26 @@ async function searchFile(
     }
   }
 
-  // Boost by match density (more matches = more relevant)
+  // ── Proximity bonus: keywords appearing near each other are more relevant ──
+  // Check if multiple keywords appear within a 10-line window
+  let proximityBonus = 0;
+  for (let i = 0; i < matchingLineIndices.length; i++) {
+    const windowStart = matchingLineIndices[i];
+    const windowEnd = windowStart + 10;
+    const keywordsInWindow = new Set<string>();
+    for (let j = i; j < matchingLineIndices.length && matchingLineIndices[j] <= windowEnd; j++) {
+      const lineLower = lines[matchingLineIndices[j]].toLowerCase();
+      for (const kw of matchedKeywords) {
+        if (lineLower.includes(kw)) keywordsInWindow.add(kw);
+      }
+    }
+    if (keywordsInWindow.size >= 2) {
+      proximityBonus = Math.max(proximityBonus, keywordsInWindow.size * 1.5);
+    }
+  }
+  score += proximityBonus;
+
+  // Density bonus (capped)
   score += Math.min(matchingLineIndices.length, 20) * 0.1;
 
   // Collapse nearby lines into regions with context

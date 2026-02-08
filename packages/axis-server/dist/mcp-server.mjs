@@ -1426,11 +1426,18 @@ async function searchFile(filePath, rootDir, keywords) {
   const relativePath = path3.relative(rootDir, filePath);
   const matchedKeywords = keywords.filter((kw) => contentLower.includes(kw));
   if (matchedKeywords.length === 0) return null;
+  const coverage = matchedKeywords.length / keywords.length;
+  if (keywords.length >= 3 && coverage < 0.4) return null;
+  if (keywords.length === 2 && matchedKeywords.length < 1) return null;
   const lines = content.split("\n");
-  let score = matchedKeywords.length;
+  let score = coverage * coverage * matchedKeywords.length;
   const relLower = relativePath.toLowerCase();
+  let pathMatches = 0;
   for (const kw of keywords) {
-    if (relLower.includes(kw)) score += 2;
+    if (relLower.includes(kw)) {
+      score += 3;
+      pathMatches++;
+    }
   }
   const matchingLineIndices = [];
   for (let i = 0; i < lines.length; i++) {
@@ -1439,6 +1446,22 @@ async function searchFile(filePath, rootDir, keywords) {
       matchingLineIndices.push(i);
     }
   }
+  let proximityBonus = 0;
+  for (let i = 0; i < matchingLineIndices.length; i++) {
+    const windowStart = matchingLineIndices[i];
+    const windowEnd = windowStart + 10;
+    const keywordsInWindow = /* @__PURE__ */ new Set();
+    for (let j = i; j < matchingLineIndices.length && matchingLineIndices[j] <= windowEnd; j++) {
+      const lineLower = lines[matchingLineIndices[j]].toLowerCase();
+      for (const kw of matchedKeywords) {
+        if (lineLower.includes(kw)) keywordsInWindow.add(kw);
+      }
+    }
+    if (keywordsInWindow.size >= 2) {
+      proximityBonus = Math.max(proximityBonus, keywordsInWindow.size * 1.5);
+    }
+  }
+  score += proximityBonus;
   score += Math.min(matchingLineIndices.length, 20) * 0.1;
   const regions = [];
   let lastEnd = -1;
