@@ -7,19 +7,33 @@ const PUBLIC_PATHS = ["/login", "/signup", "/api/auth/login", "/api/auth/signup"
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
+  // Allow Next.js internals and static assets
   if (pathname.startsWith("/_next") || pathname.startsWith("/favicon") || pathname === "/" || pathname.startsWith("/api/stripe/webhook")) {
     return NextResponse.next();
   }
-
-  const isPublic = PUBLIC_PATHS.some((p) => pathname.startsWith(p));
-  console.log(`[Middleware] Path: ${pathname}, Public: ${isPublic}`);
 
   // Allow public assets
   if (pathname.match(/\.(png|jpg|jpeg|gif|ico|svg)$/)) {
     return NextResponse.next();
   }
 
+  const isPublic = PUBLIC_PATHS.some((p) => pathname.startsWith(p));
+  console.log(`[Middleware] Path: ${pathname}, Public: ${isPublic}`);
+
   if (PUBLIC_PATHS.some((p) => pathname.startsWith(p))) {
+    return NextResponse.next();
+  }
+
+  // For /api/v1/* routes, validate session but allow API key authentication
+  // The route handler will do the actual validation
+  if (pathname.startsWith("/api/v1")) {
+    const session = await getSessionFromRequest(req);
+    console.log(`[Middleware] /api/v1 route - session:`, session ? { email: session.email, role: session.role } : "null");
+    if (!session) {
+      // Let the route handler return the error with more context
+      // This allows API key validation to happen in the route
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
     return NextResponse.next();
   }
 

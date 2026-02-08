@@ -11,30 +11,95 @@ import { ContextManager } from "./context-manager.js";
 import { NerveCenter } from "./nerve-center.js";
 import { RagEngine } from "./rag-engine.js";
 import { logger } from "../utils/logger.js";
+import path from "path";
+import fs from "fs";
 
-// Load environment variables
-dotenv.config({ path: ".env.local" });
+// MCP servers receive configuration via environment variables passed by the MCP client (Cursor)
+// These come from the mcp.json config file, not from .env.local
+// We only load .env.local as a fallback for local development/testing
+// In production/customer deployments, all config comes from mcp.json via env vars
+if (process.env.SHARED_CONTEXT_API_URL || process.env.AXIS_API_KEY) {
+  logger.info("Using configuration from MCP client (mcp.json)");
+} else {
+  // Fallback: Try to load .env.local for local development only
+  const cwd = process.cwd();
+  const possiblePaths = [
+    path.join(cwd, ".env.local"),
+    path.join(cwd, "..", ".env.local"),
+    path.join(cwd, "..", "..", ".env.local"),
+    path.join(cwd, "shared-context", ".env.local"),
+    path.join(cwd, "..", "shared-context", ".env.local"),
+  ];
+
+  let envLoaded = false;
+  for (const envPath of possiblePaths) {
+    try {
+      if (fs.existsSync(envPath)) {
+        logger.info(`[Fallback] Loading .env.local from: ${envPath}`);
+        dotenv.config({ path: envPath });
+        envLoaded = true;
+        break;
+      }
+    } catch (e) {
+      // Continue to next path
+    }
+  }
+
+  if (!envLoaded) {
+    logger.warn("No configuration found from MCP client (mcp.json) or .env.local");
+    logger.warn("MCP server will use default API URL: https://aicontext.vercel.app/api/v1");
+  }
+}
+
+// Log startup configuration
+logger.info("=== Axis MCP Server Starting ===");
+logger.info("Environment check:", {
+  hasSHARED_CONTEXT_API_URL: !!process.env.SHARED_CONTEXT_API_URL,
+  hasAXIS_API_KEY: !!process.env.AXIS_API_KEY,
+  hasSHARED_CONTEXT_API_SECRET: !!process.env.SHARED_CONTEXT_API_SECRET,
+  hasNEXT_PUBLIC_SUPABASE_URL: !!process.env.NEXT_PUBLIC_SUPABASE_URL,
+  hasSUPABASE_SERVICE_ROLE_KEY: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
+  PROJECT_NAME: process.env.PROJECT_NAME || "default"
+});
 
 // VALIDATION
 if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
   logger.warn("Supabase credentials missing. RAG & Persistence disabled. Running in local/ephemeral mode.");
 }
 
-// Configuration
-const manager = new ContextManager(
-  process.env.SHARED_CONTEXT_API_URL || "https://aicontext.vercel.app/api/v1",
-  process.env.AXIS_API_KEY || process.env.SHARED_CONTEXT_API_SECRET
-);
+// Configuration from MCP client (mcp.json) or environment
+// These should be set in mcp.json as env vars passed to the server
+const apiUrl = process.env.SHARED_CONTEXT_API_URL || process.env.AXIS_API_URL || "https://aicontext.vercel.app/api/v1";
+const apiSecret = process.env.AXIS_API_KEY || process.env.SHARED_CONTEXT_API_SECRET || process.env.AXIS_API_SECRET;
+
+logger.info("ContextManager config:", {
+  apiUrl,
+  hasApiSecret: !!apiSecret,
+  apiSecretPrefix: apiSecret ? apiSecret.substring(0, 10) + "..." : "NOT SET",
+  source: (process.env.SHARED_CONTEXT_API_URL || process.env.AXIS_API_KEY) ? "MCP config (mcp.json)" : "default/fallback"
+});
+
+const manager = new ContextManager(apiUrl, apiSecret);
 
 // For customer deployments: Only use Supabase if explicitly enabled AND API URL is not the primary
 // If SHARED_CONTEXT_API_URL is set, prioritize remote API (customer mode)
 // Only use direct Supabase if API URL is not set (development mode)
 const useRemoteApiOnly = !!process.env.SHARED_CONTEXT_API_URL || !!process.env.AXIS_API_KEY;
+
+logger.info("NerveCenter config:", {
+  useRemoteApiOnly,
+  supabaseUrl: useRemoteApiOnly ? "DISABLED (using remote API)" : (process.env.NEXT_PUBLIC_SUPABASE_URL ? "SET" : "NOT SET"),
+  supabaseKey: useRemoteApiOnly ? "DISABLED (using remote API)" : (process.env.SUPABASE_SERVICE_ROLE_KEY ? "SET" : "NOT SET"),
+  projectName: process.env.PROJECT_NAME || "default"
+});
+
 const nerveCenter = new NerveCenter(manager, {
   supabaseUrl: useRemoteApiOnly ? null : process.env.NEXT_PUBLIC_SUPABASE_URL,
   supabaseServiceRoleKey: useRemoteApiOnly ? null : process.env.SUPABASE_SERVICE_ROLE_KEY,
   projectName: process.env.PROJECT_NAME || "default"
 });
+
+logger.info("=== Axis MCP Server Initialized ===");
 
 // Initialize RAG Engine
 // Initialize RAG Engine (Optional - only if local credentials present)
@@ -429,14 +494,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   if (name === "get_subscription_status") {
     const email = String(args?.email);
-    const result = await nerveCenter.getSubscriptionStatus(email);
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    logger.info(`[get_subscription_status] Called with email: ${email}`);
+    try {
+      const result = await nerveCenter.getSubscriptionStatus(email);
+      logger.info(`[get_subscription_status] Result: ${JSON.stringify(result).substring(0, 200)}`);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    } catch (e: any) {
+      logger.error(`[get_subscription_status] Exception: ${e.message}`, e);
+      return { content: [{ type: "text", text: JSON.stringify({ error: e.message }, null, 2) }], isError: true };
+    }
   }
 
   if (name === "get_usage_stats") {
     const email = String(args?.email);
-    const result = await nerveCenter.getUsageStats(email);
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    logger.info(`[get_usage_stats] Called with email: ${email}`);
+    try {
+      const result = await nerveCenter.getUsageStats(email);
+      logger.info(`[get_usage_stats] Result: ${JSON.stringify(result).substring(0, 200)}`);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    } catch (e: any) {
+      logger.error(`[get_usage_stats] Exception: ${e.message}`, e);
+      return { content: [{ type: "text", text: JSON.stringify({ error: e.message }, null, 2) }], isError: true };
+    }
   }
 
   if (name === "search_docs") {

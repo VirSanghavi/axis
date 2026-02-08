@@ -20,8 +20,17 @@ function getSupabase() {
 }
 
 export async function GET(req: NextRequest) {
+    console.log("[usage] Request received");
+    const authHeader = req.headers.get("Authorization");
+    console.log("[usage] Authorization header:", authHeader ? `${authHeader.substring(0, 20)}...` : "missing");
+    
     const session = await getSessionFromRequest(req);
-    if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    console.log("[usage] Session:", session ? { email: session.email, sub: session.sub, role: session.role } : "null");
+    
+    if (!session) {
+        console.error("[usage] No session - returning 401");
+        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
 
     try {
         const { searchParams } = new URL(req.url);

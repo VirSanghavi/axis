@@ -247,8 +247,16 @@ export class NerveCenter {
             
             if (!response.ok) {
                 const text = await response.text();
-                logger.error(`[callCoordination] API Error Response: ${text}`);
-                throw new Error(`Coordination API Error (${response.status}): ${text}`);
+                logger.error(`[callCoordination] API Error Response (${response.status}): ${text}`);
+                
+                // Provide more specific error messages
+                if (response.status === 401) {
+                    throw new Error(`Authentication failed (401): ${text}. Check if API key is valid and exists in api_keys table.`);
+                } else if (response.status === 500) {
+                    throw new Error(`Server error (500): ${text}. Check Vercel logs for details.`);
+                } else {
+                    throw new Error(`API Error (${response.status}): ${text}`);
+                }
             }
 
             const jsonResult = await response.json();
@@ -256,6 +264,10 @@ export class NerveCenter {
             return jsonResult;
         } catch (e: any) {
             logger.error(`[callCoordination] Fetch failed: ${e.message}`, e);
+            // Re-throw with more context
+            if (e.message.includes("Authentication failed") || e.message.includes("401")) {
+                throw new Error(`API Authentication Error: ${e.message}. Verify AXIS_API_KEY in MCP config matches a key in the api_keys table.`);
+            }
             throw e;
         }
     }

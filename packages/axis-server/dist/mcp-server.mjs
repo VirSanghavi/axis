@@ -50,10 +50,10 @@ var ContextManager = class {
   // Made public so NerveCenter can access it
   apiSecret;
   // Made public so NerveCenter can access it
-  constructor(apiUrl, apiSecret) {
+  constructor(apiUrl2, apiSecret2) {
     this.mutex = new Mutex();
-    this.apiUrl = apiUrl;
-    this.apiSecret = apiSecret;
+    this.apiUrl = apiUrl2;
+    this.apiSecret = apiSecret2;
   }
   resolveFilePath(filename) {
     if (!filename || filename.includes("\0")) {
@@ -350,14 +350,23 @@ var NerveCenter = class {
       logger.info(`[callCoordination] Response status: ${response.status} ${response.statusText}`);
       if (!response.ok) {
         const text = await response.text();
-        logger.error(`[callCoordination] API Error Response: ${text}`);
-        throw new Error(`Coordination API Error (${response.status}): ${text}`);
+        logger.error(`[callCoordination] API Error Response (${response.status}): ${text}`);
+        if (response.status === 401) {
+          throw new Error(`Authentication failed (401): ${text}. Check if API key is valid and exists in api_keys table.`);
+        } else if (response.status === 500) {
+          throw new Error(`Server error (500): ${text}. Check Vercel logs for details.`);
+        } else {
+          throw new Error(`API Error (${response.status}): ${text}`);
+        }
       }
       const jsonResult = await response.json();
       logger.info(`[callCoordination] Success - Response: ${JSON.stringify(jsonResult).substring(0, 200)}...`);
       return jsonResult;
     } catch (e) {
       logger.error(`[callCoordination] Fetch failed: ${e.message}`, e);
+      if (e.message.includes("Authentication failed") || e.message.includes("401")) {
+        throw new Error(`API Authentication Error: ${e.message}. Verify AXIS_API_KEY in MCP config matches a key in the api_keys table.`);
+      }
       throw e;
     }
   }
@@ -1039,20 +1048,70 @@ var RagEngine = class {
 };
 
 // ../../src/local/mcp-server.ts
-dotenv2.config({ path: ".env.local" });
+import path3 from "path";
+import fs3 from "fs";
+if (process.env.SHARED_CONTEXT_API_URL || process.env.AXIS_API_KEY) {
+  logger.info("Using configuration from MCP client (mcp.json)");
+} else {
+  const cwd = process.cwd();
+  const possiblePaths = [
+    path3.join(cwd, ".env.local"),
+    path3.join(cwd, "..", ".env.local"),
+    path3.join(cwd, "..", "..", ".env.local"),
+    path3.join(cwd, "shared-context", ".env.local"),
+    path3.join(cwd, "..", "shared-context", ".env.local")
+  ];
+  let envLoaded = false;
+  for (const envPath of possiblePaths) {
+    try {
+      if (fs3.existsSync(envPath)) {
+        logger.info(`[Fallback] Loading .env.local from: ${envPath}`);
+        dotenv2.config({ path: envPath });
+        envLoaded = true;
+        break;
+      }
+    } catch (e) {
+    }
+  }
+  if (!envLoaded) {
+    logger.warn("No configuration found from MCP client (mcp.json) or .env.local");
+    logger.warn("MCP server will use default API URL: https://aicontext.vercel.app/api/v1");
+  }
+}
+logger.info("=== Axis MCP Server Starting ===");
+logger.info("Environment check:", {
+  hasSHARED_CONTEXT_API_URL: !!process.env.SHARED_CONTEXT_API_URL,
+  hasAXIS_API_KEY: !!process.env.AXIS_API_KEY,
+  hasSHARED_CONTEXT_API_SECRET: !!process.env.SHARED_CONTEXT_API_SECRET,
+  hasNEXT_PUBLIC_SUPABASE_URL: !!process.env.NEXT_PUBLIC_SUPABASE_URL,
+  hasSUPABASE_SERVICE_ROLE_KEY: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
+  PROJECT_NAME: process.env.PROJECT_NAME || "default"
+});
 if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
   logger.warn("Supabase credentials missing. RAG & Persistence disabled. Running in local/ephemeral mode.");
 }
-var manager = new ContextManager(
-  process.env.SHARED_CONTEXT_API_URL || "https://aicontext.vercel.app/api/v1",
-  process.env.AXIS_API_KEY || process.env.SHARED_CONTEXT_API_SECRET
-);
+var apiUrl = process.env.SHARED_CONTEXT_API_URL || process.env.AXIS_API_URL || "https://aicontext.vercel.app/api/v1";
+var apiSecret = process.env.AXIS_API_KEY || process.env.SHARED_CONTEXT_API_SECRET || process.env.AXIS_API_SECRET;
+logger.info("ContextManager config:", {
+  apiUrl,
+  hasApiSecret: !!apiSecret,
+  apiSecretPrefix: apiSecret ? apiSecret.substring(0, 10) + "..." : "NOT SET",
+  source: process.env.SHARED_CONTEXT_API_URL || process.env.AXIS_API_KEY ? "MCP config (mcp.json)" : "default/fallback"
+});
+var manager = new ContextManager(apiUrl, apiSecret);
 var useRemoteApiOnly = !!process.env.SHARED_CONTEXT_API_URL || !!process.env.AXIS_API_KEY;
+logger.info("NerveCenter config:", {
+  useRemoteApiOnly,
+  supabaseUrl: useRemoteApiOnly ? "DISABLED (using remote API)" : process.env.NEXT_PUBLIC_SUPABASE_URL ? "SET" : "NOT SET",
+  supabaseKey: useRemoteApiOnly ? "DISABLED (using remote API)" : process.env.SUPABASE_SERVICE_ROLE_KEY ? "SET" : "NOT SET",
+  projectName: process.env.PROJECT_NAME || "default"
+});
 var nerveCenter = new NerveCenter(manager, {
   supabaseUrl: useRemoteApiOnly ? null : process.env.NEXT_PUBLIC_SUPABASE_URL,
   supabaseServiceRoleKey: useRemoteApiOnly ? null : process.env.SUPABASE_SERVICE_ROLE_KEY,
   projectName: process.env.PROJECT_NAME || "default"
 });
+logger.info("=== Axis MCP Server Initialized ===");
 var ragEngine;
 if (process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
   ragEngine = new RagEngine(
@@ -1063,21 +1122,21 @@ if (process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KE
 }
 async function ensureFileSystem() {
   try {
-    const fs3 = await import("fs/promises");
-    const path3 = await import("path");
+    const fs4 = await import("fs/promises");
+    const path4 = await import("path");
     const fsSync2 = await import("fs");
     const cwd = process.cwd();
     logger.info(`Server CWD: ${cwd}`);
-    const historyDir = path3.join(cwd, "history");
-    await fs3.mkdir(historyDir, { recursive: true }).catch(() => {
+    const historyDir = path4.join(cwd, "history");
+    await fs4.mkdir(historyDir, { recursive: true }).catch(() => {
     });
-    const axisDir = path3.join(cwd, ".axis");
-    const axisInstructions = path3.join(axisDir, "instructions");
-    const legacyInstructions = path3.join(cwd, "agent-instructions");
+    const axisDir = path4.join(cwd, ".axis");
+    const axisInstructions = path4.join(axisDir, "instructions");
+    const legacyInstructions = path4.join(cwd, "agent-instructions");
     if (fsSync2.existsSync(legacyInstructions) && !fsSync2.existsSync(axisDir)) {
       logger.info("Using legacy agent-instructions directory");
     } else {
-      await fs3.mkdir(axisInstructions, { recursive: true }).catch(() => {
+      await fs4.mkdir(axisInstructions, { recursive: true }).catch(() => {
       });
       const defaults = [
         ["context.md", "# Project Context\n\n"],
@@ -1085,11 +1144,11 @@ async function ensureFileSystem() {
         ["activity.md", "# Activity Log\n\n"]
       ];
       for (const [file, content] of defaults) {
-        const p = path3.join(axisInstructions, file);
+        const p = path4.join(axisInstructions, file);
         try {
-          await fs3.access(p);
+          await fs4.access(p);
         } catch {
-          await fs3.writeFile(p, content);
+          await fs4.writeFile(p, content);
           logger.info(`Created default context file: ${file}`);
         }
       }
@@ -1412,13 +1471,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
   if (name === "get_subscription_status") {
     const email = String(args?.email);
-    const result = await nerveCenter.getSubscriptionStatus(email);
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    logger.info(`[get_subscription_status] Called with email: ${email}`);
+    try {
+      const result = await nerveCenter.getSubscriptionStatus(email);
+      logger.info(`[get_subscription_status] Result: ${JSON.stringify(result).substring(0, 200)}`);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    } catch (e) {
+      logger.error(`[get_subscription_status] Exception: ${e.message}`, e);
+      return { content: [{ type: "text", text: JSON.stringify({ error: e.message }, null, 2) }], isError: true };
+    }
   }
   if (name === "get_usage_stats") {
     const email = String(args?.email);
-    const result = await nerveCenter.getUsageStats(email);
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    logger.info(`[get_usage_stats] Called with email: ${email}`);
+    try {
+      const result = await nerveCenter.getUsageStats(email);
+      logger.info(`[get_usage_stats] Result: ${JSON.stringify(result).substring(0, 200)}`);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    } catch (e) {
+      logger.error(`[get_usage_stats] Exception: ${e.message}`, e);
+      return { content: [{ type: "text", text: JSON.stringify({ error: e.message }, null, 2) }], isError: true };
+    }
   }
   if (name === "search_docs") {
     const query = String(args?.query);
