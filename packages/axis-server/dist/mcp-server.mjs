@@ -284,7 +284,7 @@ var CircuitOpenError = class extends Error {
     this.name = "CircuitOpenError";
   }
 };
-var NerveCenter = class {
+var NerveCenter = class _NerveCenter {
   mutex;
   state;
   contextManager;
@@ -876,6 +876,38 @@ ${notepad}`;
     }
   }
   // --- Decision & Orchestration ---
+  /**
+   * Check if two file paths conflict hierarchically.
+   * A lock on a directory blocks locks on any file within it, and vice versa.
+   * Examples:
+   *   pathsConflict("/foo/bar", "/foo/bar/baz.ts") => true  (parent blocks child)
+   *   pathsConflict("/foo/bar/baz.ts", "/foo/bar") => true  (child blocks parent)
+   *   pathsConflict("/foo/bar", "/foo/bar")         => true  (exact match)
+   *   pathsConflict("/foo/bar", "/foo/baz")         => false (siblings)
+   */
+  static pathsConflict(pathA, pathB) {
+    const a = pathA.replace(/\/+$/, "");
+    const b = pathB.replace(/\/+$/, "");
+    if (a === b) return true;
+    if (b.startsWith(a + "/")) return true;
+    if (a.startsWith(b + "/")) return true;
+    return false;
+  }
+  /**
+   * Find any existing lock that conflicts hierarchically with the requested path.
+   * Skips locks owned by the same agent and stale locks.
+   */
+  findHierarchicalConflict(requestedPath, requestingAgent, locks) {
+    for (const lock of locks) {
+      if (lock.agentId === requestingAgent) continue;
+      const isStale = Date.now() - lock.timestamp > this.lockTimeout;
+      if (isStale) continue;
+      if (_NerveCenter.pathsConflict(requestedPath, lock.filePath)) {
+        return lock;
+      }
+    }
+    return null;
+  }
   async proposeFileAccess(agentId, filePath, intent, userPrompt) {
     return await this.mutex.runExclusive(async () => {
       logger.info(`[proposeFileAccess] Starting - agentId: ${agentId}, filePath: ${filePath}`);
@@ -927,6 +959,26 @@ ${notepad}`;
       }
       if (this.useSupabase && this.supabase && this._projectId) {
         try {
+          const { data: existingLocks } = await this.supabase.from("locks").select("agent_id, file_path, intent, updated_at").eq("project_id", this._projectId);
+          if (existingLocks && existingLocks.length > 0) {
+            const asFileLocks = existingLocks.map((row2) => ({
+              agentId: row2.agent_id,
+              filePath: row2.file_path,
+              intent: row2.intent,
+              userPrompt: "",
+              timestamp: row2.updated_at ? Date.parse(row2.updated_at) : Date.now()
+            }));
+            const conflict2 = this.findHierarchicalConflict(filePath, agentId, asFileLocks);
+            if (conflict2) {
+              logger.info(`[proposeFileAccess] Hierarchical conflict: '${filePath}' overlaps with locked '${conflict2.filePath}' (owner: ${conflict2.agentId})`);
+              this.logLockEvent("BLOCKED", filePath, agentId, conflict2.agentId, intent);
+              return {
+                status: "REQUIRES_ORCHESTRATION",
+                message: `Conflict: '${filePath}' overlaps with '${conflict2.filePath}' locked by '${conflict2.agentId}'`,
+                currentLock: conflict2
+              };
+            }
+          }
           const { data, error } = await this.supabase.rpc("try_acquire_lock", {
             p_project_id: this._projectId,
             p_file_path: filePath,
@@ -959,17 +1011,16 @@ ${notepad}`;
           logger.warn("[NerveCenter] Lock RPC failed. Falling back to local.", e);
         }
       }
-      const existing = Object.values(this.state.locks).find((l) => l.filePath === filePath);
-      if (existing) {
-        const isStale = Date.now() - existing.timestamp > this.lockTimeout;
-        if (!isStale && existing.agentId !== agentId) {
-          this.logLockEvent("BLOCKED", filePath, agentId, existing.agentId, intent);
-          return {
-            status: "REQUIRES_ORCHESTRATION",
-            message: `Conflict: File '${filePath}' is currently locked by '${existing.agentId}'`,
-            currentLock: existing
-          };
-        }
+      const allLocks = Object.values(this.state.locks);
+      const conflict = this.findHierarchicalConflict(filePath, agentId, allLocks);
+      if (conflict) {
+        logger.info(`[proposeFileAccess] Hierarchical conflict (local): '${filePath}' overlaps with locked '${conflict.filePath}' (owner: ${conflict.agentId})`);
+        this.logLockEvent("BLOCKED", filePath, agentId, conflict.agentId, intent);
+        return {
+          status: "REQUIRES_ORCHESTRATION",
+          message: `Conflict: '${filePath}' overlaps with '${conflict.filePath}' locked by '${conflict.agentId}'`,
+          currentLock: conflict
+        };
       }
       this.state.locks[filePath] = { agentId, filePath, intent, userPrompt, timestamp: Date.now() };
       await this.saveState();
@@ -1961,7 +2012,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     // --- Decision & Orchestration ---
     {
       name: "propose_file_access",
-      description: "**CRITICAL: REQUEST FILE LOCK** \u2014 call this before EVERY file edit, no exceptions.\n- Checks if another agent currently holds a lock.\n- Returns `GRANTED` if safe to proceed, or `REQUIRES_ORCHESTRATION` if someone else is editing.\n- Usage: Provide your `agentId` (e.g., 'cursor-agent'), `filePath` (absolute), and `intent` (descriptive \u2014 e.g. 'Refactor auth to use JWT', NOT 'editing file').\n- Locks expire after 30 minutes. Use `force_unlock` only as a last resort for crashed agents.\n- **IMPORTANT**: Every lock you acquire MUST be released. Call `complete_job` when done with each task, and `finalize_session` before ending your session. Dangling locks block all other agents.",
+      description: "**CRITICAL: REQUEST FILE LOCK** \u2014 call this before EVERY file edit, no exceptions.\n- Checks if another agent currently holds a lock.\n- Returns `GRANTED` if safe to proceed, or `REQUIRES_ORCHESTRATION` if someone else is editing.\n- **Hierarchical matching**: Locking a directory also blocks locks on files within it, and vice versa. E.g. locking `src/api/` blocks `src/api/auth/login.ts`.\n- Usage: Provide your `agentId` (e.g., 'cursor-agent'), `filePath` (absolute), and `intent` (descriptive \u2014 e.g. 'Refactor auth to use JWT', NOT 'editing file').\n- Locks expire after 30 minutes. Use `force_unlock` only as a last resort for crashed agents.\n- **IMPORTANT**: Every lock you acquire MUST be released. Call `complete_job` when done with each task, and `finalize_session` before ending your session. Dangling locks block all other agents.",
       inputSchema: {
         type: "object",
         properties: {

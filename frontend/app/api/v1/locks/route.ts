@@ -73,6 +73,47 @@ export async function POST(req: NextRequest) {
         const projectId = await getOrCreateProjectId(projectName, session.sub!);
 
         if (action === "lock") {
+            // --- Hierarchical conflict check ---
+            // Before acquiring the exact-path lock, check if any existing lock
+            // overlaps hierarchically (parent locks child, child locks parent).
+            const { data: existingLocks, error: fetchErr } = await supabase
+                .from("locks")
+                .select("agent_id, file_path, intent, updated_at")
+                .eq("project_id", projectId);
+
+            if (fetchErr) throw fetchErr;
+
+            if (existingLocks && existingLocks.length > 0) {
+                const LOCK_TIMEOUT_MS = 1800 * 1000; // 30 minutes
+                const normalizedReq = filePath.replace(/\/+$/, "");
+
+                for (const lock of existingLocks) {
+                    if (lock.agent_id === agentId) continue;
+                    const age = Date.now() - Date.parse(lock.updated_at);
+                    if (age > LOCK_TIMEOUT_MS) continue;
+
+                    const normalizedLock = lock.file_path.replace(/\/+$/, "");
+                    const isConflict =
+                        normalizedReq === normalizedLock ||
+                        normalizedReq.startsWith(normalizedLock + "/") ||
+                        normalizedLock.startsWith(normalizedReq + "/");
+
+                    if (isConflict) {
+                        return NextResponse.json({
+                            status: "DENIED",
+                            message: `Path '${filePath}' overlaps with '${lock.file_path}' locked by '${lock.agent_id}'`,
+                            current_lock: {
+                                agent_id: lock.agent_id,
+                                file_path: lock.file_path,
+                                intent: lock.intent,
+                                updated_at: lock.updated_at,
+                            },
+                        }, { status: 409 });
+                    }
+                }
+            }
+
+            // --- Exact-path atomic lock via RPC ---
             // Use atomic try_acquire_lock RPC — prevents TOCTOU race conditions
             // between concurrent agents trying to lock the same file.
             const { data, error } = await supabase.rpc("try_acquire_lock", {

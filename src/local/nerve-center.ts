@@ -827,13 +827,47 @@ export class NerveCenter {
 
     // --- Decision & Orchestration ---
 
+    /**
+     * Check if two file paths conflict hierarchically.
+     * A lock on a directory blocks locks on any file within it, and vice versa.
+     * Examples:
+     *   pathsConflict("/foo/bar", "/foo/bar/baz.ts") => true  (parent blocks child)
+     *   pathsConflict("/foo/bar/baz.ts", "/foo/bar") => true  (child blocks parent)
+     *   pathsConflict("/foo/bar", "/foo/bar")         => true  (exact match)
+     *   pathsConflict("/foo/bar", "/foo/baz")         => false (siblings)
+     */
+    private static pathsConflict(pathA: string, pathB: string): boolean {
+        const a = pathA.replace(/\/+$/, "");
+        const b = pathB.replace(/\/+$/, "");
+        if (a === b) return true;
+        if (b.startsWith(a + "/")) return true;
+        if (a.startsWith(b + "/")) return true;
+        return false;
+    }
+
+    /**
+     * Find any existing lock that conflicts hierarchically with the requested path.
+     * Skips locks owned by the same agent and stale locks.
+     */
+    private findHierarchicalConflict(requestedPath: string, requestingAgent: string, locks: FileLock[]): FileLock | null {
+        for (const lock of locks) {
+            if (lock.agentId === requestingAgent) continue;
+            const isStale = (Date.now() - lock.timestamp) > this.lockTimeout;
+            if (isStale) continue;
+            if (NerveCenter.pathsConflict(requestedPath, lock.filePath)) {
+                return lock;
+            }
+        }
+        return null;
+    }
+
     async proposeFileAccess(agentId: string, filePath: string, intent: string, userPrompt: string) {
         return await this.mutex.runExclusive(async () => {
             logger.info(`[proposeFileAccess] Starting - agentId: ${agentId}, filePath: ${filePath}`);
 
             // --- Path 1: Remote API (customer mode) ---
             // Atomicity is handled server-side via try_acquire_lock RPC.
-            // No GET-then-POST pattern. Single POST, server returns GRANTED or DENIED.
+            // Hierarchical conflict checking is done server-side in the locks API route.
             if (this.contextManager.apiUrl) {
                 try {
                     const result = await this.callCoordination("locks", "POST", {
@@ -887,9 +921,37 @@ export class NerveCenter {
             }
 
             // --- Path 2: Direct Supabase (development mode) ---
-            // Uses atomic try_acquire_lock RPC directly.
+            // Uses atomic try_acquire_lock RPC for exact-path locks.
+            // Hierarchical conflict check: query existing locks first, then check path overlap.
             if (this.useSupabase && this.supabase && this._projectId) {
                 try {
+                    // Pre-flight: check for hierarchical conflicts among existing locks
+                    const { data: existingLocks } = await this.supabase
+                        .from("locks")
+                        .select("agent_id, file_path, intent, updated_at")
+                        .eq("project_id", this._projectId);
+
+                    if (existingLocks && existingLocks.length > 0) {
+                        const asFileLocks: FileLock[] = existingLocks.map((row: any) => ({
+                            agentId: row.agent_id,
+                            filePath: row.file_path,
+                            intent: row.intent,
+                            userPrompt: "",
+                            timestamp: row.updated_at ? Date.parse(row.updated_at) : Date.now()
+                        }));
+                        const conflict = this.findHierarchicalConflict(filePath, agentId, asFileLocks);
+                        if (conflict) {
+                            logger.info(`[proposeFileAccess] Hierarchical conflict: '${filePath}' overlaps with locked '${conflict.filePath}' (owner: ${conflict.agentId})`);
+                            this.logLockEvent("BLOCKED", filePath, agentId, conflict.agentId, intent);
+                            return {
+                                status: "REQUIRES_ORCHESTRATION",
+                                message: `Conflict: '${filePath}' overlaps with '${conflict.filePath}' locked by '${conflict.agentId}'`,
+                                currentLock: conflict
+                            };
+                        }
+                    }
+
+                    // No hierarchical conflict — proceed with atomic exact-path lock
                     const { data, error } = await this.supabase.rpc("try_acquire_lock", {
                         p_project_id: this._projectId,
                         p_file_path: filePath,
@@ -926,17 +988,17 @@ export class NerveCenter {
             }
 
             // --- Path 3: Local-only fallback ---
-            const existing = Object.values(this.state.locks).find(l => l.filePath === filePath);
-            if (existing) {
-                const isStale = (Date.now() - existing.timestamp) > this.lockTimeout;
-                if (!isStale && existing.agentId !== agentId) {
-                    this.logLockEvent("BLOCKED", filePath, agentId, existing.agentId, intent);
-                    return {
-                        status: "REQUIRES_ORCHESTRATION",
-                        message: `Conflict: File '${filePath}' is currently locked by '${existing.agentId}'`,
-                        currentLock: existing
-                    };
-                }
+            // Full hierarchical conflict check against all local locks.
+            const allLocks = Object.values(this.state.locks);
+            const conflict = this.findHierarchicalConflict(filePath, agentId, allLocks);
+            if (conflict) {
+                logger.info(`[proposeFileAccess] Hierarchical conflict (local): '${filePath}' overlaps with locked '${conflict.filePath}' (owner: ${conflict.agentId})`);
+                this.logLockEvent("BLOCKED", filePath, agentId, conflict.agentId, intent);
+                return {
+                    status: "REQUIRES_ORCHESTRATION",
+                    message: `Conflict: '${filePath}' overlaps with '${conflict.filePath}' locked by '${conflict.agentId}'`,
+                    currentLock: conflict
+                };
             }
 
             this.state.locks[filePath] = { agentId, filePath, intent, userPrompt, timestamp: Date.now() };
