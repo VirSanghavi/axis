@@ -94,7 +94,6 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [newKeyName, setNewKeyName] = useState('');
   const [createdKey, setCreatedKey] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
   const [usageData, setUsageData] = useState<{ day: string; requests: number }[]>([]);
   const [subData, setSubData] = useState<SubscriptionData | null>(null);
   const [sessions, setSessions] = useState<SessionRecord[]>([]);
@@ -252,9 +251,13 @@ export default function Dashboard() {
       });
       if (res.ok) {
         const data = await res.json();
+        const secret = data.key.secret as string;
         setKeys([...keys, data.key]);
-        setCreatedKey(data.key.secret);
+        setCreatedKey(secret);
         setNewKeyName('');
+        if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+          navigator.clipboard.writeText(secret);
+        }
 
         // Local UI update for immediate feedback
         setActivities(prev => [{
@@ -337,22 +340,8 @@ export default function Dashboard() {
 
                     {createdKey && (
                       <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3">
-                        <div className="text-[10px] font-bold text-emerald-700 uppercase mb-1">key created</div>
-                        <div className="relative">
-                          <code className="block bg-white p-2 text-[10px] font-mono border border-emerald-100 rounded mb-2 select-all pr-12 overflow-x-auto">{createdKey}</code>
-                          <button
-                            onClick={() => {
-                              if (createdKey) {
-                                navigator.clipboard.writeText(createdKey);
-                                setCopied(true);
-                                setTimeout(() => setCopied(false), 2000);
-                              }
-                            }}
-                            className="absolute right-1 top-1 text-[9px] uppercase font-mono bg-emerald-100 hover:bg-emerald-200 text-emerald-700 px-2 py-1 rounded transition-colors"
-                          >
-                            {copied ? 'copied!' : 'copy'}
-                          </button>
-                        </div>
+                        <div className="text-[10px] font-bold text-emerald-700 uppercase mb-1">key created — copied to clipboard</div>
+                        <code className="block bg-white p-2 text-[10px] font-mono border border-emerald-100 rounded mb-2 select-all overflow-x-auto">{createdKey}</code>
                         <button onClick={() => setCreatedKey(null)} className="text-[9px] uppercase font-mono text-emerald-500 hover:text-emerald-700">done</button>
                       </div>
                     )}
@@ -426,7 +415,7 @@ export default function Dashboard() {
 
               <div className="mt-4 pt-4 border-t border-neutral-100">
                 <div className="flex items-center gap-2 mb-4">
-                  <h3 className="text-[10px] font-mono text-neutral-500 uppercase tracking-[0.3em]">live activity feed</h3>
+                  <h3 className="text-[10px] font-mono text-neutral-500 uppercase tracking-[0.3em]">recent actions</h3>
                 </div>
                 <div className="space-y-2 max-h-[160px] overflow-y-auto pr-2 custom-scrollbar">
                   {activities.length === 0 ? (
@@ -435,7 +424,6 @@ export default function Dashboard() {
                     activities.map((item) => (
                       <div key={item.id} className="flex items-center justify-between text-[11px] font-mono bg-neutral-50 px-4 py-2 rounded border border-neutral-100">
                         <div className="flex items-center gap-3 min-w-0">
-                          <div className={cn("w-1.5 h-1.5 rounded-full flex-shrink-0", item.status === 'success' ? "bg-emerald-500" : "bg-amber-500 animate-pulse")} />
                           <span className="text-neutral-400 flex-shrink-0">[{item.type}]</span>
                           <span className="text-neutral-700 font-medium truncate">{item.target}</span>
                         </div>
