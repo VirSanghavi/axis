@@ -1,7 +1,7 @@
 'use client';
 
 import { usePathname, useRouter } from "next/navigation";
-import { Home, Info, MessageCircle, BookOpen, Github, LogOut, LogIn, LayoutDashboard } from "lucide-react";
+import { Home, Info, MessageCircle, BookOpen, Github, LogOut, LogIn } from "lucide-react";
 import Dock, { DockItemConfig } from "./Dock";
 import { useRef, useState, useEffect, useMemo, useCallback } from "react";
 
@@ -52,7 +52,7 @@ export default function Navbar() {
             {
                 icon: <Home size={20} />,
                 label: "home",
-                onClick: () => router.push("/")
+                onClick: () => router.push(isAuthenticated === true ? "/dashboard" : "/")
             },
             {
                 icon: isAuthenticated === false ? <LogIn size={20} /> : <Info size={20} />,
@@ -77,11 +77,6 @@ export default function Navbar() {
         ];
 
         if (isAuthenticated === true) {
-            items.push({
-                icon: <LayoutDashboard size={20} />,
-                label: "dashboard",
-                onClick: () => router.push("/dashboard")
-            });
             items.push({
                 icon: <LogOut size={20} />,
                 label: "logout",
