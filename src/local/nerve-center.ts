@@ -48,6 +48,17 @@ interface NerveCenterState {
 const STATE_FILE = process.env.NERVE_CENTER_STATE_FILE || path.join(process.cwd(), "history", "nerve-center-state.json");
 const LOCK_TIMEOUT_DEFAULT = 30 * 60 * 1000; // 30 minutes
 
+// Circuit breaker constants
+const CIRCUIT_FAILURE_THRESHOLD = 5;
+const CIRCUIT_COOLDOWN_MS = 60_000; // 60 seconds
+
+class CircuitOpenError extends Error {
+    constructor() {
+        super("Circuit breaker open — remote API temporarily unavailable, falling back to local");
+        this.name = "CircuitOpenError";
+    }
+}
+
 interface NerveCenterOptions {
     stateFilePath?: string;
     lockTimeout?: number;
@@ -70,6 +81,8 @@ export class NerveCenter {
     private _projectId?: string; // Renamed backing field
     private projectName: string;
     private useSupabase: boolean;
+    private _circuitFailures: number = 0;
+    private _circuitOpenUntil: number = 0;
 
     /**
      * @param contextManager - Instance of ContextManager for legacy operations
@@ -220,10 +233,21 @@ export class NerveCenter {
     private async callCoordination(endpoint: string, method: string = "GET", body?: any) {
         logger.info(`[callCoordination] Starting - endpoint: ${endpoint}, method: ${method}`);
         logger.info(`[callCoordination] apiUrl: ${this.contextManager.apiUrl}, apiSecret: ${this.contextManager.apiSecret ? 'SET (' + this.contextManager.apiSecret.substring(0, 10) + '...)' : 'NOT SET'}`);
-        
+
         if (!this.contextManager.apiUrl) {
             logger.error("[callCoordination] Remote API not configured - apiUrl is:", this.contextManager.apiUrl);
             throw new Error("Remote API not configured");
+        }
+
+        // Circuit breaker: if open, fail fast
+        if (this._circuitFailures >= CIRCUIT_FAILURE_THRESHOLD && Date.now() < this._circuitOpenUntil) {
+            logger.warn(`[callCoordination] Circuit breaker OPEN — skipping remote call (resets at ${new Date(this._circuitOpenUntil).toISOString()})`);
+            throw new CircuitOpenError();
+        }
+
+        // If cooldown expired, allow a probe attempt (half-open)
+        if (this._circuitFailures >= CIRCUIT_FAILURE_THRESHOLD && Date.now() >= this._circuitOpenUntil) {
+            logger.info("[callCoordination] Circuit breaker half-open — allowing probe request");
         }
 
         const url = this.contextManager.apiUrl.endsWith("/v1")
@@ -232,44 +256,101 @@ export class NerveCenter {
 
         logger.info(`[callCoordination] Full URL: ${method} ${url}`);
         logger.info(`[callCoordination] Request body: ${body ? JSON.stringify({ ...body, projectName: this.projectName }) : 'none'}`);
-        
-        try {
-            const response = await fetch(url, {
-                method,
-                headers: {
-                    "Content-Type": "application/json",
-                    "Authorization": `Bearer ${this.contextManager.apiSecret || ""}`
-                },
-                body: body ? JSON.stringify({ ...body, projectName: this.projectName }) : undefined
-            });
 
-            logger.info(`[callCoordination] Response status: ${response.status} ${response.statusText}`);
-            
-            if (!response.ok) {
-                const text = await response.text();
-                logger.error(`[callCoordination] API Error Response (${response.status}): ${text}`);
-                
-                // Provide more specific error messages
-                if (response.status === 401) {
-                    throw new Error(`Authentication failed (401): ${text}. Check if API key is valid and exists in api_keys table.`);
-                } else if (response.status === 500) {
-                    throw new Error(`Server error (500): ${text}. Check Vercel logs for details.`);
-                } else {
-                    throw new Error(`API Error (${response.status}): ${text}`);
+        const maxRetries = 3;
+        const baseDelay = 1000;
+
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 10_000);
+
+            try {
+                const response = await fetch(url, {
+                    method,
+                    headers: {
+                        "Content-Type": "application/json",
+                        "Authorization": `Bearer ${this.contextManager.apiSecret || ""}`
+                    },
+                    body: body ? JSON.stringify({ ...body, projectName: this.projectName }) : undefined,
+                    signal: controller.signal,
+                });
+                clearTimeout(timeout);
+
+                logger.info(`[callCoordination] Response status: ${response.status} ${response.statusText}`);
+
+                if (!response.ok) {
+                    const text = await response.text();
+                    logger.error(`[callCoordination] API Error Response (${response.status}): ${text}`);
+
+                    // 4xx errors: do NOT retry, do NOT trip circuit
+                    if (response.status >= 400 && response.status < 500) {
+                        if (response.status === 401) {
+                            throw new Error(`Authentication failed (401): ${text}. Check if API key is valid and exists in api_keys table.`);
+                        }
+                        throw new Error(`API Error (${response.status}): ${text}`);
+                    }
+
+                    // 5xx: retry-eligible, trip circuit
+                    if (attempt < maxRetries) {
+                        const delay = baseDelay * Math.pow(2, attempt - 1);
+                        logger.warn(`[callCoordination] 5xx error, retrying in ${delay}ms (attempt ${attempt}/${maxRetries})`);
+                        await new Promise(r => setTimeout(r, delay));
+                        continue;
+                    }
+
+                    // Final attempt failed with 5xx
+                    this._circuitFailures++;
+                    if (this._circuitFailures >= CIRCUIT_FAILURE_THRESHOLD) {
+                        this._circuitOpenUntil = Date.now() + CIRCUIT_COOLDOWN_MS;
+                        logger.error(`[callCoordination] Circuit breaker OPENED after ${this._circuitFailures} consecutive failures`);
+                    }
+                    throw new Error(`Server error (${response.status}): ${text}. Check Vercel logs for details.`);
                 }
-            }
 
-            const jsonResult = await response.json();
-            logger.info(`[callCoordination] Success - Response: ${JSON.stringify(jsonResult).substring(0, 200)}...`);
-            return jsonResult;
-        } catch (e: any) {
-            logger.error(`[callCoordination] Fetch failed: ${e.message}`, e);
-            // Re-throw with more context
-            if (e.message.includes("Authentication failed") || e.message.includes("401")) {
-                throw new Error(`API Authentication Error: ${e.message}. Verify AXIS_API_KEY in MCP config matches a key in the api_keys table.`);
+                // Success — reset circuit breaker
+                if (this._circuitFailures > 0) {
+                    logger.info(`[callCoordination] Request succeeded, resetting circuit breaker (was at ${this._circuitFailures} failures)`);
+                    this._circuitFailures = 0;
+                    this._circuitOpenUntil = 0;
+                }
+
+                const jsonResult = await response.json();
+                logger.info(`[callCoordination] Success - Response: ${JSON.stringify(jsonResult).substring(0, 200)}...`);
+                return jsonResult;
+            } catch (e: any) {
+                clearTimeout(timeout);
+
+                // Re-throw CircuitOpenError and 4xx errors without retry
+                if (e instanceof CircuitOpenError) throw e;
+                if (e.message.includes("Authentication failed") || e.message.includes("API Error (4")) {
+                    throw e;
+                }
+
+                // Network error or abort — retry-eligible
+                if (attempt < maxRetries) {
+                    const delay = baseDelay * Math.pow(2, attempt - 1);
+                    logger.warn(`[callCoordination] Network/timeout error, retrying in ${delay}ms (attempt ${attempt}/${maxRetries}): ${e.message}`);
+                    await new Promise(r => setTimeout(r, delay));
+                    continue;
+                }
+
+                // Final attempt failed
+                this._circuitFailures++;
+                if (this._circuitFailures >= CIRCUIT_FAILURE_THRESHOLD) {
+                    this._circuitOpenUntil = Date.now() + CIRCUIT_COOLDOWN_MS;
+                    logger.error(`[callCoordination] Circuit breaker OPENED after ${this._circuitFailures} consecutive failures`);
+                }
+
+                logger.error(`[callCoordination] Fetch failed after ${maxRetries} attempts: ${e.message}`, e);
+                if (e.message.includes("401")) {
+                    throw new Error(`API Authentication Error: ${e.message}. Verify AXIS_API_KEY in MCP config matches a key in the api_keys table.`);
+                }
+                throw e;
             }
-            throw e;
         }
+
+        // Should not be reached, but satisfy TypeScript
+        throw new Error("callCoordination: unexpected end of retry loop");
     }
 
     private jobFromRecord(record: JobRecord): Job {
@@ -418,7 +499,7 @@ export class NerveCenter {
                     p_text: text
                 });
             } catch (e) {
-                // Ignore RPC errors for now
+                logger.warn("Notepad RPC append failed", e as any);
             }
         }
 

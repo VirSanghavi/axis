@@ -1,6 +1,7 @@
 import fs from "fs/promises";
 import path from "path";
 import { Mutex } from "async-mutex";
+import { logger } from "../utils/logger.js";
 
 import * as fsSync from "fs";
 
@@ -148,56 +149,121 @@ export class ContextManager {
             throw new Error("SHARED_CONTEXT_API_URL not configured.");
         }
 
-        // Ensure we hit the correct endpoint version
         const endpoint = this.apiUrl.endsWith("/v1") ? `${this.apiUrl}/search` : `${this.apiUrl}/v1/search`;
+        const maxRetries = 3;
+        const baseDelay = 1000;
 
-        const response = await fetch(endpoint, {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                "Authorization": `Bearer ${this.apiSecret || ""}`
-            },
-            body: JSON.stringify({ query, projectName })
-        });
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 15_000);
 
-        if (!response.ok) {
-            const text = await response.text();
-            throw new Error(`API Error ${response.status}: ${text}`);
+            try {
+                const response = await fetch(endpoint, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "Authorization": `Bearer ${this.apiSecret || ""}`
+                    },
+                    body: JSON.stringify({ query, projectName }),
+                    signal: controller.signal,
+                });
+                clearTimeout(timeout);
+
+                if (!response.ok) {
+                    const text = await response.text();
+                    // 4xx: don't retry
+                    if (response.status >= 400 && response.status < 500) {
+                        throw new Error(`API Error ${response.status}: ${text}`);
+                    }
+                    // 5xx: retry
+                    if (attempt < maxRetries) {
+                        const delay = baseDelay * Math.pow(2, attempt - 1);
+                        logger.warn(`[searchContext] 5xx error, retrying in ${delay}ms (attempt ${attempt}/${maxRetries})`);
+                        await new Promise(r => setTimeout(r, delay));
+                        continue;
+                    }
+                    throw new Error(`API Error ${response.status}: ${text}`);
+                }
+
+                const result = await response.json() as any;
+
+                if (result.results && Array.isArray(result.results)) {
+                    return result.results.map((r: any) =>
+                        `[Similarity: ${(r.similarity * 100).toFixed(1)}%] ${r.content}`
+                    ).join("\n\n---\n\n") || "No results found.";
+                }
+
+                throw new Error("No results format recognized.");
+            } catch (e: any) {
+                clearTimeout(timeout);
+                // Don't retry 4xx errors
+                if (e.message.startsWith("API Error 4")) throw e;
+                if (attempt < maxRetries) {
+                    const delay = baseDelay * Math.pow(2, attempt - 1);
+                    logger.warn(`[searchContext] Network/timeout error, retrying in ${delay}ms (attempt ${attempt}/${maxRetries}): ${e.message}`);
+                    await new Promise(r => setTimeout(r, delay));
+                    continue;
+                }
+                throw e;
+            }
         }
 
-        const result = await response.json() as any;
-
-        if (result.results && Array.isArray(result.results)) {
-            return result.results.map((r: any) =>
-                `[Similarity: ${(r.similarity * 100).toFixed(1)}%] ${r.content}`
-            ).join("\n\n---\n\n") || "No results found.";
-        }
-
-        throw new Error("No results format recognized.");
+        throw new Error("searchContext: unexpected end of retry loop");
     }
 
     async embedContent(items: { content: string, metadata: any }[], projectName: string = "default") {
         if (!this.apiUrl) {
-            console.warn("Skipping RAG embedding: SHARED_CONTEXT_API_URL not configured.");
+            logger.warn("Skipping RAG embedding: SHARED_CONTEXT_API_URL not configured.");
             return;
         }
 
         const endpoint = this.apiUrl.endsWith("/v1") ? `${this.apiUrl}/embed` : `${this.apiUrl}/v1/embed`;
+        const maxRetries = 3;
+        const baseDelay = 1000;
 
-        const response = await fetch(endpoint, {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                "Authorization": `Bearer ${this.apiSecret || ""}`
-            },
-            body: JSON.stringify({ items, projectName })
-        });
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 15_000);
 
-        if (!response.ok) {
-            const text = await response.text();
-            throw new Error(`API Error ${response.status}: ${text}`);
+            try {
+                const response = await fetch(endpoint, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "Authorization": `Bearer ${this.apiSecret || ""}`
+                    },
+                    body: JSON.stringify({ items, projectName }),
+                    signal: controller.signal,
+                });
+                clearTimeout(timeout);
+
+                if (!response.ok) {
+                    const text = await response.text();
+                    if (response.status >= 400 && response.status < 500) {
+                        throw new Error(`API Error ${response.status}: ${text}`);
+                    }
+                    if (attempt < maxRetries) {
+                        const delay = baseDelay * Math.pow(2, attempt - 1);
+                        logger.warn(`[embedContent] 5xx error, retrying in ${delay}ms (attempt ${attempt}/${maxRetries})`);
+                        await new Promise(r => setTimeout(r, delay));
+                        continue;
+                    }
+                    throw new Error(`API Error ${response.status}: ${text}`);
+                }
+
+                return await response.json();
+            } catch (e: any) {
+                clearTimeout(timeout);
+                if (e.message.startsWith("API Error 4")) throw e;
+                if (attempt < maxRetries) {
+                    const delay = baseDelay * Math.pow(2, attempt - 1);
+                    logger.warn(`[embedContent] Network/timeout error, retrying in ${delay}ms (attempt ${attempt}/${maxRetries}): ${e.message}`);
+                    await new Promise(r => setTimeout(r, delay));
+                    continue;
+                }
+                logger.warn(`[embedContent] Failed after ${maxRetries} attempts: ${e.message}. Skipping embed.`);
+                return;
+            }
         }
-
-        return await response.json();
     }
 }

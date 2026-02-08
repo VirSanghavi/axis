@@ -56,12 +56,24 @@ export async function POST(req: NextRequest) {
         const projectId = await getOrCreateProjectId(projectName, session.sub!);
 
         if (action === "post") {
+            // --- Input validation ---
+            if (!jobData.title || typeof jobData.title !== "string" || jobData.title.length > 500) {
+                return NextResponse.json({ error: "title is required (max 500 chars)" }, { status: 400 });
+            }
+            if (jobData.description !== undefined && (typeof jobData.description !== "string" || jobData.description.length > 5000)) {
+                return NextResponse.json({ error: "description must be a string (max 5000 chars)" }, { status: 400 });
+            }
+            const validPriorities = ["low", "medium", "high", "critical"];
+            if (jobData.priority && !validPriorities.includes(jobData.priority)) {
+                return NextResponse.json({ error: `priority must be one of: ${validPriorities.join(", ")}` }, { status: 400 });
+            }
+
             const { data, error } = await supabase
                 .from("jobs")
                 .insert({
                     project_id: projectId,
                     title: jobData.title,
-                    description: jobData.description,
+                    description: jobData.description || "",
                     priority: jobData.priority || "medium",
                     status: "todo",
                     dependencies: jobData.dependencies || []
@@ -97,10 +109,21 @@ export async function POST(req: NextRequest) {
                 return NextResponse.json({ error: "jobId is required for update" }, { status: 400 });
             }
 
+            // --- Input validation ---
+            const validStatuses = ["todo", "in_progress", "done", "cancelled"];
+            if (updates.status && !validStatuses.includes(updates.status)) {
+                return NextResponse.json({ error: `status must be one of: ${validStatuses.join(", ")}` }, { status: 400 });
+            }
+            const validPriorities = ["low", "medium", "high", "critical"];
+            if (updates.priority && !validPriorities.includes(updates.priority)) {
+                return NextResponse.json({ error: `priority must be one of: ${validPriorities.join(", ")}` }, { status: 400 });
+            }
+
             // Sanitize: only allow known fields to be updated
             const allowedFields: Record<string, unknown> = {};
             if (updates.status) allowedFields.status = updates.status;
             if (updates.assigned_to) allowedFields.assigned_to = updates.assigned_to;
+            if (updates.priority) allowedFields.priority = updates.priority;
             if (updates.cancel_reason) allowedFields.cancel_reason = updates.cancel_reason;
             allowedFields.updated_at = new Date().toISOString();
 

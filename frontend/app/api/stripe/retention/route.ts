@@ -42,10 +42,14 @@ export async function POST(req: NextRequest) {
 
         let customerId = profile?.stripe_customer_id;
 
-        // Manual override for debug if DB record is missing but we know the user
-        if (isSuperUser) {
-            customerId = 'cus_Tw7wDGE1jIXikB';
-            console.log(`[Stripe Retention] Using bypass customer ID for ${session.email}`);
+        // Superuser fallback: look up customer by email in Stripe if DB is missing
+        if (!customerId && isSuperUser) {
+            const { data: customers } = await stripe.customers.list({ email: normalizedEmail, limit: 1 });
+            if (customers[0]) {
+                customerId = customers[0].id;
+                console.log(`[Stripe Retention] Resolved superuser customer ID via Stripe: ${customerId}`);
+                await supabase.from("profiles").update({ stripe_customer_id: customerId }).ilike("email", session.email);
+            }
         }
 
         if (!customerId) {

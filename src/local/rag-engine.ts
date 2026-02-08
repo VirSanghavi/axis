@@ -24,7 +24,7 @@ export class RagEngine {
 
     async indexContent(filePath: string, content: string): Promise<boolean> {
         if (!this.projectId) {
-            console.error("RAG: Project ID missing.");
+            logger.error("RAG: Project ID missing.");
             return false;
         }
 
@@ -54,13 +54,13 @@ export class RagEngine {
                 });
 
             if (error) {
-                console.error("RAG Insert Error:", error);
+                logger.error("RAG Insert Error:", error);
                 return false;
             }
             logger.info(`Indexed ${filePath}`);
             return true;
         } catch (e) {
-            console.error("RAG Error:", e);
+            logger.error("RAG Error:", e);
             return false;
         }
     }
@@ -83,13 +83,13 @@ export class RagEngine {
             });
 
             if (error || !data) {
-                console.error("RAG Search DB Error:", error);
+                logger.error("RAG Search DB Error:", error);
                 return [];
             }
 
             return data.map((d: any) => d.content);
         } catch (e) {
-            console.error("RAG Search Fail:", e);
+            logger.error("RAG Search Fail:", e);
             return [];
         }
     }

@@ -44,9 +44,15 @@ export async function POST(req: NextRequest) {
     }
 
     let customerId = profile?.stripe_customer_id;
-    if (isSuperUser) {
-      customerId = 'cus_Tw7wDGE1jIXikB';
-      console.log(`[Stripe Portal] Using bypass customer ID for ${session.email}`);
+    if (!customerId && isSuperUser) {
+      // Superuser fallback: look up customer by email in Stripe
+      const { data: customers } = await stripe.customers.list({ email: normalizedEmail, limit: 1 });
+      if (customers[0]) {
+        customerId = customers[0].id;
+        console.log(`[Stripe Portal] Resolved superuser customer ID via Stripe: ${customerId}`);
+        // Persist so future calls don't need the lookup
+        await supabase.from("profiles").update({ stripe_customer_id: customerId }).ilike("email", session.email);
+      }
     }
 
     if (!customerId) {

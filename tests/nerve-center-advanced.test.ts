@@ -10,7 +10,7 @@ class MockContextManager extends ContextManager {
     constructor() { super("url", "key"); }
     async search() { return []; }
     async storeMemory() { return true; }
-    embedContent = undefined; // Mock as undefined or function if needed
+    async embedContent() { return undefined; }
 }
 
 const TEST_STATE_FILE = join(process.cwd(), "tests", "temp-state-adv.json");

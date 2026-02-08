@@ -49,9 +49,24 @@ export async function POST(req: NextRequest) {
         const body = await req.json();
         const { projectName = "default", action, filePath, agentId, intent, userPrompt, reason } = body;
 
-        // Validate required fields to prevent injection / garbage data
+        // --- Input validation ---
+        if (filePath !== undefined) {
+            if (typeof filePath !== "string" || filePath.length === 0 || filePath.length > 1000 || filePath.includes("\0")) {
+                return NextResponse.json({ error: "filePath must be a non-empty string (max 1000 chars, no null bytes)" }, { status: 400 });
+            }
+        }
+        if (agentId !== undefined) {
+            if (typeof agentId !== "string" || agentId.length === 0 || agentId.length > 200) {
+                return NextResponse.json({ error: "agentId must be a non-empty string (max 200 chars)" }, { status: 400 });
+            }
+        }
+
         if (action === "lock" && (!filePath || !agentId)) {
-            return NextResponse.json({ error: "filePath and agentId are required" }, { status: 400 });
+            return NextResponse.json({ error: "filePath and agentId are required for lock" }, { status: 400 });
+        }
+
+        if (action === "unlock" && !filePath) {
+            return NextResponse.json({ error: "filePath is required for unlock" }, { status: 400 });
         }
 
         const projectId = await getOrCreateProjectId(projectName, session.sub!);
@@ -74,8 +89,9 @@ export async function POST(req: NextRequest) {
             const result = Array.isArray(data) ? data[0] : data;
 
             if (!result) {
-                // Fallback: RPC returned no rows (shouldn't happen with fixed function)
-                return NextResponse.json({ status: "GRANTED", agent_id: agentId });
+                // RPC returned no rows — treat as error, not a silent grant
+                console.error("[locks] try_acquire_lock returned no rows");
+                return NextResponse.json({ error: "Lock RPC returned no result" }, { status: 500 });
             }
 
             if (result.status === "DENIED") {
@@ -99,11 +115,6 @@ export async function POST(req: NextRequest) {
         }
 
         if (action === "unlock") {
-            // Only the lock owner (or force_unlock with reason) can release
-            if (!filePath) {
-                return NextResponse.json({ error: "filePath is required" }, { status: 400 });
-            }
-
             const { error } = await supabase
                 .from("locks")
                 .delete()
