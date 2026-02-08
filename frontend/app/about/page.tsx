@@ -112,64 +112,60 @@ export default function AboutPage() {
 
             <Navbar />
 
-            <main className="min-h-screen flex items-center justify-center py-24 px-6 relative z-10">
+            <main className="pt-32 pb-20 px-6 relative z-10 flex items-center justify-center">
                 <motion.div
                     initial={{ opacity: 0, y: 20 }}
                     animate={{ opacity: 1, y: 0 }}
-                    className="max-w-4xl w-full bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl p-12 text-neutral-900 overflow-hidden relative"
+                    className="w-full max-w-5xl bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl p-10 text-neutral-900 overflow-y-auto min-h-[60vh] max-h-[90vh]"
                 >
-                    <div className="absolute top-0 right-0 p-8 opacity-5">
-                        <div className="text-[120px] font-black tracking-tighter select-none">axis</div>
-                    </div>
-
-                    <div className="relative z-10 space-y-12">
-                        <div className="space-y-4">
-                            <h1 className="text-6xl font-medium tracking-tighter text-neutral-900 leading-none">
-                                parallel <br /> workflows
+                    <div className="space-y-8">
+                        <div className="space-y-2">
+                            <h1 className="text-3xl font-medium tracking-tight text-neutral-900">
+                                parallel agent orchestration
                             </h1>
-                            <p className="text-[11px] text-neutral-400 uppercase tracking-[0.4em] font-bold">
-                                orchestrated ai coordination
+                            <p className="text-[11px] text-neutral-500 uppercase tracking-[0.2em]">
+                                coordinate multiple ai coding agents without collisions
                             </p>
                         </div>
 
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-12 pt-8 border-t border-neutral-100">
-                            <div className="space-y-6">
-                                <h2 className="text-[14px] font-bold uppercase tracking-[0.2em] text-neutral-900 underline decoration-2 decoration-neutral-200 underline-offset-8">what it is</h2>
-                                <p className="text-[15px] text-neutral-600 leading-relaxed font-medium">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-8 pt-6 border-t border-neutral-100">
+                            <div className="space-y-3">
+                                <h2 className="text-[11px] font-bold uppercase tracking-[0.2em] text-neutral-900">what it is</h2>
+                                <p className="text-[13px] text-neutral-600 leading-relaxed">
                                     axis is a parallel agent orchestration layer designed for autonomous swarms. we provide the distributed memory and atomic task registries required for multi-agent software development.
                                 </p>
                             </div>
-                            <div className="space-y-6">
-                                <h2 className="text-[14px] font-bold uppercase tracking-[0.2em] text-neutral-900 underline decoration-2 decoration-neutral-200 underline-offset-8">why it exists</h2>
-                                <p className="text-[15px] text-neutral-600 leading-relaxed font-medium">
+                            <div className="space-y-3">
+                                <h2 className="text-[11px] font-bold uppercase tracking-[0.2em] text-neutral-900">why it exists</h2>
+                                <p className="text-[13px] text-neutral-600 leading-relaxed">
                                     as ai loops shift from single-agent to parallel execution, coordination becomes the new bottleneck. axis prevents collisions and context drift by serving as the collective brain for your swarm.
                                 </p>
                             </div>
                         </div>
 
-                        <div className="space-y-8 pt-8">
-                            <h2 className="text-[14px] font-bold uppercase tracking-[0.2em] text-neutral-900">capabilities</h2>
-                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
+                        <div className="space-y-4 pt-6 border-t border-neutral-100">
+                            <h2 className="text-[11px] font-bold uppercase tracking-[0.2em] text-neutral-900">capabilities</h2>
+                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                                 {[
                                     { t: "distributed memory", d: "real-time state sync across disparate agent runs." },
                                     { t: "job orchestration", d: "atomic registers to partition and claim tasks." },
                                     { t: "conflict avoidance", d: "granular file locking to prevent race conditions." }
                                 ].map((cap, i) => (
-                                    <div key={i} className="p-6 bg-neutral-50 rounded-xl border border-neutral-100 space-y-2">
-                                        <div className="text-[13px] font-bold text-neutral-900">{cap.t}</div>
-                                        <p className="text-[12px] text-neutral-500 leading-relaxed lowercase">{cap.d}</p>
+                                    <div key={i} className="p-4 bg-neutral-50 rounded-lg border border-neutral-200 space-y-1">
+                                        <div className="text-[12px] font-bold text-neutral-900">{cap.t}</div>
+                                        <p className="text-[11px] text-neutral-500 leading-relaxed lowercase">{cap.d}</p>
                                     </div>
                                 ))}
                             </div>
                         </div>
 
-                        <div className="pt-12 border-t border-neutral-100 flex justify-between items-center">
+                        <div className="pt-6 border-t border-neutral-100 flex justify-between items-center">
                             <p className="text-[10px] font-mono text-neutral-400 uppercase tracking-widest">
                                 axis v1.0.0-prod // sf, ca
                             </p>
-                            <div className="flex gap-8">
-                                <a href="https://github.com/VirSanghavi/shared-context" target="_blank" rel="noopener noreferrer" className="text-[11px] font-bold uppercase tracking-widest hover:text-neutral-900 transition-colors">github ↗</a>
-                                <a href="https://twitter.com/VirSanghavi13" target="_blank" rel="noopener noreferrer" className="text-[11px] font-bold uppercase tracking-widest hover:text-neutral-900 transition-colors">twitter ↗</a>
+                            <div className="flex gap-6">
+                                <a href="https://github.com/VirSanghavi/shared-context" target="_blank" rel="noopener noreferrer" className="text-[10px] font-bold uppercase tracking-widest text-neutral-400 hover:text-neutral-900 transition-colors">github ↗</a>
+                                <a href="https://twitter.com/VirSanghavi13" target="_blank" rel="noopener noreferrer" className="text-[10px] font-bold uppercase tracking-widest text-neutral-400 hover:text-neutral-900 transition-colors">twitter ↗</a>
                             </div>
                         </div>
                     </div>
