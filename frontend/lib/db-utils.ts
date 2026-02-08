@@ -12,10 +12,11 @@ export async function resolveUserId(email: string): Promise<string | null> {
         process.env.SUPABASE_SERVICE_ROLE_KEY || ""
     );
 
+    // Use case-insensitive lookup — emails are case-insensitive per RFC 5321
     const { data: profile } = await supabase
         .from("profiles")
         .select("id")
-        .eq("email", email)
+        .ilike("email", email)
         .single();
 
     return profile?.id || null;

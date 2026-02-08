@@ -1022,33 +1022,33 @@ export class NerveCenter {
 
     // --- Billing & Usage ---
 
-    async getSubscriptionStatus(email: string) {
+    async getSubscriptionStatus(email?: string) {
         // Priority: Remote API if available (for customers), then Supabase, then error
-        // Always try remote API first if available, regardless of Supabase state
-        logger.info(`[getSubscriptionStatus] Starting - email: ${email}`);
+        // If no email provided, the remote API will use the API key identity
+        logger.info(`[getSubscriptionStatus] Starting - email: ${email || "(API key identity)"}`);
         logger.info(`[getSubscriptionStatus] Config - apiUrl: ${this.contextManager.apiUrl}, apiSecret: ${this.contextManager.apiSecret ? 'SET' : 'NOT SET'}, useSupabase: ${this.useSupabase}`);
         
         if (this.contextManager.apiUrl) {
             try {
-                logger.info(`[getSubscriptionStatus] Attempting API call to: usage?email=${encodeURIComponent(email)}`);
-                const result = await this.callCoordination(`usage?email=${encodeURIComponent(email)}`);
+                const endpoint = email ? `usage?email=${encodeURIComponent(email)}` : "usage";
+                logger.info(`[getSubscriptionStatus] Attempting API call to: ${endpoint}`);
+                const result = await this.callCoordination(endpoint);
                 logger.info(`[getSubscriptionStatus] API call successful: ${JSON.stringify(result).substring(0, 200)}`);
                 return result;
             } catch (e: any) {
                 logger.error(`[getSubscriptionStatus] API call failed: ${e.message}`, e);
-                // Return the API error instead of falling through
                 return { error: `API call failed: ${e.message}` };
             }
         } else {
             logger.warn("[getSubscriptionStatus] No API URL configured");
         }
         
-        if (this.useSupabase && this.supabase) {
-            // Use direct Supabase when configured (development mode)
+        if (this.useSupabase && this.supabase && email) {
+            // Use direct Supabase when configured (development mode) — requires email
             const { data: profile, error } = await this.supabase
                 .from("profiles")
                 .select("subscription_status, stripe_customer_id, current_period_end")
-                .eq("email", email)
+                .ilike("email", email)
                 .single();
 
             if (error || !profile) {
@@ -1069,31 +1069,31 @@ export class NerveCenter {
         return { error: "Coordination not configured. API URL not set and Supabase not available." };
     }
 
-    async getUsageStats(email: string) {
+    async getUsageStats(email?: string) {
         // Priority: Remote API if available (for customers), then Supabase, then error
-        // Always try remote API first if available, regardless of Supabase state
-        logger.info(`[getUsageStats] Starting - email: ${email}`);
+        // If no email provided, the remote API will use the API key identity
+        logger.info(`[getUsageStats] Starting - email: ${email || "(API key identity)"}`);
         logger.info(`[getUsageStats] Config - apiUrl: ${this.contextManager.apiUrl}, apiSecret: ${this.contextManager.apiSecret ? 'SET' : 'NOT SET'}, useSupabase: ${this.useSupabase}`);
         
         if (this.contextManager.apiUrl) {
             try {
-                logger.info(`[getUsageStats] Attempting API call to: usage?email=${encodeURIComponent(email)}`);
-                const result = await this.callCoordination(`usage?email=${encodeURIComponent(email)}`) as { usageCount?: number; email?: string; plan?: string; status?: string };
+                const endpoint = email ? `usage?email=${encodeURIComponent(email)}` : "usage";
+                logger.info(`[getUsageStats] Attempting API call to: ${endpoint}`);
+                const result = await this.callCoordination(endpoint) as { usageCount?: number; email?: string; plan?: string; status?: string };
                 logger.info(`[getUsageStats] API call successful: ${JSON.stringify(result).substring(0, 200)}`);
-                return { email, usageCount: result.usageCount || 0 };
+                return { email: email || result.email, usageCount: result.usageCount || 0 };
             } catch (e: any) {
                 logger.error(`[getUsageStats] API call failed: ${e.message}`, e);
-                // Return the API error instead of falling through
                 return { error: `API call failed: ${e.message}` };
             }
         }
         
-        if (this.useSupabase && this.supabase) {
-            // Use direct Supabase when configured (development mode)
+        if (this.useSupabase && this.supabase && email) {
+            // Use direct Supabase when configured (development mode) — requires email
             const { data: profile } = await this.supabase
                 .from("profiles")
                 .select("usage_count")
-                .eq("email", email)
+                .ilike("email", email)
                 .single();
 
             return { email, usageCount: (profile as any)?.usage_count || 0 };

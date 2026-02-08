@@ -1035,12 +1035,13 @@ ${conventions}`;
   }
   // --- Billing & Usage ---
   async getSubscriptionStatus(email) {
-    logger.info(`[getSubscriptionStatus] Starting - email: ${email}`);
+    logger.info(`[getSubscriptionStatus] Starting - email: ${email || "(API key identity)"}`);
     logger.info(`[getSubscriptionStatus] Config - apiUrl: ${this.contextManager.apiUrl}, apiSecret: ${this.contextManager.apiSecret ? "SET" : "NOT SET"}, useSupabase: ${this.useSupabase}`);
     if (this.contextManager.apiUrl) {
       try {
-        logger.info(`[getSubscriptionStatus] Attempting API call to: usage?email=${encodeURIComponent(email)}`);
-        const result = await this.callCoordination(`usage?email=${encodeURIComponent(email)}`);
+        const endpoint = email ? `usage?email=${encodeURIComponent(email)}` : "usage";
+        logger.info(`[getSubscriptionStatus] Attempting API call to: ${endpoint}`);
+        const result = await this.callCoordination(endpoint);
         logger.info(`[getSubscriptionStatus] API call successful: ${JSON.stringify(result).substring(0, 200)}`);
         return result;
       } catch (e) {
@@ -1050,8 +1051,8 @@ ${conventions}`;
     } else {
       logger.warn("[getSubscriptionStatus] No API URL configured");
     }
-    if (this.useSupabase && this.supabase) {
-      const { data: profile, error } = await this.supabase.from("profiles").select("subscription_status, stripe_customer_id, current_period_end").eq("email", email).single();
+    if (this.useSupabase && this.supabase && email) {
+      const { data: profile, error } = await this.supabase.from("profiles").select("subscription_status, stripe_customer_id, current_period_end").ilike("email", email).single();
       if (error || !profile) {
         return { status: "unknown", message: "Profile not found." };
       }
@@ -1066,21 +1067,22 @@ ${conventions}`;
     return { error: "Coordination not configured. API URL not set and Supabase not available." };
   }
   async getUsageStats(email) {
-    logger.info(`[getUsageStats] Starting - email: ${email}`);
+    logger.info(`[getUsageStats] Starting - email: ${email || "(API key identity)"}`);
     logger.info(`[getUsageStats] Config - apiUrl: ${this.contextManager.apiUrl}, apiSecret: ${this.contextManager.apiSecret ? "SET" : "NOT SET"}, useSupabase: ${this.useSupabase}`);
     if (this.contextManager.apiUrl) {
       try {
-        logger.info(`[getUsageStats] Attempting API call to: usage?email=${encodeURIComponent(email)}`);
-        const result = await this.callCoordination(`usage?email=${encodeURIComponent(email)}`);
+        const endpoint = email ? `usage?email=${encodeURIComponent(email)}` : "usage";
+        logger.info(`[getUsageStats] Attempting API call to: ${endpoint}`);
+        const result = await this.callCoordination(endpoint);
         logger.info(`[getUsageStats] API call successful: ${JSON.stringify(result).substring(0, 200)}`);
-        return { email, usageCount: result.usageCount || 0 };
+        return { email: email || result.email, usageCount: result.usageCount || 0 };
       } catch (e) {
         logger.error(`[getUsageStats] API call failed: ${e.message}`, e);
         return { error: `API call failed: ${e.message}` };
       }
     }
-    if (this.useSupabase && this.supabase) {
-      const { data: profile } = await this.supabase.from("profiles").select("usage_count").eq("email", email).single();
+    if (this.useSupabase && this.supabase && email) {
+      const { data: profile } = await this.supabase.from("profiles").select("usage_count").ilike("email", email).single();
       return { email, usageCount: profile?.usage_count || 0 };
     }
     return { error: "Coordination not configured. API URL not set and Supabase not available." };
@@ -1888,24 +1890,22 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     // --- Billing & Usage ---
     {
       name: "get_subscription_status",
-      description: "**BILLING CHECK**: specific to the Axis business logic.\n- Returns the user's subscription tier (Pro vs Free), Stripe customer ID, and current period end.\n- Critical for gating features behind paywalls.\n- Returns 'Profile not found' if the user doesn't exist in the database.",
+      description: "**BILLING CHECK**: Returns the user's subscription tier (Pro vs Free), Stripe customer ID, and current period end.\n- If no email is provided, returns the subscription status of the current API key owner.\n- Critical for gating features behind paywalls.",
       inputSchema: {
         type: "object",
         properties: {
-          email: { type: "string", description: "User email to check." }
-        },
-        required: ["email"]
+          email: { type: "string", description: "Optional. User email to check. If omitted, checks the subscription of the current API key owner." }
+        }
       }
     },
     {
       name: "get_usage_stats",
-      description: "**API USAGE**: Returns a user's token usage and request counts.\n- Useful for debugging rate limits or explaining quota usage to users.",
+      description: "**API USAGE**: Returns token usage and request counts.\n- If no email is provided, returns usage for the current API key owner.\n- Useful for debugging rate limits or explaining quota usage to users.",
       inputSchema: {
         type: "object",
         properties: {
-          email: { type: "string", description: "User email to check." }
-        },
-        required: ["email"]
+          email: { type: "string", description: "Optional. User email to check. If omitted, checks usage of the current API key owner." }
+        }
       }
     },
     {
@@ -2144,8 +2144,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     return { content: [{ type: "text", text: parts.join("\n\n---\n\n") }] };
   }
   if (name === "get_subscription_status") {
-    const email = String(args?.email);
-    logger.info(`[get_subscription_status] Called with email: ${email}`);
+    const email = args?.email ? String(args.email) : void 0;
+    logger.info(`[get_subscription_status] Called with email: ${email || "(using API key identity)"}`);
     try {
       const result = await nerveCenter.getSubscriptionStatus(email);
       logger.info(`[get_subscription_status] Result: ${JSON.stringify(result).substring(0, 200)}`);
@@ -2156,8 +2156,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
   if (name === "get_usage_stats") {
-    const email = String(args?.email);
-    logger.info(`[get_usage_stats] Called with email: ${email}`);
+    const email = args?.email ? String(args.email) : void 0;
+    logger.info(`[get_usage_stats] Called with email: ${email || "(using API key identity)"}`);
     try {
       const result = await nerveCenter.getUsageStats(email);
       logger.info(`[get_usage_stats] Result: ${JSON.stringify(result).substring(0, 200)}`);

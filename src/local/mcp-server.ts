@@ -474,24 +474,22 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       // --- Billing & Usage ---
       {
         name: "get_subscription_status",
-        description: "**BILLING CHECK**: specific to the Axis business logic.\n- Returns the user's subscription tier (Pro vs Free), Stripe customer ID, and current period end.\n- Critical for gating features behind paywalls.\n- Returns 'Profile not found' if the user doesn't exist in the database.",
+        description: "**BILLING CHECK**: Returns the user's subscription tier (Pro vs Free), Stripe customer ID, and current period end.\n- If no email is provided, returns the subscription status of the current API key owner.\n- Critical for gating features behind paywalls.",
         inputSchema: {
           type: "object",
           properties: {
-            email: { type: "string", description: "User email to check." }
-          },
-          required: ["email"]
+            email: { type: "string", description: "Optional. User email to check. If omitted, checks the subscription of the current API key owner." }
+          }
         }
       },
       {
         name: "get_usage_stats",
-        description: "**API USAGE**: Returns a user's token usage and request counts.\n- Useful for debugging rate limits or explaining quota usage to users.",
+        description: "**API USAGE**: Returns token usage and request counts.\n- If no email is provided, returns usage for the current API key owner.\n- Useful for debugging rate limits or explaining quota usage to users.",
         inputSchema: {
           type: "object",
           properties: {
-            email: { type: "string", description: "User email to check." }
-          },
-          required: ["email"]
+            email: { type: "string", description: "Optional. User email to check. If omitted, checks usage of the current API key owner." }
+          }
         }
       },
       {
@@ -764,8 +762,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === "get_subscription_status") {
-    const email = String(args?.email);
-    logger.info(`[get_subscription_status] Called with email: ${email}`);
+    const email = args?.email ? String(args.email) : undefined;
+    logger.info(`[get_subscription_status] Called with email: ${email || "(using API key identity)"}`);
     try {
       const result = await nerveCenter.getSubscriptionStatus(email);
       logger.info(`[get_subscription_status] Result: ${JSON.stringify(result).substring(0, 200)}`);
@@ -777,8 +775,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === "get_usage_stats") {
-    const email = String(args?.email);
-    logger.info(`[get_usage_stats] Called with email: ${email}`);
+    const email = args?.email ? String(args.email) : undefined;
+    logger.info(`[get_usage_stats] Called with email: ${email || "(using API key identity)"}`);
     try {
       const result = await nerveCenter.getUsageStats(email);
       logger.info(`[get_usage_stats] Result: ${JSON.stringify(result).substring(0, 200)}`);
