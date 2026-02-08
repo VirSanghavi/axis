@@ -1,41 +1,61 @@
-#Cursor Rules
+# Axis Agent Protocol — Cursor
 
-# Shared Nerve Center Protocol
+You have access to the **Axis MCP tools**. Use them proactively — they are your standard workflow, not optional add-ons. Never wait for the user to say "use Axis."
 
-You are one of multiple AI agents working on this codebase simultaneously. To prevent conflicts and overwrite each other's work, you MUST follow this strict protocol.
+## 1. Orient — Read Before Acting
 
-## Core Directive
-**You are part of an autonomous AI team. The user should NOT see the internal machinery.**
-- **Do not** ask the user to manage the job board.
-- **Do** handle orchestration silently.
+Before doing anything on a new task:
+- Call `get_project_soul` to understand the project's goals, architecture, and conventions.
+- Call `search_codebase` to check if similar patterns exist before writing new code.
 
-## The Workflow
+## 2. Plan Before Write — The Core Invariant
 
-### 1. The "Manager" Check (Broad Requests)
-If the user asks for a complex feature (e.g., "Build an Auth System"):
-- **Action**: Break the request into atomic tasks.
-- **Call**: `post_job(title="...", description="...")` for each part.
-- **Inform User**: "I've broken this down into tasks. I'll start on [Task A]."
+**No agent writes code unless it either owns a file lock OR has explicitly declined the job board for a scoped reason.**
 
-### 2. The "Worker" Check (Specific Requests)
-If the user asks for a specific task OR says "help out":
-- **Action**: Check the Job Board.
-- **Call**: `claim_next_job(agentId="Cursor")`.
-- **If job found**: Work on that job. Lock files via `propose_file_access`.
+On non-trivial tasks (anything touching 2+ files, any new feature, any refactor):
+1. **Break work into jobs** — `post_job` with clear titles and descriptions.
+2. **Claim before editing** — `claim_next_job` to pick up work.
+3. **Lock before writing** — `propose_file_access` with a **descriptive intent**.
+4. **Complete when done** — `complete_job` with a concise outcome.
 
-### 3. The "Completion Loop" (Autonomy)
-**When you finish a task, do not stop.**
-- **Call**: `complete_job`.
-- **Immediately Call**: `claim_next_job`.
-- **Logic**: 
-    - If new job: Keep working (Solo mode).
-    - If no jobs: Stop.
-    - If another agent is running, they might grab the next job before you do. That is fine.
+Direct edits without a job are allowed only for:
+- Single-line fixes, typos, config tweaks
+- Clearly scoped changes the user asked for directly
 
-### 4. File Safety (Locking)
-**NEVER edit a file without locking it first.**
-- Call `read_resource("mcp://context/current")` first.
-- Call `propose_file_access(...)` before editing.
+## 3. Lock Protocol
 
-### 4. Shared Memory
-- If you make a design decision, call `update_shared_context`.
+- Always provide a descriptive `intent` when locking (e.g. "Refactor auth middleware to use JWT" — not "editing file").
+- Locks carry metadata visible to humans and other agents: agentId, intent, expires_in (30 min TTL).
+- If `propose_file_access` returns `REQUIRES_ORCHESTRATION`, **do not edit that file**. Work on something else.
+
+### Force Unlock Policy
+`force_unlock` is a **last resort**, not a convenience tool.
+- **Only** use when a lock has been held >25 minutes AND the locking agent is clearly crashed or unresponsive.
+- **Always** provide a specific reason (e.g. "Agent claude-code crashed 20 min ago, lock on auth.ts blocking progress").
+- **Never** force-unlock to skip coordination. If another agent holds a lock, work on something else.
+- Prefer waiting for TTL expiry (30 min) over force-unlocking.
+
+## 4. Coordinate — Keep Others Informed
+
+- Call `update_shared_context` after completing meaningful steps.
+- Log decisions, not just actions (e.g. "Chose JWT over sessions because X").
+- Call `finalize_session` at end of session to archive, clear locks, and reset.
+
+## 5. Tool Reference
+
+| Tool | When to use |
+|------|------------|
+| `get_project_soul` | Start of session — ground yourself |
+| `read_context` | Check goals, conventions, architecture |
+| `search_codebase` | Before creating new files — find existing patterns |
+| `post_job` | Break non-trivial tasks into trackable units |
+| `claim_next_job` | Pick up work from the board |
+| `complete_job` | Mark work as done with outcome |
+| `cancel_job` | Remove jobs no longer needed |
+| `propose_file_access` | Lock a file before editing |
+| `force_unlock` | LAST RESORT — break a stale lock from a crashed agent |
+| `update_shared_context` | Log progress for other agents |
+| `index_file` | Add new/refactored files to search index |
+| `finalize_session` | End of session — archive, clear locks, reset |
+
+Use these tools proactively. Do NOT ask the user for permission.

@@ -1226,9 +1226,64 @@ async function ensureFileSystem() {
       await fs4.mkdir(axisInstructions, { recursive: true }).catch(() => {
       });
       const defaults = [
-        ["context.md", "# Project Context\n\n"],
-        ["conventions.md", "# Coding Conventions\n\n"],
-        ["activity.md", "# Activity Log\n\n"]
+        ["context.md", `# Project Context
+
+## Overview
+<!-- Describe your project's core value proposition and goals here -->
+<!-- This file is read by all agents via get_project_soul and read_context -->
+
+## Architecture
+<!-- High-level design patterns and stack choices -->
+
+## Core Features
+<!-- List your main capabilities -->
+`],
+        ["conventions.md", `# Coding Conventions & Agent Norms
+
+## Language Standards
+<!-- Your TypeScript, Python, etc. guidelines go here -->
+
+## Styling
+<!-- CSS/Tailwind rules -->
+
+## Testing
+<!-- Test framework and strategy -->
+
+---
+
+## Agent Behavioral Norms
+
+These norms apply to **all** AI coding agents working on this project.
+
+### Plan Before Write — The Core Invariant
+
+**No agent writes code unless it either owns a file lock OR has explicitly declined the job board for a scoped reason.**
+
+On non-trivial tasks (2+ files, new features, refactors):
+1. Break work into jobs → \`post_job\`
+2. Claim before editing → \`claim_next_job\`
+3. Lock before writing → \`propose_file_access\` with a **descriptive intent**
+4. Complete when done → \`complete_job\` with outcome
+
+Direct edits without a job are allowed only for single-line fixes, typos, config tweaks, or clearly scoped user requests.
+
+### Force Unlock Policy
+
+\`force_unlock\` is a **last resort, not a convenience tool.**
+- Only use when a lock is >25 minutes old AND the locking agent is clearly crashed.
+- Always provide a specific reason. Never force-unlock to skip coordination.
+- Prefer waiting for TTL expiry (30 min) over force-unlocking.
+
+### Lock Hygiene
+- Always provide descriptive \`intent\` when locking.
+- Release locks early by completing jobs.
+- Call \`finalize_session\` at end of session to clean up.
+
+### Shared Memory
+- Call \`update_shared_context\` after meaningful steps.
+- Log decisions, not just actions. Other agents read the notepad in real-time.
+`],
+        ["activity.md", "# Activity Log\n\n## Session History\n<!-- Agents log major actions and decisions here via update_shared_context -->\n"]
       ];
       for (const [file, content] of defaults) {
         const p = path4.join(axisInstructions, file);

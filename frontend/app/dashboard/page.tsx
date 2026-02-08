@@ -44,6 +44,13 @@ interface Project {
   created_at: string;
 }
 
+interface Lock {
+  file_path: string;
+  agent_id: string;
+  intent: string;
+  updated_at: string;
+}
+
 interface SubscriptionData {
   subscription_status: string;
   stripe?: {
@@ -98,6 +105,7 @@ export default function Dashboard() {
   const [subData, setSubData] = useState<SubscriptionData | null>(null);
   const [sessions, setSessions] = useState<SessionRecord[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
+  const [locks, setLocks] = useState<Lock[]>([]);
   const [activeTab, setActiveTab] = useState<'keys' | 'usage' | 'sessions' | 'projects'>('keys');
   const [session, setSession] = useState<{ email: string; id: string } | null>(null);
   const [activities, setActivities] = useState<Activity[]>([]);
@@ -148,6 +156,7 @@ export default function Dashboard() {
     fetchSubStatus();
     fetchSessions();
     fetchProjects();
+    fetchLocks();
   }, []);
 
   async function fetchActivity(userId: string) {
@@ -191,6 +200,18 @@ export default function Dashboard() {
       if (res.ok) {
         const data = await res.json();
         setProjects(data.projects || []);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  async function fetchLocks() {
+    try {
+      const res = await fetch('/api/v1/locks');
+      if (res.ok) {
+        const data = await res.json();
+        setLocks(data.locks || []);
       }
     } catch (e) {
       console.error(e);
@@ -436,6 +457,40 @@ export default function Dashboard() {
             </div>
 
             <div className="md:col-span-5 space-y-6">
+
+              {/* Active Locks */}
+              <div className="bg-neutral-50 border border-neutral-200 rounded-lg p-5">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-[9px] font-mono text-neutral-500 uppercase tracking-[0.3em]">active locks</h3>
+                  <span className="text-[9px] font-mono text-neutral-400">{locks.length} file{locks.length !== 1 ? 's' : ''}</span>
+                </div>
+                {locks.length === 0 ? (
+                  <div className="text-[10px] text-neutral-400 font-mono">no files locked — all clear</div>
+                ) : (
+                  <div className="space-y-2.5 max-h-[200px] overflow-y-auto pr-1 custom-scrollbar">
+                    {locks.map(lock => {
+                      const acquiredAt = new Date(lock.updated_at).getTime();
+                      const expiresAt = acquiredAt + 30 * 60 * 1000;
+                      const now = Date.now();
+                      const remainingMs = Math.max(0, expiresAt - now);
+                      const remainingMin = Math.ceil(remainingMs / 60000);
+                      const shortPath = lock.file_path.split('/').slice(-2).join('/');
+                      return (
+                        <div key={lock.file_path} className="bg-white border border-neutral-200 rounded-lg p-3">
+                          <div className="text-[11px] font-mono font-medium text-neutral-900 truncate mb-1" title={lock.file_path}>{shortPath}</div>
+                          <div className="text-[10px] text-neutral-500 space-y-0.5">
+                            <div>locked by <span className="font-medium text-neutral-700">{lock.agent_id}</span></div>
+                            {lock.intent && <div className="italic text-neutral-400">intent: &quot;{lock.intent}&quot;</div>}
+                            <div className={remainingMin <= 5 ? 'text-amber-600 font-medium' : 'text-neutral-400'}>
+                              expires in {remainingMin}m
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
 
               <div className="bg-neutral-100 border border-neutral-200 rounded-lg p-5">
                 <h3 className="text-[9px] font-mono text-neutral-500 uppercase tracking-[0.3em] mb-3">subscription</h3>
