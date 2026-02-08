@@ -28,11 +28,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const normalizedEmail = session.email.toLowerCase().trim();
-  const isSuperUser = normalizedEmail === 'virsanghavi@gmail.com' || normalizedEmail === 'virrsanghavi@gmail.com';
-
   try {
-    // 1. Get stripe_customer_id from DB
     const { data: profile, error: dbError } = await supabase
       .from('profiles')
       .select('stripe_customer_id')
@@ -43,17 +39,7 @@ export async function POST(req: NextRequest) {
       console.error(`[Stripe Portal] DB error for ${session.email}:`, dbError);
     }
 
-    let customerId = profile?.stripe_customer_id;
-    if (!customerId && isSuperUser) {
-      // Superuser fallback: look up customer by email in Stripe
-      const { data: customers } = await stripe.customers.list({ email: normalizedEmail, limit: 1 });
-      if (customers[0]) {
-        customerId = customers[0].id;
-        console.log(`[Stripe Portal] Resolved superuser customer ID via Stripe: ${customerId}`);
-        // Persist so future calls don't need the lookup
-        await supabase.from("profiles").update({ stripe_customer_id: customerId }).ilike("email", session.email);
-      }
-    }
+    const customerId = profile?.stripe_customer_id;
 
     if (!customerId) {
       console.log(`[Stripe Portal] No customer ID for ${session.email}`);

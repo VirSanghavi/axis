@@ -15,10 +15,6 @@ export async function GET(req: NextRequest) {
 
         console.log(`[Stripe Status] Checking: "${session.email}"`);
 
-        // TEMPORARY BYPASS: Force Pro for user email variations while debugging
-        const normalizedEmail = session.email.toLowerCase().trim();
-        const isSuperUser = normalizedEmail === 'virsanghavi@gmail.com' || normalizedEmail === 'virrsanghavi@gmail.com';
-
         const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
         const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -35,29 +31,54 @@ export async function GET(req: NextRequest) {
             .ilike('email', session.email)
             .single();
 
-        if ((profileError || !profile) && !isSuperUser) {
+        if (profileError || !profile) {
             console.log(`[Stripe Status] Profile 404: "${session.email}"`);
             return NextResponse.json({ error: "Profile not found" }, { status: 404 });
         }
 
-        let isPro = isSuperUser || profile?.subscription_status === 'pro';
-        console.log(`[Stripe Status] Final Decision: ${session.email} is ${isPro ? 'pro' : 'free'}`);
+        let isPro = profile.subscription_status === 'pro';
+        console.log(`[Stripe Status] DB status for ${session.email}: ${profile.subscription_status}`);
 
         let stripeData = null;
+        let customerId = profile.stripe_customer_id;
 
-        if (profile?.stripe_customer_id) {
+        if (customerId) {
             const stripeKey = process.env.STRIPE_SECRET_KEY;
             if (stripeKey) {
                 const stripe = new Stripe(stripeKey, {
                     apiVersion: "2023-10-16",
                 });
 
-                const subscriptions = await stripe.subscriptions.list({
-                    customer: profile.stripe_customer_id as string,
-                    status: 'all',
-                    limit: 1,
-                    expand: ['data.discounts', 'data.discount']
-                });
+                let subscriptions;
+                try {
+                    subscriptions = await stripe.subscriptions.list({
+                        customer: customerId,
+                        status: 'all',
+                        limit: 1,
+                        expand: ['data.discounts', 'data.discount']
+                    });
+                } catch (stripeErr: unknown) {
+                    const errMsg = stripeErr instanceof Error ? stripeErr.message : String(stripeErr);
+                    if (errMsg.toLowerCase().includes("no such customer") && session.email) {
+                        const { data: customers } = await stripe.customers.list({ email: session.email, limit: 1 });
+                        if (customers[0]) {
+                            customerId = customers[0].id;
+                            console.log(`[Stripe Status] Recovered customer ID for ${session.email}: ${customerId}`);
+                            await supabase.from("profiles").update({ stripe_customer_id: customerId }).ilike("email", session.email);
+                            subscriptions = await stripe.subscriptions.list({
+                                customer: customerId,
+                                status: 'all',
+                                limit: 1,
+                                expand: ['data.discounts', 'data.discount']
+                            });
+                        } else {
+                            console.error(`[Stripe Status] No Stripe customer found for ${session.email}`);
+                            subscriptions = { data: [] };
+                        }
+                    } else {
+                        throw stripeErr;
+                    }
+                }
 
                 if (subscriptions.data.length > 0) {
                     const sub = subscriptions.data[0];
@@ -78,9 +99,9 @@ export async function GET(req: NextRequest) {
                         cancel_at_period_end: sub.cancel_at_period_end,
                         is_active: isActive,
                         plan_name: 'pro',
-                        has_retention_offer: (sub.discount?.coupon?.id === 'CvcPuGJs') ||
+                        has_retention_offer: (sub.discount?.coupon?.id === 'MsMDlEed') ||
                             (sub.discounts && Array.isArray(sub.discounts) &&
-                                sub.discounts.some((d) => typeof d !== 'string' && d.coupon?.id === 'CvcPuGJs'))
+                                sub.discounts.some((d) => typeof d !== 'string' && d.coupon?.id === 'MsMDlEed'))
                     };
                 }
             }

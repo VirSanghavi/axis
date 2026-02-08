@@ -30,9 +30,6 @@ export async function POST(req: NextRequest) {
         process.env.SUPABASE_SERVICE_ROLE_KEY || ""
     );
 
-    const normalizedEmail = session.email.toLowerCase().trim();
-    const isSuperUser = normalizedEmail === 'virsanghavi@gmail.com' || normalizedEmail === 'virrsanghavi@gmail.com';
-
     try {
         const { data: profile } = await supabase
             .from('profiles')
@@ -42,25 +39,33 @@ export async function POST(req: NextRequest) {
 
         let customerId = profile?.stripe_customer_id;
 
-        // Superuser fallback: look up customer by email in Stripe if DB is missing
-        if (!customerId && isSuperUser) {
-            const { data: customers } = await stripe.customers.list({ email: normalizedEmail, limit: 1 });
-            if (customers[0]) {
-                customerId = customers[0].id;
-                console.log(`[Stripe Retention] Resolved superuser customer ID via Stripe: ${customerId}`);
-                await supabase.from("profiles").update({ stripe_customer_id: customerId }).ilike("email", session.email);
-            }
-        }
-
         if (!customerId) {
             return NextResponse.json({ error: "No customer ID found" }, { status: 404 });
         }
 
-        const subscriptions = await stripe.subscriptions.list({
-            customer: customerId,
-            status: 'active',
-            limit: 1,
-        });
+        let subscriptions;
+        try {
+            subscriptions = await stripe.subscriptions.list({
+                customer: customerId,
+                status: 'active',
+                limit: 1,
+            });
+        } catch (stripeErr: unknown) {
+            const msg = stripeErr instanceof Error ? stripeErr.message : String(stripeErr);
+            if (msg.toLowerCase().includes("no such customer") && session.email) {
+                const { data: customers } = await stripe.customers.list({ email: session.email, limit: 1 });
+                if (customers[0]) {
+                    customerId = customers[0].id;
+                    console.log(`[Stripe Retention] Recovered customer ID for ${session.email}: ${customerId}`);
+                    await supabase.from("profiles").update({ stripe_customer_id: customerId }).ilike("email", session.email);
+                    subscriptions = await stripe.subscriptions.list({ customer: customerId, status: 'active', limit: 1 });
+                } else {
+                    throw stripeErr;
+                }
+            } else {
+                throw stripeErr;
+            }
+        }
 
         if (subscriptions.data.length === 0) {
             return NextResponse.json({ error: "No active subscription found" }, { status: 404 });
