@@ -25,6 +25,8 @@ export async function logUsage({
     );
 
     try {
+        // Note: api_usage table doesn't have a metadata column
+        // Only includes: id, user_id, api_key_id, endpoint, method, status_code, response_time_ms, tokens_used, created_at
         const { error } = await supabase.from("api_usage").insert({
             user_id: userId,
             api_key_id: apiKeyId,
@@ -32,8 +34,8 @@ export async function logUsage({
             method,
             status_code: statusCode,
             response_time_ms: responseTimeMs,
-            tokens_used: tokensUsed,
-            metadata
+            tokens_used: tokensUsed
+            // metadata field removed - not in schema
         });
 
         if (error) {

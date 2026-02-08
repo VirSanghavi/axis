@@ -218,12 +218,16 @@ export class NerveCenter {
     }
 
     private async callCoordination(endpoint: string, method: string = "GET", body?: any) {
-        if (!this.contextManager.apiUrl) throw new Error("Remote API not configured");
+        if (!this.contextManager.apiUrl) {
+            logger.error("Remote API not configured - apiUrl is:", this.contextManager.apiUrl);
+            throw new Error("Remote API not configured");
+        }
 
         const url = this.contextManager.apiUrl.endsWith("/v1")
             ? `${this.contextManager.apiUrl}/${endpoint}`
             : `${this.contextManager.apiUrl}/v1/${endpoint}`;
 
+        logger.info(`Calling coordination API: ${method} ${url}`);
         const response = await fetch(url, {
             method,
             headers: {
@@ -920,14 +924,18 @@ export class NerveCenter {
     async getSubscriptionStatus(email: string) {
         // Priority: Remote API if available (for customers), then Supabase, then error
         // Always try remote API first if available, regardless of Supabase state
+        logger.info(`getSubscriptionStatus: apiUrl=${this.contextManager.apiUrl}, useSupabase=${this.useSupabase}`);
         if (this.contextManager.apiUrl) {
             try {
                 const result = await this.callCoordination(`usage?email=${encodeURIComponent(email)}`);
+                logger.info("getSubscriptionStatus: API call successful");
                 return result;
             } catch (e: any) {
                 logger.error("Failed to fetch subscription status via API", e);
                 // Fall through to Supabase if available
             }
+        } else {
+            logger.warn("getSubscriptionStatus: No API URL configured");
         }
         
         if (this.useSupabase && this.supabase) {

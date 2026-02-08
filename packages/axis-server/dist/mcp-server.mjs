@@ -327,8 +327,12 @@ var NerveCenter = class {
     this._projectId = created.id;
   }
   async callCoordination(endpoint, method = "GET", body) {
-    if (!this.contextManager.apiUrl) throw new Error("Remote API not configured");
+    if (!this.contextManager.apiUrl) {
+      logger.error("Remote API not configured - apiUrl is:", this.contextManager.apiUrl);
+      throw new Error("Remote API not configured");
+    }
     const url = this.contextManager.apiUrl.endsWith("/v1") ? `${this.contextManager.apiUrl}/${endpoint}` : `${this.contextManager.apiUrl}/v1/${endpoint}`;
+    logger.info(`Calling coordination API: ${method} ${url}`);
     const response = await fetch(url, {
       method,
       headers: {
@@ -882,13 +886,17 @@ ${conventions}`;
   }
   // --- Billing & Usage ---
   async getSubscriptionStatus(email) {
+    logger.info(`getSubscriptionStatus: apiUrl=${this.contextManager.apiUrl}, useSupabase=${this.useSupabase}`);
     if (this.contextManager.apiUrl) {
       try {
         const result = await this.callCoordination(`usage?email=${encodeURIComponent(email)}`);
+        logger.info("getSubscriptionStatus: API call successful");
         return result;
       } catch (e) {
         logger.error("Failed to fetch subscription status via API", e);
       }
+    } else {
+      logger.warn("getSubscriptionStatus: No API URL configured");
     }
     if (this.useSupabase && this.supabase) {
       const { data: profile, error } = await this.supabase.from("profiles").select("subscription_status, stripe_customer_id, current_period_end").eq("email", email).single();
