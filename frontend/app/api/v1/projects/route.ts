@@ -36,7 +36,7 @@ export async function GET(req: NextRequest) {
         return NextResponse.json({ projects: projects || [] });
 
     } catch (error: unknown) {
-        const errorMessage = error instanceof Error ? error.message : "Internal Server Error";
-        return NextResponse.json({ error: errorMessage }, { status: 500 });
+        console.error("[projects] Error:", error);
+        return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
     }
 }

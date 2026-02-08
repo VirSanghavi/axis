@@ -78,8 +78,7 @@ export async function POST(req: NextRequest) {
 
         return NextResponse.json({ success: true, message: "Subscription will be cancelled at the end of the period" });
     } catch (error: unknown) {
-        const errorMessage = error instanceof Error ? error.message : "Internal Server Error";
-        console.error(error);
-        return NextResponse.json({ error: errorMessage }, { status: 500 });
+        console.error("[Stripe Cancel] Error:", error);
+        return NextResponse.json({ error: "Internal server error" }, { status: 500 });
     }
 }

@@ -10,14 +10,19 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
     apiVersion: "2023-10-16",
 });
 
-const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET!;
-
 const supabase = createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
 export async function POST(req: Request) {
+    // Guard: ensure webhook secret is configured
+    const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+    if (!webhookSecret) {
+        console.error("[Stripe Webhook] STRIPE_WEBHOOK_SECRET is not configured");
+        return NextResponse.json({ error: "Webhook not configured" }, { status: 500 });
+    }
+
     const payload = await req.text();
     const signature = req.headers.get("stripe-signature");
 
@@ -32,9 +37,9 @@ export async function POST(req: Request) {
     try {
         event = stripe.webhooks.constructEvent(payload, signature, webhookSecret);
     } catch (err) {
-        const message = err instanceof Error ? err.message : "Invalid signature";
-        console.error("[Stripe Webhook] Signature verification failed:", message);
-        return NextResponse.json({ error: message }, { status: 400 });
+        // Log the real error server-side but don't expose it
+        console.error("[Stripe Webhook] Signature verification failed:", err instanceof Error ? err.message : err);
+        return NextResponse.json({ error: "Invalid signature" }, { status: 400 });
     }
 
     try {
@@ -92,9 +97,6 @@ export async function POST(req: Request) {
                     .select("id")
                     .single();
 
-                // If it just became active or trial, log it if not already logged by checkout?
-                // Or log specific updates like plan changes if we had more than one plan.
-
                 break;
             }
 
@@ -126,8 +128,8 @@ export async function POST(req: Request) {
 
         return NextResponse.json({ received: true });
     } catch (err) {
-        const message = err instanceof Error ? err.message : "Webhook error";
-        console.error("[Stripe Webhook] Processing failed:", message);
+        // Log full error server-side, return generic message
+        console.error("[Stripe Webhook] Processing failed:", err instanceof Error ? err.message : err);
         return NextResponse.json({ error: "Webhook handler failed" }, { status: 500 });
     }
 }

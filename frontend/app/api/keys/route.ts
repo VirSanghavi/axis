@@ -46,12 +46,14 @@ export async function GET(req: NextRequest) {
             .select("id, name, created_at, last_used_at, is_active")
             .eq("user_id", userId);
 
-        if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+        if (error) {
+            console.error("[keys] GET query error:", error);
+            return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+        }
         return NextResponse.json({ keys: keys || [] }, { headers: rateHeaders(remaining, reset) });
     } catch (err: unknown) {
-        console.error("Keys GET error:", err);
-        const errorMessage = err instanceof Error ? err.message : "Failed to fetch keys";
-        return NextResponse.json({ error: errorMessage }, { status: 500 });
+        console.error("[keys] GET error:", err);
+        return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
     }
 }
 
@@ -107,7 +109,10 @@ export async function POST(req: NextRequest) {
             .select()
             .single();
 
-        if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+        if (error) {
+            console.error("[keys] POST insert error:", error);
+            return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+        }
 
         // Log activity
         await logActivity(userId as string, "KEY_GENERATED", name, { key_id: data.id });
@@ -117,9 +122,8 @@ export async function POST(req: NextRequest) {
             key: { ...data, secret: rawKey }
         }, { headers: rateHeaders(remaining, reset) });
     } catch (err: unknown) {
-        console.error("Keys POST error:", err);
-        const errorMessage = err instanceof Error ? err.message : "Failed to create key";
-        return NextResponse.json({ error: errorMessage }, { status: 500 });
+        console.error("[keys] POST error:", err);
+        return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
     }
 }
 

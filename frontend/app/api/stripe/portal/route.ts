@@ -3,6 +3,7 @@ import { getSessionFromRequest } from "@/lib/auth";
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
 import { getClientIp, rateLimit } from "@/lib/rate-limit";
+import { getSafeOrigin } from "@/lib/allowed-origins";
 
 const WINDOW_MS = 60 * 1000;
 const LIMIT = 10; // 10 req/min for portal access
@@ -49,12 +50,11 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Build return URL — origin can be null in some edge/serverless contexts
-    const origin = req.headers.get("origin")
-      || req.headers.get("referer")?.replace(/\/billing.*$/, '')
-      || process.env.NEXT_PUBLIC_APP_URL
-      || 'https://useaxis.dev';
-    const returnUrl = `${origin}/billing`;
+    // Build return URL — validate origin against allowlist
+    const rawOrigin = req.headers.get("origin")
+      || req.headers.get("referer")?.replace(/\/billing.*$/, '');
+    const safeOrigin = getSafeOrigin(rawOrigin);
+    const returnUrl = `${safeOrigin}/billing`;
 
     console.log(`[Stripe Portal] Creating portal for customer ${customerId}, return_url: ${returnUrl}`);
 
@@ -97,13 +97,13 @@ export async function POST(req: NextRequest) {
     if (error && typeof error === "object" && "type" in error) {
       const stripeErr = error as { type: string; message: string };
       if (stripeErr.type === "StripeInvalidRequestError") {
-        const friendlyMsg = msg.includes("no such customer")
+        const friendlyMsg = (stripeErr.message || "").includes("no such customer")
           ? "Billing account not found or invalid. Please contact support."
-          : stripeErr.message || "invalid stripe request";
+          : "Invalid billing request. Please contact support.";
         return NextResponse.json({ error: friendlyMsg }, { status: 400 });
       }
     }
 
-    return NextResponse.json({ error: msg || "Internal Server Error" }, { status: 500 });
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

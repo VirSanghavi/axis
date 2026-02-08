@@ -46,7 +46,13 @@ If the user asks for a specific task OR simply says "help out":
 - Call `propose_file_access(...)` before editing.
 - **Conflict Strategy**: If locked, move to a different task or wait. Do not pester the user unless blocked entirely.
 
-### 4. Shared Memory
+### 5. Releasing Locks (CRITICAL)
+**Every file you lock MUST be unlocked before your session ends.** Dangling locks block every other agent.
+- Call `complete_job(...)` after finishing each task — this releases locks for that job.
+- Call `finalize_session` when you are completely done — this clears ALL remaining locks.
+- **Never** stop responding, crash, or go idle while holding locks. If you are about to finish, call `finalize_session` first.
+
+### 6. Shared Memory
 - If you make a design decision, call `update_shared_context`.
 - Maintain the "Project Soul" so other agents don't have to guess.
 

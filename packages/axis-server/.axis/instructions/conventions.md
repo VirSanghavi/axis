@@ -51,7 +51,13 @@ Skip jobs ONLY for: single-line fixes, typos, config tweaks.
 - Release locks IMMEDIATELY by completing jobs. Never hold a lock while doing unrelated work.
 - `force_unlock` is a **last resort** — only for locks >25 min old from a crashed agent. Always give a reason.
 
+### Releasing Locks (CRITICAL — do not skip)
+**Every file you lock MUST be unlocked before your session ends.** Dangling locks block every other agent in the project.
+- **Primary unlock method**: `complete_job` — releases all locks for that job.
+- **Session end**: `finalize_session` — clears ALL remaining locks. Call this before you stop responding.
+- **Self-check**: Before finishing, verify: "Have I completed all jobs and called `finalize_session`?" If not, do it now.
+
 ### Session Cleanup (MANDATORY)
-- `complete_job` after EVERY finished task — do not accumulate incomplete jobs.
+- `complete_job` after EVERY finished task — do not accumulate incomplete jobs. **This is how locks get released.**
 - `update_shared_context` after meaningful steps — log decisions, not just actions.
-- `finalize_session` when the user's request is fully complete — this is required, not optional.
+- `finalize_session` when the user's request is fully complete — this is required, not optional. **This clears all remaining locks.**

@@ -86,8 +86,7 @@ export async function POST(req: NextRequest) {
 
         return NextResponse.json({ success: true, message: "Retention offer applied" });
     } catch (error: unknown) {
-        const errorMessage = error instanceof Error ? error.message : "Internal Server Error";
-        console.error(error);
-        return NextResponse.json({ error: errorMessage }, { status: 500 });
+        console.error("[Stripe Retention] Error:", error);
+        return NextResponse.json({ error: "Internal server error" }, { status: 500 });
     }
 }

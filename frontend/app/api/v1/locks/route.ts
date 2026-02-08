@@ -36,7 +36,8 @@ export async function GET(req: NextRequest) {
         if (error) throw error;
         return NextResponse.json({ locks: locks || [] });
     } catch (e: any) {
-        return NextResponse.json({ error: e.message }, { status: 500 });
+        console.error("[locks] GET Error:", e);
+        return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
     }
 }
 
@@ -126,7 +127,7 @@ export async function POST(req: NextRequest) {
 
         return NextResponse.json({ error: "Invalid action. Use 'lock' or 'unlock'." }, { status: 400 });
     } catch (e: any) {
-        console.error("[locks] Error:", e);
-        return NextResponse.json({ error: e.message }, { status: 500 });
+        console.error("[locks] POST Error:", e);
+        return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
     }
 }

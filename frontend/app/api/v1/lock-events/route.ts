@@ -89,8 +89,8 @@ export async function GET(req: NextRequest) {
             recentBlocked: recentBlocked || [],
         });
     } catch (e: any) {
-        console.error("[lock-events] Error:", e);
-        return NextResponse.json({ error: e.message }, { status: 500 });
+        console.error("[lock-events] GET Error:", e);
+        return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
     }
 }
 
@@ -132,6 +132,6 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ success: true });
     } catch (e: any) {
         console.error("[lock-events] POST Error:", e);
-        return NextResponse.json({ error: e.message }, { status: 500 });
+        return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
     }
 }

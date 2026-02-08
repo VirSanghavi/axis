@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createSession, setSessionCookie } from "@/lib/auth";
+import { createSession, setSessionCookie, createRefreshToken, setRefreshCookie } from "@/lib/auth";
 import { createClient } from "@supabase/supabase-js";
+import { logAndSanitize } from "@/lib/safe-error";
 
 /**
  * POST /api/auth/callback
@@ -25,6 +26,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
     }
 
+    // Basic input sanitization
+    if (typeof access_token !== 'string' || typeof user_id !== 'string' || typeof email !== 'string') {
+      return NextResponse.json({ error: "Invalid field types" }, { status: 400 });
+    }
+
     // Validate the user exists and email is confirmed via admin API
     const { data: { user }, error: userError } = await supabase.auth.admin.getUserById(user_id);
 
@@ -42,14 +48,17 @@ export async function POST(req: NextRequest) {
       email: user.email,
     }, { onConflict: "id" });
 
-    // Create the app's own JWT session cookie (30 day TTL)
-    const token = await createSession(email, user.id, 60 * 60 * 24 * 30);
+    // Create the app's own JWT session cookie (7 day TTL)
+    const token = await createSession(email, user.id);
     await setSessionCookie(token);
+
+    // Issue refresh token for token rotation (30-day, stored in Redis)
+    const refreshToken = await createRefreshToken(user.id, email);
+    await setRefreshCookie(refreshToken);
 
     return NextResponse.json({ ok: true });
   } catch (err: unknown) {
-    console.error("Auth callback error:", err);
-    const errorMessage = err instanceof Error ? err.message : "Callback failed";
-    return NextResponse.json({ error: errorMessage }, { status: 500 });
+    const msg = logAndSanitize("Auth callback", err, "Callback failed");
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 }

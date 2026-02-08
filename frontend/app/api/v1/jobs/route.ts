@@ -41,7 +41,8 @@ export async function GET(req: NextRequest) {
 
         return NextResponse.json({ jobs: jobs || [] });
     } catch (e: any) {
-        return NextResponse.json({ error: e.message }, { status: 500 });
+        console.error("[jobs] GET Error:", e);
+        return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
     }
 }
 
@@ -140,6 +141,7 @@ export async function POST(req: NextRequest) {
 
         return NextResponse.json({ error: "Invalid action. Use 'post', 'claim', or 'update'." }, { status: 400 });
     } catch (e: any) {
-        return NextResponse.json({ error: e.message }, { status: 500 });
+        console.error("[jobs] POST Error:", e);
+        return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
     }
 }

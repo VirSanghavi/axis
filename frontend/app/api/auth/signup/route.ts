@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 import { getClientIp, rateLimit } from "@/lib/rate-limit";
 import { createClient } from "@supabase/supabase-js";
+import { isValidEmail, isValidPassword } from "@/lib/validation";
+import { logAndSanitize } from "@/lib/safe-error";
+import { getSafeOrigin } from "@/lib/allowed-origins";
 
 const WINDOW_MS = 60 * 1000;
 const LIMIT = 5; // Stricter for signup
@@ -28,20 +31,36 @@ export async function POST(request: Request) {
             );
         }
 
-        const { email, password } = await request.json().catch(() => ({
-            email: "",
-            password: "",
-        }));
-
-        if (!email || !password) {
-            return NextResponse.json({ error: "Email and password required" }, { status: 400 });
+        let body: { email?: unknown; password?: unknown };
+        try {
+            body = await request.json();
+        } catch {
+            return NextResponse.json(
+                { error: "Invalid request body" },
+                { status: 400, headers: rateHeaders(remaining, reset) }
+            );
         }
 
-        // Determine the app's base URL for the email confirmation redirect
-        const appUrl = process.env.NEXT_PUBLIC_APP_URL
-            || process.env.NEXT_PUBLIC_SITE_URL
-            || (request.headers.get('origin') ?? request.headers.get('referer')?.replace(/\/signup.*$/, ''))
-            || 'https://useaxis.dev';
+        const { email, password } = body;
+
+        // Input validation
+        if (!isValidEmail(email)) {
+            return NextResponse.json(
+                { error: "Invalid email format" },
+                { status: 400, headers: rateHeaders(remaining, reset) }
+            );
+        }
+
+        if (!isValidPassword(password)) {
+            return NextResponse.json(
+                { error: "Password must be between 8 and 128 characters" },
+                { status: 400, headers: rateHeaders(remaining, reset) }
+            );
+        }
+
+        // Validate redirect origin against allowlist
+        const origin = request.headers.get('origin');
+        const appUrl = getSafeOrigin(origin);
 
         const { data, error } = await supabase.auth.signUp({
             email,
@@ -52,7 +71,8 @@ export async function POST(request: Request) {
         });
 
         if (error) {
-            return NextResponse.json({ error: error.message }, { status: 400 });
+            console.error("[auth/signup] Supabase error:", error);
+            return NextResponse.json({ error: "Signup failed. Please try again." }, { status: 400 });
         }
 
         // Supabase returns a user with empty identities if the email already exists
@@ -69,10 +89,9 @@ export async function POST(request: Request) {
 
         return NextResponse.json({ ok: true }, { headers: rateHeaders(remaining, reset) });
     } catch (err: unknown) {
-        console.error("Signup error:", err);
-        const errorMessage = err instanceof Error ? err.message : "An unexpected error occurred";
+        const msg = logAndSanitize("Signup", err, "An unexpected error occurred");
         return NextResponse.json(
-            { error: errorMessage },
+            { error: msg },
             { status: 500 }
         );
     }

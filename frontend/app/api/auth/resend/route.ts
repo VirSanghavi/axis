@@ -50,7 +50,8 @@ export async function POST(request: Request) {
         });
 
         if (error) {
-            return NextResponse.json({ error: error.message }, { status: 400 });
+            console.error("[auth/resend] Supabase error:", error);
+            return NextResponse.json({ error: "Failed to resend confirmation email" }, { status: 400 });
         }
 
         return NextResponse.json({ message: "Confirmation email sent" });

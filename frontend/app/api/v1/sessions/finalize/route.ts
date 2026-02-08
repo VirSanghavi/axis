@@ -72,6 +72,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ success: true, message: "Session finalized and archived" });
 
     } catch (e: any) {
-        return NextResponse.json({ error: e.message }, { status: 500 });
+        console.error("[sessions/finalize] Error:", e);
+        return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
     }
 }

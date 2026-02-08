@@ -2,6 +2,7 @@ import Stripe from "stripe";
 import { NextResponse } from "next/server";
 import { getSessionFromCookies } from "@/lib/auth";
 import { getClientIp, rateLimit } from "@/lib/rate-limit";
+import { getSafeOrigin } from "@/lib/allowed-origins";
 
 export const runtime = "nodejs";
 
@@ -36,7 +37,7 @@ export async function POST(request: Request) {
   }
 
   const stripe = new Stripe(secretKey);
-  const origin = request.headers.get("origin") || process.env.APP_BASE_URL || "http://localhost:3000";
+  const origin = getSafeOrigin(request.headers.get("origin"));
 
   const checkout = await stripe.checkout.sessions.create({
     mode: "subscription",

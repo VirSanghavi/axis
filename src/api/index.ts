@@ -29,12 +29,16 @@ type Bindings = {
 
 const app = new Hono<{ Bindings: Bindings, Variables: { user: any } }>();
 
-// Enable CORS
-const allowedOrigins = (process.env.CORS_ORIGIN || "*").split(",");
+// Enable CORS — restricted to authorized domains only
+const ALLOWED_ORIGINS = [
+    'https://useaxis.dev',
+    'https://www.useaxis.dev',
+    'https://aicontext.vercel.app',
+    ...(process.env.NODE_ENV !== 'production' ? ['http://localhost:3000', 'http://localhost:3001'] : []),
+];
 app.use("/*", cors({
     origin: (origin) => {
-        if (allowedOrigins.includes("*")) return origin; // Allow all if * is present
-        return allowedOrigins.includes(origin) ? origin : null;
+        return ALLOWED_ORIGINS.includes(origin) ? origin : null;
     }
 }));
 

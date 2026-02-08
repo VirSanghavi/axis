@@ -51,7 +51,8 @@ export async function GET(req: NextRequest) {
             projectId: project.id
         });
     } catch (e: any) {
-        return NextResponse.json({ error: e.message }, { status: 500 });
+        console.error("[sessions/sync] GET Error:", e);
+        return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
     }
 }
 
@@ -147,8 +148,7 @@ export async function POST(req: NextRequest) {
         });
 
     } catch (error: unknown) {
-        console.error("Session Sync Error:", error);
-        const errorMessage = error instanceof Error ? error.message : "Internal Server Error";
-        return NextResponse.json({ error: errorMessage }, { status: 500 });
+        console.error("[sessions/sync] POST Error:", error);
+        return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
     }
 }

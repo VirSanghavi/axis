@@ -76,9 +76,10 @@ export async function GET(req: NextRequest) {
             status: profile.subscription_status,
             validUntil: profile.current_period_end,
         });
-    } catch (e: any) {
+    } catch (e: unknown) {
+        console.error("[Verify] Server error:", e);
         return NextResponse.json(
-            { valid: false, reason: "server_error", message: e.message },
+            { valid: false, reason: "server_error" },
             { status: 500 }
         );
     }

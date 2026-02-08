@@ -106,7 +106,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ results });
 
     } catch (error: any) {
-        console.error("Embed Error:", error);
-        return NextResponse.json({ error: error.message }, { status: 500 });
+        console.error("[embed] Error:", error);
+        return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
     }
 }

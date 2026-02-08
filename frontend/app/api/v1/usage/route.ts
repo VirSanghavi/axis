@@ -85,6 +85,7 @@ export async function GET(req: NextRequest) {
             limit: 1000 // Placeholder limit
         });
     } catch (e: any) {
-        return NextResponse.json({ error: e.message }, { status: 500 });
+        console.error("[v1/usage] Error:", e);
+        return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
     }
 }

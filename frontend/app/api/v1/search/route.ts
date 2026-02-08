@@ -88,7 +88,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ results: formatted });
 
     } catch (error: any) {
-        console.error("Link Error:", error);
-        return NextResponse.json({ error: error.message }, { status: 500 });
+        console.error("[search] Error:", error);
+        return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
     }
 }

@@ -129,8 +129,7 @@ ${contextContent}`
 
         return NextResponse.json({ answer });
     } catch (error: unknown) {
-        console.error("DEBUG: Chat Error:", error);
-        const errorMessage = error instanceof Error ? error.message : "Internal Server Error";
-        return NextResponse.json({ error: errorMessage }, { status: 500 });
+        console.error("[chat] Error:", error);
+        return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
     }
 }

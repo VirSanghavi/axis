@@ -43,7 +43,8 @@ export async function POST(req: NextRequest) {
     }).select().single();
 
     if (error) {
-        return NextResponse.json({ error: error.message }, { status: 500 });
+        console.error("[governance] Error:", error);
+        return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
     }
 
     // Log usage

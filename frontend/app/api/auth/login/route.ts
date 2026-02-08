@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
-import { createSession, setSessionCookie } from "@/lib/auth";
+import { createSession, setSessionCookie, createRefreshToken, setRefreshCookie } from "@/lib/auth";
 import { getClientIp, rateLimit } from "@/lib/rate-limit";
 import { createClient } from "@supabase/supabase-js";
+import { isValidEmail, isValidPassword } from "@/lib/validation";
+import { logAndSanitize } from "@/lib/safe-error";
 
 const WINDOW_MS = 60 * 1000;
 const LIMIT = 10;
@@ -27,10 +29,32 @@ export async function POST(request: Request) {
     );
   }
 
-  const { email, password } = await request.json().catch(() => ({
-    email: "",
-    password: "",
-  }));
+  let body: { email?: unknown; password?: unknown };
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json(
+      { error: "Invalid request body" },
+      { status: 400, headers: rateHeaders(remaining, reset) }
+    );
+  }
+
+  const { email, password } = body;
+
+  // Input validation
+  if (!isValidEmail(email)) {
+    return NextResponse.json(
+      { error: "Invalid email format" },
+      { status: 400, headers: rateHeaders(remaining, reset) }
+    );
+  }
+
+  if (!isValidPassword(password)) {
+    return NextResponse.json(
+      { error: "Password must be between 8 and 128 characters" },
+      { status: 400, headers: rateHeaders(remaining, reset) }
+    );
+  }
 
   // Hybrid Auth: 
   // 1. Check Env Password (Admin/Simple Mode)
@@ -101,12 +125,28 @@ export async function POST(request: Request) {
     // Ignore error if already exists as per RLS or unique constraint
   }
 
-  const token = await createSession(email, userId, 60 * 60 * 24 * 30);
-  await setSessionCookie(token);
-  return NextResponse.json(
-    { ok: true },
-    { headers: rateHeaders(remaining, reset) }
-  );
+  try {
+    // Issue 7-day JWT access token
+    const token = await createSession(email, userId);
+    await setSessionCookie(token);
+
+    // Issue refresh token (30-day, stored in Redis)
+    if (userId) {
+      const refreshToken = await createRefreshToken(userId, email);
+      await setRefreshCookie(refreshToken);
+    }
+
+    return NextResponse.json(
+      { ok: true },
+      { headers: rateHeaders(remaining, reset) }
+    );
+  } catch (err) {
+    const msg = logAndSanitize("Login", err, "Authentication failed");
+    return NextResponse.json(
+      { error: msg },
+      { status: 500, headers: rateHeaders(remaining, reset) }
+    );
+  }
 }
 
 function rateHeaders(remaining: number, reset: number) {

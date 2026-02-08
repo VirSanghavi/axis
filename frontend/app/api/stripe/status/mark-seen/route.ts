@@ -31,8 +31,7 @@ export async function POST(req: NextRequest) {
         console.log(`[Mark Seen] Successfully marked retention as seen for ${session.email}`);
         return NextResponse.json({ success: true });
     } catch (error: unknown) {
-        const message = error instanceof Error ? error.message : "Internal Server Error";
-        console.error("Mark Seen API Error:", error);
-        return NextResponse.json({ error: message }, { status: 500 });
+        console.error("[stripe/mark-seen] Error:", error);
+        return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
     }
 }

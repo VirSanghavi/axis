@@ -105,9 +105,8 @@ export async function GET(req: NextRequest) {
 
         return NextResponse.json({ usage: last7Days });
     } catch (err: unknown) {
-        console.error("Usage API error:", err);
-        const errorMessage = err instanceof Error ? err.message : "Failed to fetch usage";
-        return NextResponse.json({ error: errorMessage }, { status: 500 });
+        console.error("[usage] GET error:", err);
+        return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
     }
 }
 
@@ -152,14 +151,13 @@ export async function POST(req: NextRequest) {
             });
 
         if (error) {
-            console.error("Usage log error:", error);
-            return NextResponse.json({ error: error.message }, { status: 500 });
+            console.error("[usage] POST insert error:", error);
+            return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
         }
 
         return NextResponse.json({ ok: true });
     } catch (err: unknown) {
-        console.error("Usage POST error:", err);
-        const errorMessage = err instanceof Error ? err.message : "Failed to log usage";
-        return NextResponse.json({ error: errorMessage }, { status: 500 });
+        console.error("[usage] POST error:", err);
+        return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
     }
 }

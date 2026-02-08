@@ -336,10 +336,16 @@ Agents MUST execute the full Axis workflow without being told:
 Every non-trivial task MUST follow: post_job → claim_next_job → propose_file_access → (edit) → complete_job.
 Skip ONLY for single-line typo fixes.
 
+### Releasing Locks (CRITICAL)
+Every file you lock MUST be unlocked before your session ends. Dangling locks block all other agents.
+- complete_job releases locks for that job. Call it IMMEDIATELY after each task.
+- finalize_session clears ALL remaining locks. Call it before you stop responding.
+- NEVER end a session while holding locks. Self-check: "Did I call finalize_session?"
+
 ### Session Cleanup (MANDATORY)
-- complete_job IMMEDIATELY after finishing each task.
+- complete_job IMMEDIATELY after finishing each task — this is how locks get released.
 - update_shared_context after meaningful steps.
-- finalize_session when the user's request is fully complete — do not wait to be told.
+- finalize_session when the user's request is fully complete — do not wait to be told. This clears all remaining locks.
 
 ### Force-Unlock Policy
 force_unlock is a LAST RESORT — only for locks >25 min old from a crashed agent. Always give a reason.
@@ -506,7 +512,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       // --- Decision & Orchestration ---
       {
         name: "propose_file_access",
-        description: "**CRITICAL: REQUEST FILE LOCK** — call this before EVERY file edit, no exceptions.\n- Checks if another agent currently holds a lock.\n- Returns `GRANTED` if safe to proceed, or `REQUIRES_ORCHESTRATION` if someone else is editing.\n- Usage: Provide your `agentId` (e.g., 'cursor-agent'), `filePath` (absolute), and `intent` (descriptive — e.g. 'Refactor auth to use JWT', NOT 'editing file').\n- Locks expire after 30 minutes. Use `force_unlock` only as a last resort for crashed agents.",
+        description: "**CRITICAL: REQUEST FILE LOCK** — call this before EVERY file edit, no exceptions.\n- Checks if another agent currently holds a lock.\n- Returns `GRANTED` if safe to proceed, or `REQUIRES_ORCHESTRATION` if someone else is editing.\n- Usage: Provide your `agentId` (e.g., 'cursor-agent'), `filePath` (absolute), and `intent` (descriptive — e.g. 'Refactor auth to use JWT', NOT 'editing file').\n- Locks expire after 30 minutes. Use `force_unlock` only as a last resort for crashed agents.\n- **IMPORTANT**: Every lock you acquire MUST be released. Call `complete_job` when done with each task, and `finalize_session` before ending your session. Dangling locks block all other agents.",
         inputSchema: {
           type: "object",
           properties: {
@@ -533,7 +539,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       // --- Permanent Memory ---
       {
         name: "finalize_session",
-        description: "**MANDATORY SESSION CLEANUP** — call this automatically when the user's request is fully complete.\n- Archives the current Live Notepad to a permanent session log.\n- Clears all active locks and completed jobs.\n- Resets the Live Notepad for the next session.\n- Do NOT wait for the user to say 'we are done.' When all tasks are finished, call this yourself.",
+        description: "**MANDATORY SESSION CLEANUP** — call this automatically when the user's request is fully complete.\n- Archives the current Live Notepad to a permanent session log.\n- **Clears ALL active file locks** and completed jobs. This is your safety net to ensure no dangling locks.\n- Resets the Live Notepad for the next session.\n- Do NOT wait for the user to say 'we are done.' When all tasks are finished, call this yourself.\n- **CRITICAL**: You MUST call this before ending ANY session. Failing to do so leaves file locks that block all other agents.",
         inputSchema: { type: "object", properties: {}, required: [] }
       },
       {
@@ -593,7 +599,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "complete_job",
-        description: "**CLOSE TICKET**: Mark a job as done and release file locks.\n- Call this IMMEDIATELY after finishing each job — do not accumulate completed-but-unclosed jobs.\n- Requires `outcome` (what was done).\n- If you are not the assigned agent, you must provide the `completionKey`.\n- Leaving jobs open holds locks and blocks other agents.",
+        description: "**CLOSE TICKET**: Mark a job as done and release file locks.\n- Call this IMMEDIATELY after finishing each job — do not accumulate completed-but-unclosed jobs.\n- Requires `outcome` (what was done).\n- If you are not the assigned agent, you must provide the `completionKey`.\n- **This is the primary way to release file locks.** Leaving jobs open holds locks and blocks other agents.\n- REMINDER: After completing all jobs, you MUST also call `finalize_session` to clear any remaining locks.",
         inputSchema: {
           type: "object",
           properties: {

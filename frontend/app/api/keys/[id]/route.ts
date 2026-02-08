@@ -45,8 +45,8 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
             .match({ id, user_id: userId });
 
         if (error) {
-            console.error("Delete key error:", error);
-            return NextResponse.json({ error: error.message }, { status: 500 });
+            console.error("[keys] DELETE error:", error);
+            return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
         }
 
         // Log activity
@@ -54,9 +54,8 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
 
         return NextResponse.json({ success: true });
     } catch (err: unknown) {
-        console.error("Delete key exception:", err);
-        const errorMessage = err instanceof Error ? err.message : "Failed to delete key";
-        return NextResponse.json({ error: errorMessage }, { status: 500 });
+        console.error("[keys] DELETE exception:", err);
+        return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
     }
 }
 

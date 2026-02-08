@@ -121,8 +121,7 @@ export async function GET(req: NextRequest) {
         });
 
     } catch (error: unknown) {
-        console.error("Stripe Status API Error:", error);
-        const errorMessage = error instanceof Error ? error.message : "Internal Server Error";
-        return NextResponse.json({ error: errorMessage }, { status: 500 });
+        console.error("[stripe/status] Error:", error);
+        return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
     }
 }
