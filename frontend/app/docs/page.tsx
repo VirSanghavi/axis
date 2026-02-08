@@ -589,17 +589,14 @@ claude`} />
                 <h3 className="text-[11px] font-bold uppercase tracking-[0.3em] text-neutral-900 mb-6">what happens when you run them together</h3>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                     <div className="text-center">
-                        <div className="text-3xl mb-3">🔒</div>
                         <div className="font-bold text-[12px] uppercase tracking-widest mb-2">file locks</div>
                         <p className="text-[12px] text-neutral-500">if cursor is editing a file, claude code sees it&apos;s locked and works on something else. no merge conflicts.</p>
                     </div>
                     <div className="text-center">
-                        <div className="text-3xl mb-3">📋</div>
                         <div className="font-bold text-[12px] uppercase tracking-widest mb-2">job board</div>
                         <p className="text-[12px] text-neutral-500">post tasks and agents auto-claim them. two agents can&apos;t grab the same task — it&apos;s atomic.</p>
                     </div>
                     <div className="text-center">
-                        <div className="text-3xl mb-3">📝</div>
                         <div className="font-bold text-[12px] uppercase tracking-widest mb-2">shared notepad</div>
                         <p className="text-[12px] text-neutral-500">every agent writes to the same live notepad. they can see what the other agents are doing in real time.</p>
                     </div>
