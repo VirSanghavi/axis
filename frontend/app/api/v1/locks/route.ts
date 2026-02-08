@@ -47,27 +47,63 @@ export async function POST(req: NextRequest) {
     try {
         const supabase = getSupabase();
         const body = await req.json();
-        const { projectName = "default", action, filePath, agentId, intent, userPrompt } = body;
+        const { projectName = "default", action, filePath, agentId, intent, userPrompt, reason } = body;
+
+        // Validate required fields to prevent injection / garbage data
+        if (action === "lock" && (!filePath || !agentId)) {
+            return NextResponse.json({ error: "filePath and agentId are required" }, { status: 400 });
+        }
+
         const projectId = await getOrCreateProjectId(projectName, session.sub!);
 
         if (action === "lock") {
-            const { data, error } = await supabase
-                .from("locks")
-                .upsert({
-                    project_id: projectId,
-                    file_path: filePath,
-                    agent_id: agentId,
-                    intent,
-                    user_prompt: userPrompt,
-                    updated_at: new Date().toISOString()
-                })
-                .select()
-                .single();
+            // Use atomic try_acquire_lock RPC — prevents TOCTOU race conditions
+            // between concurrent agents trying to lock the same file.
+            const { data, error } = await supabase.rpc("try_acquire_lock", {
+                p_project_id: projectId,
+                p_file_path: filePath,
+                p_agent_id: agentId,
+                p_intent: intent || "",
+                p_user_prompt: userPrompt || "",
+                p_timeout_seconds: 1800, // 30 minutes
+            });
+
             if (error) throw error;
-            return NextResponse.json(data);
+
+            // RPC returns an array of rows from RETURNS TABLE
+            const result = Array.isArray(data) ? data[0] : data;
+
+            if (!result) {
+                // Fallback: RPC returned no rows (shouldn't happen with fixed function)
+                return NextResponse.json({ status: "GRANTED", agent_id: agentId });
+            }
+
+            if (result.status === "DENIED") {
+                return NextResponse.json({
+                    status: "DENIED",
+                    message: `File locked by agent '${result.owner_id}'`,
+                    current_lock: {
+                        agent_id: result.owner_id,
+                        intent: result.intent,
+                        updated_at: result.updated_at,
+                    },
+                }, { status: 409 });
+            }
+
+            return NextResponse.json({
+                status: "GRANTED",
+                agent_id: agentId,
+                file_path: filePath,
+                intent,
+            });
         }
 
         if (action === "unlock") {
+            // Only the lock owner (or force_unlock with reason) can release
+            if (!filePath) {
+                return NextResponse.json({ error: "filePath is required" }, { status: 400 });
+            }
+
             const { error } = await supabase
                 .from("locks")
                 .delete()
@@ -77,8 +113,9 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ success: true });
         }
 
-        return NextResponse.json({ error: "Invalid action" }, { status: 400 });
+        return NextResponse.json({ error: "Invalid action. Use 'lock' or 'unlock'." }, { status: 400 });
     } catch (e: any) {
+        console.error("[locks] Error:", e);
         return NextResponse.json({ error: e.message }, { status: 500 });
     }
 }

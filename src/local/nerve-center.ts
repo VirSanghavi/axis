@@ -518,6 +518,7 @@ export class NerveCenter {
 
     async claimNextJob(agentId: string) {
         return await this.mutex.runExclusive(async () => {
+            // --- Path 1: Direct Supabase (dev mode) - uses atomic RPC ---
             if (this.useSupabase && this.supabase && this._projectId) {
                 const { data, error } = await this.supabase.rpc("claim_next_job", {
                     p_project_id: this._projectId,
@@ -535,8 +536,30 @@ export class NerveCenter {
                 return { status: "NO_JOBS_AVAILABLE", message: "Relax. No open tickets (or dependencies not met)." };
             }
 
+            // --- Path 2: Remote API (customer mode) - uses atomic claim action ---
+            if (this.contextManager.apiUrl) {
+                try {
+                    const data = await this.callCoordination("jobs", "POST", {
+                        action: "claim",
+                        agentId,
+                    }) as any;
+
+                    if (data && data.status === "CLAIMED") {
+                        const job = this.jobFromRecord(data.job as JobRecord);
+                        await this.appendToNotepad(`\n- [JOB CLAIMED] Agent '${agentId}' picked up: ${job.title}`);
+                        return { status: "CLAIMED", job };
+                    }
+
+                    return { status: "NO_JOBS_AVAILABLE", message: "Relax. No open tickets (or dependencies not met)." };
+                } catch (e: any) {
+                    logger.error("Failed to claim job via API", e);
+                    return { status: "NO_JOBS_AVAILABLE", message: `Claim failed: ${e.message}` };
+                }
+            }
+
+            // --- Path 3: Local-only fallback ---
             const priorities = ["critical", "high", "medium", "low"];
-            const allJobs = await this.listJobs();
+            const allJobs = Object.values(this.state.jobs);
             const jobsById = new Map(allJobs.map((job) => [job.id, job]));
             const availableJobs = allJobs
                 .filter((job) => job.status === "todo")
@@ -555,35 +578,12 @@ export class NerveCenter {
                 return { status: "NO_JOBS_AVAILABLE", message: "Relax. No open tickets (or dependencies not met)." };
             }
 
-            const candidate = availableJobs[0];
-
-            if (this.contextManager.apiUrl) {
-                try {
-                    const data = await this.callCoordination("jobs", "POST", {
-                        action: "update",
-                        jobId: candidate.id,
-                        status: "in_progress",
-                        assigned_to: agentId
-                    }) as any;
-                    const job = this.jobFromRecord(data as JobRecord);
-                    await this.appendToNotepad(`\n- [JOB CLAIMED] Agent '${agentId}' picked up: ${job.title}`);
-                    return { status: "CLAIMED", job };
-                } catch (e: any) {
-                    logger.error("Failed to claim job via API", e);
-                }
-            }
-
-            // Local fallback
-            if (!this.useSupabase && !this.contextManager.apiUrl) {
-                const job = candidate;
-                job.status = "in_progress";
-                job.assignedTo = agentId;
-                job.updatedAt = Date.now();
-                await this.appendToNotepad(`\n- [JOB CLAIMED] Agent '${agentId}' picked up: ${job.title}`);
-                return { status: "CLAIMED", job };
-            }
-
-            return { status: "NO_JOBS_AVAILABLE", message: "Could not claim job." };
+            const job = availableJobs[0];
+            job.status = "in_progress";
+            job.assignedTo = agentId;
+            job.updatedAt = Date.now();
+            await this.appendToNotepad(`\n- [JOB CLAIMED] Agent '${agentId}' picked up: ${job.title}`);
+            return { status: "CLAIMED", job };
         });
     }
 
@@ -720,155 +720,99 @@ export class NerveCenter {
 
     async proposeFileAccess(agentId: string, filePath: string, intent: string, userPrompt: string) {
         return await this.mutex.runExclusive(async () => {
-            // Priority: Remote API if available (for customers), then Supabase, then local
-            // Always try remote API first if available
             logger.info(`[proposeFileAccess] Starting - agentId: ${agentId}, filePath: ${filePath}`);
-            logger.info(`[proposeFileAccess] Config - apiUrl: ${this.contextManager.apiUrl}, apiSecret: ${this.contextManager.apiSecret ? 'SET' : 'NOT SET'}, useSupabase: ${this.useSupabase}`);
-            
+
+            // --- Path 1: Remote API (customer mode) ---
+            // Atomicity is handled server-side via try_acquire_lock RPC.
+            // No GET-then-POST pattern. Single POST, server returns GRANTED or DENIED.
             if (this.contextManager.apiUrl) {
                 try {
-                    logger.info(`[proposeFileAccess] Getting current locks...`);
-                    // 1. Get current locks to check for conflicts
-                    const locks = await this.getLocks();
-                    logger.info(`[proposeFileAccess] Found ${locks.length} existing locks`);
-                    const existing = locks.find(l => l.filePath === filePath);
-
-                    if (existing) {
-                        const isStale = (Date.now() - existing.timestamp) > this.lockTimeout;
-                        if (!isStale && existing.agentId !== agentId) {
-                            return {
-                                status: "REQUIRES_ORCHESTRATION",
-                                message: `Conflict: File '${filePath}' is currently locked by '${existing.agentId}'`,
-                                currentLock: existing
-                            };
-                        }
-                    }
-
-                    // 2. Acquire lock via API
-                    logger.info(`[proposeFileAccess] Attempting to acquire lock via API...`);
                     const result = await this.callCoordination("locks", "POST", {
                         action: "lock",
                         filePath,
                         agentId,
                         intent,
                         userPrompt
-                    });
+                    }) as { status?: string; message?: string; current_lock?: any };
 
-                    logger.info(`[proposeFileAccess] Lock acquired successfully: ${JSON.stringify(result)}`);
-                    await this.appendToNotepad(`\n- [LOCK] ${agentId} locked ${filePath}\n  Intent: ${intent}`);
-                    return { status: "GRANTED", message: `Access granted for ${filePath}` };
-                } catch (e: any) {
-                    logger.error(`[proposeFileAccess] API lock failed: ${e.message}`, e);
-                    // Return the error instead of falling through silently
-                    return { error: `Failed to acquire lock via API: ${e.message}` };
-                }
-            } else {
-                logger.warn("[proposeFileAccess] No API URL configured");
-            }
-            
-            if (this.useSupabase && this.supabase && this._projectId) {
-                // Use direct Supabase when configured (development mode)
-                try {
-                    // 1. Check existing lock
-                    const { data: existing, error: fetchError } = await this.supabase
-                        .from("locks")
-                        .select("*")
-                        .eq("project_id", this._projectId)
-                        .eq("file_path", filePath)
-                        .maybeSingle();
-
-                    if (fetchError) throw fetchError;
-
-                    if (existing) {
-                        const isStale = (Date.now() - Date.parse(existing.updated_at)) > this.lockTimeout;
-                        if (!isStale && existing.agent_id !== agentId) {
-                            return {
-                                status: "REQUIRES_ORCHESTRATION",
-                                message: `Conflict: File '${filePath}' is currently locked by '${existing.agent_id}'`,
-                                currentLock: {
-                                    agentId: existing.agent_id,
-                                    filePath,
-                                    intent: existing.intent,
-                                    timestamp: Date.parse(existing.updated_at)
-                                }
-                            };
-                        }
-                        // If stale or owned by us, we can overwrite (upsert)
-                    }
-
-                    // 2. Acquire Lock (Upsert)
-                    const { error: upsertError } = await this.supabase
-                        .from("locks")
-                        .upsert({
-                            project_id: this._projectId,
-                            file_path: filePath,
-                            agent_id: agentId,
-                            intent: intent,
-                            user_prompt: userPrompt,
-                            updated_at: new Date().toISOString()
-                        });
-
-                    if (upsertError) throw upsertError;
-
-                    await this.appendToNotepad(`\n- [LOCK] ${agentId} locked ${filePath}\n  Intent: ${intent}`);
-                    return { status: "GRANTED", message: `Access granted for ${filePath}` };
-
-                } catch (e) {
-                    logger.warn("[NerveCenter] Lock DB operation failed. Falling back to API or local.", e as any);
-                    // Fall through to API or local fallback
-                }
-            }
-
-            // Fallback: Try API if available, otherwise local
-            if (this.contextManager.apiUrl) {
-                try {
-                    const locks = await this.getLocks();
-                    const existing = locks.find(l => l.filePath === filePath);
-
-                    if (existing) {
-                        const isStale = (Date.now() - existing.timestamp) > this.lockTimeout;
-                        if (!isStale && existing.agentId !== agentId) {
-                            return {
-                                status: "REQUIRES_ORCHESTRATION",
-                                message: `Conflict: File '${filePath}' is currently locked by '${existing.agentId}'`,
-                                currentLock: existing
-                            };
-                        }
-                    }
-
-                    await this.callCoordination("locks", "POST", {
-                        action: "lock",
-                        filePath,
-                        agentId,
-                        intent,
-                        userPrompt
-                    });
-                } catch (e: any) {
-                    logger.error("API lock failed in fallback", e);
-                    // Final fallback to local
-                    this.state.locks[filePath] = { agentId, filePath, intent, userPrompt, timestamp: Date.now() };
-                    await this.saveState();
-                }
-            } else {
-                // Local-only fallback
-                const locks = await this.getLocks();
-                const existing = locks.find(l => l.filePath === filePath);
-
-                if (existing) {
-                    const isStale = (Date.now() - existing.timestamp) > this.lockTimeout;
-                    if (!isStale && existing.agentId !== agentId) {
+                    if (result.status === "DENIED") {
+                        logger.info(`[proposeFileAccess] DENIED by server: ${result.message}`);
                         return {
                             status: "REQUIRES_ORCHESTRATION",
-                            message: `Conflict: File '${filePath}' is currently locked by '${existing.agentId}'`,
-                            currentLock: existing
+                            message: result.message || `File '${filePath}' is locked by another agent`,
+                            currentLock: result.current_lock
                         };
                     }
-                }
 
-                this.state.locks[filePath] = { agentId, filePath, intent, userPrompt, timestamp: Date.now() };
-                await this.saveState();
+                    logger.info(`[proposeFileAccess] GRANTED by server`);
+                    await this.appendToNotepad(`\n- [LOCK] ${agentId} locked ${filePath}\n  Intent: ${intent}`);
+                    return { status: "GRANTED", message: `Access granted for ${filePath}` };
+                } catch (e: any) {
+                    // If the API returned 409 (conflict), parse the DENIED response
+                    if (e.message && e.message.includes("409")) {
+                        logger.info(`[proposeFileAccess] Lock conflict (409)`);
+                        return {
+                            status: "REQUIRES_ORCHESTRATION",
+                            message: `File '${filePath}' is locked by another agent`,
+                        };
+                    }
+                    logger.error(`[proposeFileAccess] API lock failed: ${e.message}`, e);
+                    return { error: `Failed to acquire lock via API: ${e.message}` };
+                }
             }
 
+            // --- Path 2: Direct Supabase (development mode) ---
+            // Uses atomic try_acquire_lock RPC directly.
+            if (this.useSupabase && this.supabase && this._projectId) {
+                try {
+                    const { data, error } = await this.supabase.rpc("try_acquire_lock", {
+                        p_project_id: this._projectId,
+                        p_file_path: filePath,
+                        p_agent_id: agentId,
+                        p_intent: intent,
+                        p_user_prompt: userPrompt,
+                        p_timeout_seconds: Math.floor(this.lockTimeout / 1000),
+                    });
+
+                    if (error) throw error;
+
+                    const row = Array.isArray(data) ? data[0] : data;
+
+                    if (row && row.status === "DENIED") {
+                        return {
+                            status: "REQUIRES_ORCHESTRATION",
+                            message: `Conflict: File '${filePath}' is locked by '${row.owner_id}'`,
+                            currentLock: {
+                                agentId: row.owner_id,
+                                filePath,
+                                intent: row.intent,
+                                timestamp: row.updated_at ? Date.parse(row.updated_at) : Date.now()
+                            }
+                        };
+                    }
+
+                    await this.appendToNotepad(`\n- [LOCK] ${agentId} locked ${filePath}\n  Intent: ${intent}`);
+                    return { status: "GRANTED", message: `Access granted for ${filePath}` };
+                } catch (e: any) {
+                    logger.warn("[NerveCenter] Lock RPC failed. Falling back to local.", e);
+                }
+            }
+
+            // --- Path 3: Local-only fallback ---
+            const existing = Object.values(this.state.locks).find(l => l.filePath === filePath);
+            if (existing) {
+                const isStale = (Date.now() - existing.timestamp) > this.lockTimeout;
+                if (!isStale && existing.agentId !== agentId) {
+                    return {
+                        status: "REQUIRES_ORCHESTRATION",
+                        message: `Conflict: File '${filePath}' is currently locked by '${existing.agentId}'`,
+                        currentLock: existing
+                    };
+                }
+            }
+
+            this.state.locks[filePath] = { agentId, filePath, intent, userPrompt, timestamp: Date.now() };
+            await this.saveState();
             await this.appendToNotepad(`\n- [LOCK] ${agentId} locked ${filePath}\n  Intent: ${intent}`);
             return { status: "GRANTED", message: `Access granted for ${filePath}` };
         });

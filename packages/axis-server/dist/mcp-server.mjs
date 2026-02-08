@@ -575,19 +575,37 @@ var NerveCenter = class {
         if (error) {
           logger.error("Failed to claim job via RPC", error);
         } else if (data && data.status === "CLAIMED") {
-          const job = this.jobFromRecord(data.job);
+          const job2 = this.jobFromRecord(data.job);
           await this.appendToNotepad(`
-- [JOB CLAIMED] Agent '${agentId}' picked up: ${job.title}`);
-          return { status: "CLAIMED", job };
+- [JOB CLAIMED] Agent '${agentId}' picked up: ${job2.title}`);
+          return { status: "CLAIMED", job: job2 };
         }
         return { status: "NO_JOBS_AVAILABLE", message: "Relax. No open tickets (or dependencies not met)." };
       }
+      if (this.contextManager.apiUrl) {
+        try {
+          const data = await this.callCoordination("jobs", "POST", {
+            action: "claim",
+            agentId
+          });
+          if (data && data.status === "CLAIMED") {
+            const job2 = this.jobFromRecord(data.job);
+            await this.appendToNotepad(`
+- [JOB CLAIMED] Agent '${agentId}' picked up: ${job2.title}`);
+            return { status: "CLAIMED", job: job2 };
+          }
+          return { status: "NO_JOBS_AVAILABLE", message: "Relax. No open tickets (or dependencies not met)." };
+        } catch (e) {
+          logger.error("Failed to claim job via API", e);
+          return { status: "NO_JOBS_AVAILABLE", message: `Claim failed: ${e.message}` };
+        }
+      }
       const priorities = ["critical", "high", "medium", "low"];
-      const allJobs = await this.listJobs();
-      const jobsById = new Map(allJobs.map((job) => [job.id, job]));
-      const availableJobs = allJobs.filter((job) => job.status === "todo").filter((job) => {
-        if (!job.dependencies || job.dependencies.length === 0) return true;
-        return job.dependencies.every((depId) => jobsById.get(depId)?.status === "done");
+      const allJobs = Object.values(this.state.jobs);
+      const jobsById = new Map(allJobs.map((job2) => [job2.id, job2]));
+      const availableJobs = allJobs.filter((job2) => job2.status === "todo").filter((job2) => {
+        if (!job2.dependencies || job2.dependencies.length === 0) return true;
+        return job2.dependencies.every((depId) => jobsById.get(depId)?.status === "done");
       }).sort((a, b) => {
         const pA = priorities.indexOf(a.priority);
         const pB = priorities.indexOf(b.priority);
@@ -597,33 +615,13 @@ var NerveCenter = class {
       if (availableJobs.length === 0) {
         return { status: "NO_JOBS_AVAILABLE", message: "Relax. No open tickets (or dependencies not met)." };
       }
-      const candidate = availableJobs[0];
-      if (this.contextManager.apiUrl) {
-        try {
-          const data = await this.callCoordination("jobs", "POST", {
-            action: "update",
-            jobId: candidate.id,
-            status: "in_progress",
-            assigned_to: agentId
-          });
-          const job = this.jobFromRecord(data);
-          await this.appendToNotepad(`
+      const job = availableJobs[0];
+      job.status = "in_progress";
+      job.assignedTo = agentId;
+      job.updatedAt = Date.now();
+      await this.appendToNotepad(`
 - [JOB CLAIMED] Agent '${agentId}' picked up: ${job.title}`);
-          return { status: "CLAIMED", job };
-        } catch (e) {
-          logger.error("Failed to claim job via API", e);
-        }
-      }
-      if (!this.useSupabase && !this.contextManager.apiUrl) {
-        const job = candidate;
-        job.status = "in_progress";
-        job.assignedTo = agentId;
-        job.updatedAt = Date.now();
-        await this.appendToNotepad(`
-- [JOB CLAIMED] Agent '${agentId}' picked up: ${job.title}`);
-        return { status: "CLAIMED", job };
-      }
-      return { status: "NO_JOBS_AVAILABLE", message: "Could not claim job." };
+      return { status: "CLAIMED", job };
     });
   }
   async cancelJob(jobId, reason) {
@@ -736,24 +734,8 @@ ${notepad}`;
   async proposeFileAccess(agentId, filePath, intent, userPrompt) {
     return await this.mutex.runExclusive(async () => {
       logger.info(`[proposeFileAccess] Starting - agentId: ${agentId}, filePath: ${filePath}`);
-      logger.info(`[proposeFileAccess] Config - apiUrl: ${this.contextManager.apiUrl}, apiSecret: ${this.contextManager.apiSecret ? "SET" : "NOT SET"}, useSupabase: ${this.useSupabase}`);
       if (this.contextManager.apiUrl) {
         try {
-          logger.info(`[proposeFileAccess] Getting current locks...`);
-          const locks = await this.getLocks();
-          logger.info(`[proposeFileAccess] Found ${locks.length} existing locks`);
-          const existing = locks.find((l) => l.filePath === filePath);
-          if (existing) {
-            const isStale = Date.now() - existing.timestamp > this.lockTimeout;
-            if (!isStale && existing.agentId !== agentId) {
-              return {
-                status: "REQUIRES_ORCHESTRATION",
-                message: `Conflict: File '${filePath}' is currently locked by '${existing.agentId}'`,
-                currentLock: existing
-              };
-            }
-          }
-          logger.info(`[proposeFileAccess] Attempting to acquire lock via API...`);
           const result = await this.callCoordination("locks", "POST", {
             action: "lock",
             filePath,
@@ -761,96 +743,76 @@ ${notepad}`;
             intent,
             userPrompt
           });
-          logger.info(`[proposeFileAccess] Lock acquired successfully: ${JSON.stringify(result)}`);
+          if (result.status === "DENIED") {
+            logger.info(`[proposeFileAccess] DENIED by server: ${result.message}`);
+            return {
+              status: "REQUIRES_ORCHESTRATION",
+              message: result.message || `File '${filePath}' is locked by another agent`,
+              currentLock: result.current_lock
+            };
+          }
+          logger.info(`[proposeFileAccess] GRANTED by server`);
           await this.appendToNotepad(`
 - [LOCK] ${agentId} locked ${filePath}
   Intent: ${intent}`);
           return { status: "GRANTED", message: `Access granted for ${filePath}` };
         } catch (e) {
+          if (e.message && e.message.includes("409")) {
+            logger.info(`[proposeFileAccess] Lock conflict (409)`);
+            return {
+              status: "REQUIRES_ORCHESTRATION",
+              message: `File '${filePath}' is locked by another agent`
+            };
+          }
           logger.error(`[proposeFileAccess] API lock failed: ${e.message}`, e);
           return { error: `Failed to acquire lock via API: ${e.message}` };
         }
-      } else {
-        logger.warn("[proposeFileAccess] No API URL configured");
       }
       if (this.useSupabase && this.supabase && this._projectId) {
         try {
-          const { data: existing, error: fetchError } = await this.supabase.from("locks").select("*").eq("project_id", this._projectId).eq("file_path", filePath).maybeSingle();
-          if (fetchError) throw fetchError;
-          if (existing) {
-            const isStale = Date.now() - Date.parse(existing.updated_at) > this.lockTimeout;
-            if (!isStale && existing.agent_id !== agentId) {
-              return {
-                status: "REQUIRES_ORCHESTRATION",
-                message: `Conflict: File '${filePath}' is currently locked by '${existing.agent_id}'`,
-                currentLock: {
-                  agentId: existing.agent_id,
-                  filePath,
-                  intent: existing.intent,
-                  timestamp: Date.parse(existing.updated_at)
-                }
-              };
-            }
-          }
-          const { error: upsertError } = await this.supabase.from("locks").upsert({
-            project_id: this._projectId,
-            file_path: filePath,
-            agent_id: agentId,
-            intent,
-            user_prompt: userPrompt,
-            updated_at: (/* @__PURE__ */ new Date()).toISOString()
+          const { data, error } = await this.supabase.rpc("try_acquire_lock", {
+            p_project_id: this._projectId,
+            p_file_path: filePath,
+            p_agent_id: agentId,
+            p_intent: intent,
+            p_user_prompt: userPrompt,
+            p_timeout_seconds: Math.floor(this.lockTimeout / 1e3)
           });
-          if (upsertError) throw upsertError;
+          if (error) throw error;
+          const row = Array.isArray(data) ? data[0] : data;
+          if (row && row.status === "DENIED") {
+            return {
+              status: "REQUIRES_ORCHESTRATION",
+              message: `Conflict: File '${filePath}' is locked by '${row.owner_id}'`,
+              currentLock: {
+                agentId: row.owner_id,
+                filePath,
+                intent: row.intent,
+                timestamp: row.updated_at ? Date.parse(row.updated_at) : Date.now()
+              }
+            };
+          }
           await this.appendToNotepad(`
 - [LOCK] ${agentId} locked ${filePath}
   Intent: ${intent}`);
           return { status: "GRANTED", message: `Access granted for ${filePath}` };
         } catch (e) {
-          logger.warn("[NerveCenter] Lock DB operation failed. Falling back to API or local.", e);
+          logger.warn("[NerveCenter] Lock RPC failed. Falling back to local.", e);
         }
       }
-      if (this.contextManager.apiUrl) {
-        try {
-          const locks = await this.getLocks();
-          const existing = locks.find((l) => l.filePath === filePath);
-          if (existing) {
-            const isStale = Date.now() - existing.timestamp > this.lockTimeout;
-            if (!isStale && existing.agentId !== agentId) {
-              return {
-                status: "REQUIRES_ORCHESTRATION",
-                message: `Conflict: File '${filePath}' is currently locked by '${existing.agentId}'`,
-                currentLock: existing
-              };
-            }
-          }
-          await this.callCoordination("locks", "POST", {
-            action: "lock",
-            filePath,
-            agentId,
-            intent,
-            userPrompt
-          });
-        } catch (e) {
-          logger.error("API lock failed in fallback", e);
-          this.state.locks[filePath] = { agentId, filePath, intent, userPrompt, timestamp: Date.now() };
-          await this.saveState();
+      const existing = Object.values(this.state.locks).find((l) => l.filePath === filePath);
+      if (existing) {
+        const isStale = Date.now() - existing.timestamp > this.lockTimeout;
+        if (!isStale && existing.agentId !== agentId) {
+          return {
+            status: "REQUIRES_ORCHESTRATION",
+            message: `Conflict: File '${filePath}' is currently locked by '${existing.agentId}'`,
+            currentLock: existing
+          };
         }
-      } else {
-        const locks = await this.getLocks();
-        const existing = locks.find((l) => l.filePath === filePath);
-        if (existing) {
-          const isStale = Date.now() - existing.timestamp > this.lockTimeout;
-          if (!isStale && existing.agentId !== agentId) {
-            return {
-              status: "REQUIRES_ORCHESTRATION",
-              message: `Conflict: File '${filePath}' is currently locked by '${existing.agentId}'`,
-              currentLock: existing
-            };
-          }
-        }
-        this.state.locks[filePath] = { agentId, filePath, intent, userPrompt, timestamp: Date.now() };
-        await this.saveState();
       }
+      this.state.locks[filePath] = { agentId, filePath, intent, userPrompt, timestamp: Date.now() };
+      await this.saveState();
       await this.appendToNotepad(`
 - [LOCK] ${agentId} locked ${filePath}
   Intent: ${intent}`);
@@ -1087,19 +1049,24 @@ logger.info("Environment check:", {
   hasSUPABASE_SERVICE_ROLE_KEY: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
   PROJECT_NAME: process.env.PROJECT_NAME || "default"
 });
-if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
-  logger.warn("Supabase credentials missing. RAG & Persistence disabled. Running in local/ephemeral mode.");
-}
 var apiUrl = process.env.SHARED_CONTEXT_API_URL || process.env.AXIS_API_URL || "https://aicontext.vercel.app/api/v1";
 var apiSecret = process.env.AXIS_API_KEY || process.env.SHARED_CONTEXT_API_SECRET || process.env.AXIS_API_SECRET;
+var useRemoteApiOnly = !!process.env.SHARED_CONTEXT_API_URL || !!process.env.AXIS_API_KEY;
+if (useRemoteApiOnly) {
+  logger.info("Running in REMOTE API mode - Supabase credentials not needed locally.");
+  logger.info(`Remote API: ${apiUrl}`);
+  logger.info(`API Key: ${apiSecret ? apiSecret.substring(0, 15) + "..." : "NOT SET"}`);
+} else if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+  logger.warn("No remote API configured and Supabase credentials missing. Running in local/ephemeral mode.");
+} else {
+  logger.info("Running in DIRECT SUPABASE mode (development).");
+}
 logger.info("ContextManager config:", {
   apiUrl,
   hasApiSecret: !!apiSecret,
-  apiSecretPrefix: apiSecret ? apiSecret.substring(0, 10) + "..." : "NOT SET",
-  source: process.env.SHARED_CONTEXT_API_URL || process.env.AXIS_API_KEY ? "MCP config (mcp.json)" : "default/fallback"
+  source: useRemoteApiOnly ? "MCP config (mcp.json)" : "default/fallback"
 });
 var manager = new ContextManager(apiUrl, apiSecret);
-var useRemoteApiOnly = !!process.env.SHARED_CONTEXT_API_URL || !!process.env.AXIS_API_KEY;
 logger.info("NerveCenter config:", {
   useRemoteApiOnly,
   supabaseUrl: useRemoteApiOnly ? "DISABLED (using remote API)" : process.env.NEXT_PUBLIC_SUPABASE_URL ? "SET" : "NOT SET",
@@ -1113,12 +1080,13 @@ var nerveCenter = new NerveCenter(manager, {
 });
 logger.info("=== Axis MCP Server Initialized ===");
 var ragEngine;
-if (process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
+if (!useRemoteApiOnly && process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
   ragEngine = new RagEngine(
     process.env.NEXT_PUBLIC_SUPABASE_URL,
     process.env.SUPABASE_SERVICE_ROLE_KEY,
     process.env.OPENAI_API_KEY || ""
   );
+  logger.info("Local RAG Engine initialized.");
 }
 async function ensureFileSystem() {
   try {

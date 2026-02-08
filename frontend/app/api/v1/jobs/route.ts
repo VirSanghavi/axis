@@ -72,14 +72,41 @@ export async function POST(req: NextRequest) {
             return NextResponse.json(data);
         }
 
+        if (action === "claim") {
+            // Atomic job claiming using database function with FOR UPDATE SKIP LOCKED
+            // This prevents two agents from claiming the same job simultaneously.
+            const agentId = jobData.agentId || jobData.agent_id;
+            if (!agentId) {
+                return NextResponse.json({ error: "agentId is required for claim" }, { status: 400 });
+            }
+
+            const { data, error } = await supabase.rpc("claim_next_job", {
+                p_project_id: projectId,
+                p_agent_id: agentId,
+            });
+
+            if (error) throw error;
+
+            // claim_next_job returns jsonb: { status: "CLAIMED", job: {...} } or { status: "NO_JOBS_AVAILABLE" }
+            return NextResponse.json(data);
+        }
+
         if (action === "update") {
             const { jobId, ...updates } = jobData;
+            if (!jobId) {
+                return NextResponse.json({ error: "jobId is required for update" }, { status: 400 });
+            }
+
+            // Sanitize: only allow known fields to be updated
+            const allowedFields: Record<string, unknown> = {};
+            if (updates.status) allowedFields.status = updates.status;
+            if (updates.assigned_to) allowedFields.assigned_to = updates.assigned_to;
+            if (updates.cancel_reason) allowedFields.cancel_reason = updates.cancel_reason;
+            allowedFields.updated_at = new Date().toISOString();
+
             const { data, error } = await supabase
                 .from("jobs")
-                .update({
-                    ...updates,
-                    updated_at: new Date().toISOString()
-                })
+                .update(allowedFields)
                 .eq("id", jobId)
                 .eq("project_id", projectId)
                 .select()
@@ -88,7 +115,7 @@ export async function POST(req: NextRequest) {
             return NextResponse.json(data);
         }
 
-        return NextResponse.json({ error: "Invalid action" }, { status: 400 });
+        return NextResponse.json({ error: "Invalid action. Use 'post', 'claim', or 'update'." }, { status: 400 });
     } catch (e: any) {
         return NextResponse.json({ error: e.message }, { status: 500 });
     }

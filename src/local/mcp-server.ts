@@ -62,29 +62,34 @@ logger.info("Environment check:", {
   PROJECT_NAME: process.env.PROJECT_NAME || "default"
 });
 
-// VALIDATION
-if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
-  logger.warn("Supabase credentials missing. RAG & Persistence disabled. Running in local/ephemeral mode.");
-}
-
 // Configuration from MCP client (mcp.json) or environment
 // These should be set in mcp.json as env vars passed to the server
 const apiUrl = process.env.SHARED_CONTEXT_API_URL || process.env.AXIS_API_URL || "https://aicontext.vercel.app/api/v1";
 const apiSecret = process.env.AXIS_API_KEY || process.env.SHARED_CONTEXT_API_SECRET || process.env.AXIS_API_SECRET;
 
+// For customer deployments: Only use Supabase if explicitly enabled AND API URL is not the primary
+// If SHARED_CONTEXT_API_URL or AXIS_API_KEY is set, prioritize remote API (customer mode)
+// Only use direct Supabase if API URL is not set (development mode)
+const useRemoteApiOnly = !!process.env.SHARED_CONTEXT_API_URL || !!process.env.AXIS_API_KEY;
+
+// VALIDATION - Only warn about Supabase if NOT using remote API
+if (useRemoteApiOnly) {
+  logger.info("Running in REMOTE API mode - Supabase credentials not needed locally.");
+  logger.info(`Remote API: ${apiUrl}`);
+  logger.info(`API Key: ${apiSecret ? apiSecret.substring(0, 15) + "..." : "NOT SET"}`);
+} else if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+  logger.warn("No remote API configured and Supabase credentials missing. Running in local/ephemeral mode.");
+} else {
+  logger.info("Running in DIRECT SUPABASE mode (development).");
+}
+
 logger.info("ContextManager config:", {
   apiUrl,
   hasApiSecret: !!apiSecret,
-  apiSecretPrefix: apiSecret ? apiSecret.substring(0, 10) + "..." : "NOT SET",
-  source: (process.env.SHARED_CONTEXT_API_URL || process.env.AXIS_API_KEY) ? "MCP config (mcp.json)" : "default/fallback"
+  source: useRemoteApiOnly ? "MCP config (mcp.json)" : "default/fallback"
 });
 
 const manager = new ContextManager(apiUrl, apiSecret);
-
-// For customer deployments: Only use Supabase if explicitly enabled AND API URL is not the primary
-// If SHARED_CONTEXT_API_URL is set, prioritize remote API (customer mode)
-// Only use direct Supabase if API URL is not set (development mode)
-const useRemoteApiOnly = !!process.env.SHARED_CONTEXT_API_URL || !!process.env.AXIS_API_KEY;
 
 logger.info("NerveCenter config:", {
   useRemoteApiOnly,
@@ -101,15 +106,15 @@ const nerveCenter = new NerveCenter(manager, {
 
 logger.info("=== Axis MCP Server Initialized ===");
 
-// Initialize RAG Engine
-// Initialize RAG Engine (Optional - only if local credentials present)
+// Initialize RAG Engine (Optional - only if local Supabase credentials present AND not in remote mode)
 let ragEngine: RagEngine | undefined;
-if (process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
+if (!useRemoteApiOnly && process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
   ragEngine = new RagEngine(
     process.env.NEXT_PUBLIC_SUPABASE_URL,
     process.env.SUPABASE_SERVICE_ROLE_KEY,
     process.env.OPENAI_API_KEY || "",
   );
+  logger.info("Local RAG Engine initialized.");
 }
 
 // --- File System Operations ---
