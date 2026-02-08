@@ -685,8 +685,8 @@ export class NerveCenter {
     async proposeFileAccess(agentId: string, filePath: string, intent: string, userPrompt: string) {
         return await this.mutex.runExclusive(async () => {
             // Priority: Remote API if available (for customers), then Supabase, then local
-            if (this.contextManager.apiUrl && !this.useSupabase) {
-                // Use remote API when Supabase is not configured (customer mode)
+            // Always try remote API first if available
+            if (this.contextManager.apiUrl) {
                 try {
                     // 1. Get current locks to check for conflicts
                     const locks = await this.getLocks();
@@ -716,9 +716,11 @@ export class NerveCenter {
                     return { status: "GRANTED", message: `Access granted for ${filePath}` };
                 } catch (e: any) {
                     logger.error("API lock failed", e);
-                    // Fall through to local fallback
+                    // Fall through to Supabase or local fallback
                 }
-            } else if (this.useSupabase && this.supabase && this._projectId) {
+            }
+            
+            if (this.useSupabase && this.supabase && this._projectId) {
                 // Use direct Supabase when configured (development mode)
                 try {
                     // 1. Check existing lock
@@ -917,17 +919,14 @@ export class NerveCenter {
 
     async getSubscriptionStatus(email: string) {
         // Priority: Remote API if available (for customers), then Supabase, then error
-        // If we have remote API and Supabase is disabled, use remote API
+        // Always try remote API first if available, regardless of Supabase state
         if (this.contextManager.apiUrl) {
-            if (!this.useSupabase || !this.supabase) {
-                // Use remote API when Supabase is not configured (customer mode)
-                try {
-                    const result = await this.callCoordination(`usage?email=${encodeURIComponent(email)}`);
-                    return result;
-                } catch (e: any) {
-                    logger.error("Failed to fetch subscription status via API", e);
-                    return { error: `Failed to fetch subscription status: ${e.message}` };
-                }
+            try {
+                const result = await this.callCoordination(`usage?email=${encodeURIComponent(email)}`);
+                return result;
+            } catch (e: any) {
+                logger.error("Failed to fetch subscription status via API", e);
+                // Fall through to Supabase if available
             }
         }
         
@@ -959,17 +958,14 @@ export class NerveCenter {
 
     async getUsageStats(email: string) {
         // Priority: Remote API if available (for customers), then Supabase, then error
-        // If we have remote API and Supabase is disabled, use remote API
+        // Always try remote API first if available, regardless of Supabase state
         if (this.contextManager.apiUrl) {
-            if (!this.useSupabase || !this.supabase) {
-                // Use remote API when Supabase is not configured (customer mode)
-                try {
-                    const result = await this.callCoordination(`usage?email=${encodeURIComponent(email)}`) as { usageCount?: number };
-                    return { email, usageCount: result.usageCount || 0 };
-                } catch (e: any) {
-                    logger.error("Failed to fetch usage stats via API", e);
-                    return { error: `Failed to fetch usage stats: ${e.message}` };
-                }
+            try {
+                const result = await this.callCoordination(`usage?email=${encodeURIComponent(email)}`) as { usageCount?: number };
+                return { email, usageCount: result.usageCount || 0 };
+            } catch (e: any) {
+                logger.error("Failed to fetch usage stats via API", e);
+                // Fall through to Supabase if available
             }
         }
         

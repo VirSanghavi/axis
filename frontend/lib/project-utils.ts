@@ -31,12 +31,12 @@ export async function getOrCreateProjectId(projectName: string, userId: string):
     }
 
     // Create project if it doesn't exist
+    // Note: projects table doesn't have a description column, only: id, name, created_at, owner_id, live_notepad
     const { data: created, error: createError } = await supabase
         .from("projects")
         .insert({
             name: projectName,
-            owner_id: userId,
-            description: `Auto-created project: ${projectName}`
+            owner_id: userId
         })
         .select("id")
         .single();

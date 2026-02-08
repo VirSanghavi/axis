@@ -704,7 +704,7 @@ ${notepad}`;
   // --- Decision & Orchestration ---
   async proposeFileAccess(agentId, filePath, intent, userPrompt) {
     return await this.mutex.runExclusive(async () => {
-      if (this.contextManager.apiUrl && !this.useSupabase) {
+      if (this.contextManager.apiUrl) {
         try {
           const locks = await this.getLocks();
           const existing = locks.find((l) => l.filePath === filePath);
@@ -732,7 +732,8 @@ ${notepad}`;
         } catch (e) {
           logger.error("API lock failed", e);
         }
-      } else if (this.useSupabase && this.supabase && this._projectId) {
+      }
+      if (this.useSupabase && this.supabase && this._projectId) {
         try {
           const { data: existing, error: fetchError } = await this.supabase.from("locks").select("*").eq("project_id", this._projectId).eq("file_path", filePath).maybeSingle();
           if (fetchError) throw fetchError;
@@ -882,14 +883,11 @@ ${conventions}`;
   // --- Billing & Usage ---
   async getSubscriptionStatus(email) {
     if (this.contextManager.apiUrl) {
-      if (!this.useSupabase || !this.supabase) {
-        try {
-          const result = await this.callCoordination(`usage?email=${encodeURIComponent(email)}`);
-          return result;
-        } catch (e) {
-          logger.error("Failed to fetch subscription status via API", e);
-          return { error: `Failed to fetch subscription status: ${e.message}` };
-        }
+      try {
+        const result = await this.callCoordination(`usage?email=${encodeURIComponent(email)}`);
+        return result;
+      } catch (e) {
+        logger.error("Failed to fetch subscription status via API", e);
       }
     }
     if (this.useSupabase && this.supabase) {
@@ -909,14 +907,11 @@ ${conventions}`;
   }
   async getUsageStats(email) {
     if (this.contextManager.apiUrl) {
-      if (!this.useSupabase || !this.supabase) {
-        try {
-          const result = await this.callCoordination(`usage?email=${encodeURIComponent(email)}`);
-          return { email, usageCount: result.usageCount || 0 };
-        } catch (e) {
-          logger.error("Failed to fetch usage stats via API", e);
-          return { error: `Failed to fetch usage stats: ${e.message}` };
-        }
+      try {
+        const result = await this.callCoordination(`usage?email=${encodeURIComponent(email)}`);
+        return { email, usageCount: result.usageCount || 0 };
+      } catch (e) {
+        logger.error("Failed to fetch usage stats via API", e);
       }
     }
     if (this.useSupabase && this.supabase) {
