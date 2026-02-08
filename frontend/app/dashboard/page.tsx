@@ -60,6 +60,29 @@ interface SubscriptionData {
   };
 }
 
+interface LockEventSummary {
+  blocked: number;
+  granted: number;
+  force_unlocked: number;
+  released: number;
+}
+
+interface DailyLockData {
+  day: string;
+  date: string;
+  blocked: number;
+  granted: number;
+}
+
+interface RecentBlocked {
+  id: string;
+  file_path: string;
+  requesting_agent: string;
+  blocking_agent: string;
+  intent: string;
+  created_at: string;
+}
+
 // Bar chart component for usage — fills available space
 function UsageChart({ data }: { data: { day: string; requests: number }[] }) {
   const max = Math.max(...data.map(d => d.requests), 1);
@@ -96,6 +119,52 @@ function UsageChart({ data }: { data: { day: string; requests: number }[] }) {
   );
 }
 
+// Conflicts chart — stacked blocked/granted bars
+function ConflictsChart({ data }: { data: DailyLockData[] }) {
+  const max = Math.max(...data.map(d => d.blocked + d.granted), 1);
+  const getPercent = (val: number) => {
+    if (val === 0) return 0;
+    return Math.max(8, (val / max) * 100);
+  };
+
+  return (
+    <div className="flex-1 flex items-end gap-1.5 min-h-0">
+      {data.map((d, i) => (
+        <div key={i} className="flex-1 flex flex-col items-center gap-1.5 h-full">
+          <div className="flex-1 flex items-end w-full">
+            <div className="w-full flex flex-col items-stretch justify-end h-full gap-px">
+              {d.blocked > 0 && (
+                <motion.div
+                  initial={{ height: 0 }}
+                  animate={{ height: `${getPercent(d.blocked)}%` }}
+                  transition={{ duration: 0.5, delay: i * 0.05 }}
+                  className="w-full bg-red-400 rounded-t"
+                  style={{ minHeight: 4 }}
+                  title={`${d.blocked} blocked`}
+                />
+              )}
+              {d.granted > 0 && (
+                <motion.div
+                  initial={{ height: 0 }}
+                  animate={{ height: `${getPercent(d.granted)}%` }}
+                  transition={{ duration: 0.5, delay: i * 0.05 + 0.1 }}
+                  className="w-full bg-emerald-400 rounded-t"
+                  style={{ minHeight: 4 }}
+                  title={`${d.granted} granted`}
+                />
+              )}
+            </div>
+          </div>
+          <div className="flex flex-col items-center">
+            <span className="text-[9px] font-mono text-neutral-900 font-medium">{d.blocked + d.granted}</span>
+            <span className="text-[8px] text-neutral-400 font-mono">{d.day}</span>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function Dashboard() {
   const [keys, setKeys] = useState<ApiKey[]>([]);
   const [loading, setLoading] = useState(true);
@@ -106,7 +175,10 @@ export default function Dashboard() {
   const [sessions, setSessions] = useState<SessionRecord[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [locks, setLocks] = useState<Lock[]>([]);
-  const [activeTab, setActiveTab] = useState<'keys' | 'usage' | 'sessions' | 'projects'>('keys');
+  const [conflictSummary, setConflictSummary] = useState<LockEventSummary | null>(null);
+  const [conflictDaily, setConflictDaily] = useState<DailyLockData[]>([]);
+  const [recentBlocked, setRecentBlocked] = useState<RecentBlocked[]>([]);
+  const [activeTab, setActiveTab] = useState<'keys' | 'usage' | 'sessions' | 'projects' | 'conflicts'>('keys');
   const [session, setSession] = useState<{ email: string; id: string } | null>(null);
   const [activities, setActivities] = useState<Activity[]>([]);
 
@@ -157,6 +229,7 @@ export default function Dashboard() {
     fetchSessions();
     fetchProjects();
     fetchLocks();
+    fetchConflicts();
   }, []);
 
   async function fetchActivity(userId: string) {
@@ -212,6 +285,20 @@ export default function Dashboard() {
       if (res.ok) {
         const data = await res.json();
         setLocks(data.locks || []);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  async function fetchConflicts() {
+    try {
+      const res = await fetch('/api/v1/lock-events?days=7');
+      if (res.ok) {
+        const data = await res.json();
+        setConflictSummary(data.summary || null);
+        setConflictDaily(data.daily || []);
+        setRecentBlocked(data.recentBlocked || []);
       }
     } catch (e) {
       console.error(e);
@@ -342,6 +429,7 @@ export default function Dashboard() {
                 <button onClick={() => setActiveTab('usage')} className={cn("pb-2 text-[11px] font-mono uppercase tracking-wider", activeTab === 'usage' ? "text-black border-b-2 border-black" : "text-neutral-400")}>usage</button>
                 <button onClick={() => setActiveTab('sessions')} className={cn("pb-2 text-[11px] font-mono uppercase tracking-wider", activeTab === 'sessions' ? "text-black border-b-2 border-black" : "text-neutral-400")}>sessions</button>
                 <button onClick={() => setActiveTab('projects')} className={cn("pb-2 text-[11px] font-mono uppercase tracking-wider", activeTab === 'projects' ? "text-black border-b-2 border-black" : "text-neutral-400")}>projects</button>
+                <button onClick={() => setActiveTab('conflicts')} className={cn("pb-2 text-[11px] font-mono uppercase tracking-wider", activeTab === 'conflicts' ? "text-black border-b-2 border-black" : "text-neutral-400")}>conflicts</button>
               </div>
 
               <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar">
@@ -430,6 +518,72 @@ export default function Dashboard() {
                         </div>
                       ))
                     )}
+                  </div>
+                )}
+
+                {activeTab === 'conflicts' && (
+                  <div className="flex flex-col h-full">
+                    {/* Summary cards */}
+                    <div className="grid grid-cols-4 gap-3 mb-5">
+                      <div className="bg-red-50 border border-red-100 rounded-lg p-3 text-center">
+                        <div className="text-[20px] font-bold text-red-600">{conflictSummary?.blocked || 0}</div>
+                        <div className="text-[9px] font-mono text-red-400 uppercase tracking-wider">blocked</div>
+                      </div>
+                      <div className="bg-emerald-50 border border-emerald-100 rounded-lg p-3 text-center">
+                        <div className="text-[20px] font-bold text-emerald-600">{conflictSummary?.granted || 0}</div>
+                        <div className="text-[9px] font-mono text-emerald-400 uppercase tracking-wider">granted</div>
+                      </div>
+                      <div className="bg-amber-50 border border-amber-100 rounded-lg p-3 text-center">
+                        <div className="text-[20px] font-bold text-amber-600">{conflictSummary?.force_unlocked || 0}</div>
+                        <div className="text-[9px] font-mono text-amber-400 uppercase tracking-wider">forced</div>
+                      </div>
+                      <div className="bg-neutral-50 border border-neutral-200 rounded-lg p-3 text-center">
+                        <div className="text-[20px] font-bold text-neutral-600">{conflictSummary?.released || 0}</div>
+                        <div className="text-[9px] font-mono text-neutral-400 uppercase tracking-wider">released</div>
+                      </div>
+                    </div>
+
+                    {/* Chart */}
+                    {conflictDaily.length > 0 && (
+                      <div className="mb-4">
+                        <div className="flex justify-between items-center mb-2">
+                          <span className="text-[11px] font-mono text-neutral-500 uppercase tracking-widest">last 7 days</span>
+                          <div className="flex gap-3">
+                            <span className="text-[9px] font-mono text-red-400 flex items-center gap-1"><span className="w-2 h-2 bg-red-400 rounded-sm inline-block" /> blocked</span>
+                            <span className="text-[9px] font-mono text-emerald-400 flex items-center gap-1"><span className="w-2 h-2 bg-emerald-400 rounded-sm inline-block" /> granted</span>
+                          </div>
+                        </div>
+                        <div className="h-[140px]">
+                          <ConflictsChart data={conflictDaily} />
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Recent blocked events */}
+                    <div className="mt-2">
+                      <h4 className="text-[10px] font-mono text-neutral-500 uppercase tracking-[0.2em] mb-3">recent conflicts</h4>
+                      {recentBlocked.length === 0 ? (
+                        <div className="text-center py-8 opacity-40 font-mono text-[11px]">no conflicts this week — all clear</div>
+                      ) : (
+                        <div className="space-y-2">
+                          {recentBlocked.map(ev => {
+                            const shortPath = ev.file_path.split('/').slice(-2).join('/');
+                            return (
+                              <div key={ev.id} className="bg-red-50/50 border border-red-100 rounded-lg p-3">
+                                <div className="flex justify-between items-start mb-1">
+                                  <span className="text-[11px] font-mono font-medium text-neutral-800 truncate" title={ev.file_path}>{shortPath}</span>
+                                  <span className="text-[9px] font-mono text-neutral-400 whitespace-nowrap ml-2">{getRelativeTime(ev.created_at)}</span>
+                                </div>
+                                <div className="text-[10px] text-neutral-500">
+                                  <span className="font-medium text-red-500">{ev.requesting_agent}</span> blocked by <span className="font-medium text-neutral-700">{ev.blocking_agent}</span>
+                                </div>
+                                {ev.intent && <div className="text-[9px] text-neutral-400 italic mt-0.5">{ev.intent}</div>}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>

@@ -827,6 +827,7 @@ var NerveCenter = class {
         delete this.state.locks[filePath];
         await this.saveState();
       }
+      this.logLockEvent("FORCE_UNLOCKED", filePath, "admin", void 0, reason);
       await this.appendToNotepad(`
 - [FORCE UNLOCK] ${filePath} unlocked by admin. Reason: ${reason}`);
       return `File ${filePath} has been forcibly unlocked.`;
@@ -849,6 +850,31 @@ ${lockSummary || "No active locks."}
 ## Live Notepad
 ${notepad}`;
   }
+  // --- Lock Event Logging ---
+  async logLockEvent(eventType, filePath, requestingAgent, blockingAgent, intent) {
+    try {
+      if (this.contextManager.apiUrl) {
+        await this.callCoordination("lock-events", "POST", {
+          eventType,
+          filePath,
+          requestingAgent,
+          blockingAgent: blockingAgent || null,
+          intent: intent || null
+        });
+      } else if (this.useSupabase && this.supabase && this._projectId) {
+        await this.supabase.from("lock_events").insert({
+          project_id: this._projectId,
+          event_type: eventType,
+          file_path: filePath,
+          requesting_agent: requestingAgent,
+          blocking_agent: blockingAgent || null,
+          intent: intent || null
+        });
+      }
+    } catch (e) {
+      logger.warn(`[logLockEvent] Failed to log ${eventType} event: ${e.message}`);
+    }
+  }
   // --- Decision & Orchestration ---
   async proposeFileAccess(agentId, filePath, intent, userPrompt) {
     return await this.mutex.runExclusive(async () => {
@@ -864,6 +890,7 @@ ${notepad}`;
           });
           if (result.status === "DENIED") {
             logger.info(`[proposeFileAccess] DENIED by server: ${result.message}`);
+            this.logLockEvent("BLOCKED", filePath, agentId, result.current_lock?.agent_id, intent);
             return {
               status: "REQUIRES_ORCHESTRATION",
               message: result.message || `File '${filePath}' is locked by another agent`,
@@ -871,6 +898,7 @@ ${notepad}`;
             };
           }
           logger.info(`[proposeFileAccess] GRANTED by server`);
+          this.logLockEvent("GRANTED", filePath, agentId, void 0, intent);
           await this.appendToNotepad(`
 - [LOCK] ${agentId} locked ${filePath}
   Intent: ${intent}`);
@@ -900,6 +928,7 @@ ${notepad}`;
           if (error) throw error;
           const row = Array.isArray(data) ? data[0] : data;
           if (row && row.status === "DENIED") {
+            this.logLockEvent("BLOCKED", filePath, agentId, row.owner_id, intent);
             return {
               status: "REQUIRES_ORCHESTRATION",
               message: `Conflict: File '${filePath}' is locked by '${row.owner_id}'`,
@@ -911,6 +940,7 @@ ${notepad}`;
               }
             };
           }
+          this.logLockEvent("GRANTED", filePath, agentId, void 0, intent);
           await this.appendToNotepad(`
 - [LOCK] ${agentId} locked ${filePath}
   Intent: ${intent}`);
@@ -923,6 +953,7 @@ ${notepad}`;
       if (existing) {
         const isStale = Date.now() - existing.timestamp > this.lockTimeout;
         if (!isStale && existing.agentId !== agentId) {
+          this.logLockEvent("BLOCKED", filePath, agentId, existing.agentId, intent);
           return {
             status: "REQUIRES_ORCHESTRATION",
             message: `Conflict: File '${filePath}' is currently locked by '${existing.agentId}'`,
@@ -932,6 +963,7 @@ ${notepad}`;
       }
       this.state.locks[filePath] = { agentId, filePath, intent, userPrompt, timestamp: Date.now() };
       await this.saveState();
+      this.logLockEvent("GRANTED", filePath, agentId, void 0, intent);
       await this.appendToNotepad(`
 - [LOCK] ${agentId} locked ${filePath}
   Intent: ${intent}`);
