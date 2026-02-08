@@ -1,7 +1,7 @@
 'use client';
 
 import { motion, useMotionValue, useSpring, useTransform, AnimatePresence, MotionValue, SpringOptions } from 'framer-motion';
-import { Children, cloneElement, useEffect, useLayoutEffect, useRef, useState, ReactElement } from 'react';
+import { Children, cloneElement, useEffect, useRef, useState, ReactElement } from 'react';
 
 import './Dock.css';
 
@@ -152,44 +152,6 @@ export default function Dock({
     const mouseX = useMotionValue(Infinity);
     const [isMobile, setIsMobile] = useState(false);
     const panelRef = useRef<HTMLDivElement>(null);
-    const leaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-    const activeIndex = items.findIndex(i => i.isActive);
-
-    // Pure motion value for indicator position — no React state, no re-renders
-    const indicatorTarget = useMotionValue(0);
-    const indicatorX = useSpring(indicatorTarget, { stiffness: 500, damping: 30, mass: 0.5 });
-    const indicatorOpacity = useMotionValue(0);
-
-    // Get the center-x of item[i] relative to panel padding edge (where position:absolute left is anchored)
-    const getItemCenterInPanel = (index: number): number | null => {
-        const panel = panelRef.current;
-        if (!panel) return null;
-        const dockItems = panel.querySelectorAll('[data-dock-item]');
-        const itemEl = dockItems[index] as HTMLElement | undefined;
-        if (!itemEl) return null;
-        const panelRect = panel.getBoundingClientRect();
-        const itemRect = itemEl.getBoundingClientRect();
-        const borderLeft = parseInt(getComputedStyle(panel).borderLeftWidth, 10) || 0;
-        return itemRect.left + itemRect.width / 2 - panelRect.left - borderLeft;
-    };
-
-    // Set indicator to active item on mount, when active changes, or when isMobile changes
-    useLayoutEffect(() => {
-        if (isMobile || activeIndex < 0) {
-            indicatorOpacity.set(0);
-            return;
-        }
-        indicatorOpacity.set(1);
-        const updatePos = () => {
-            const x = getItemCenterInPanel(activeIndex);
-            if (x !== null) indicatorTarget.set(x);
-        };
-        updatePos();
-        const id = requestAnimationFrame(updatePos);
-        const id2 = requestAnimationFrame(updatePos); // Double RAF for mobile layout
-        return () => { cancelAnimationFrame(id); cancelAnimationFrame(id2); };
-    }, [activeIndex, indicatorTarget, indicatorOpacity, isMobile]);
 
     useEffect(() => {
         const checkMobile = () => {
@@ -202,54 +164,13 @@ export default function Dock({
 
     const effectiveMagnification = isMobile ? baseItemSize : magnification;
 
-    // On pointer move: find which item the cursor is closest to and move indicator there
     const handlePointerMove = (e: React.PointerEvent) => {
         if (isMobile) return;
-        if (leaveTimeoutRef.current) {
-            clearTimeout(leaveTimeoutRef.current);
-            leaveTimeoutRef.current = null;
-        }
         mouseX.set(e.pageX);
-
-        const panel = panelRef.current;
-        if (!panel) return;
-        const panelRect = panel.getBoundingClientRect();
-        const cursorXInPanel = e.clientX - panelRect.left;
-
-        // Find the closest item center
-        let closestDist = Infinity;
-        let closestX = indicatorTarget.get();
-
-        const dockItems = panel.querySelectorAll('[data-dock-item]');
-        for (let i = 0; i < dockItems.length; i++) {
-            const el = dockItems[i] as HTMLElement;
-            const elRect = el.getBoundingClientRect();
-            const center = elRect.left + elRect.width / 2 - panelRect.left;
-            const dist = Math.abs(cursorXInPanel - center);
-            if (dist < closestDist) {
-                closestDist = dist;
-                closestX = center;
-            }
-        }
-
-        indicatorTarget.set(closestX);
-        indicatorOpacity.set(1);
     };
 
     const handlePointerLeave = () => {
         mouseX.set(Infinity);
-        if (leaveTimeoutRef.current) clearTimeout(leaveTimeoutRef.current);
-
-        if (activeIndex >= 0) {
-            const idx = activeIndex;
-            leaveTimeoutRef.current = setTimeout(() => {
-                leaveTimeoutRef.current = null;
-                const x = getItemCenterInPanel(idx);
-                if (x !== null) indicatorTarget.set(x);
-            }, 120);
-        } else {
-            indicatorOpacity.set(0);
-        }
     };
 
     return (
@@ -278,11 +199,8 @@ export default function Dock({
                     </DockItem>
                 ))}
 
-                {/* Page indicator */}
-                <motion.div
-                    className="dock-active-indicator"
-                    style={{ left: indicatorX, opacity: indicatorOpacity }}
-                />
+                {/* Page indicator — hidden (same as mobile) */}
+                <div className="dock-active-indicator" aria-hidden="true" />
             </motion.div>
         </div>
     );

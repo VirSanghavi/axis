@@ -93,15 +93,7 @@
 }
 
 .dock-active-indicator {
-    position: absolute;
-    bottom: 5px;
-    left: 0;
-    width: 10px;
-    height: 2px;
-    border-radius: 1px;
-    background-color: rgba(255, 255, 255, 0.85);
-    pointer-events: none;
-    transform: translateX(-50%);
+    display: none; /* hidden on all viewports — same simple behavior as mobile */
 }
 
 /* Desktop only: mouse tracking uses transforms — avoid on mobile for responsiveness */
