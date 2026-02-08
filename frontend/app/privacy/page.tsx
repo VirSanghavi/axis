@@ -34,7 +34,7 @@ export default function PrivacyPage() {
                             <ul className="list-disc pl-5 mt-3 space-y-2">
                                 <li>provide and maintain the axis context protocol.</li>
                                 <li>stream high-fidelity context to your connected ai agents.</li>
-                                <li>manage your $5/month pro subscription and api access.</li>
+                                <li>manage your $25/month pro subscription and api access.</li>
                                 <li>improve our context-mapping algorithms and infrastructure.</li>
                             </ul>
                         </section>

@@ -207,7 +207,7 @@ export default function BillingPage() {
                                     disabled={processing}
                                     className="w-full bg-neutral-900 text-white py-2.5 rounded-lg text-[11px] font-medium uppercase tracking-wider hover:bg-black transition-colors disabled:opacity-60"
                                 >
-                                    {processing ? "processing..." : "subscribe — $5/mo"}
+                                    {processing ? "processing..." : "subscribe — $25/mo"}
                                 </button>
                             ) : (
                                 <>
@@ -286,7 +286,7 @@ export default function BillingPage() {
                             </ul>
                             <div className="bg-neutral-50 border border-neutral-200 rounded-lg p-3 mb-4">
                                 <p className="text-[11px] text-neutral-700 font-medium">one-time offer: 50% off for the next 3 months</p>
-                                <p className="text-[10px] text-neutral-400 mt-0.5">$2.50/mo instead of $5/mo. applied automatically.</p>
+                                <p className="text-[10px] text-neutral-400 mt-0.5">$12.50/mo instead of $25/mo. applied automatically.</p>
                             </div>
                             <div className="space-y-2">
                                 <button
@@ -294,7 +294,7 @@ export default function BillingPage() {
                                     disabled={processing}
                                     className="w-full bg-neutral-900 text-white py-2.5 rounded-lg text-[11px] font-medium uppercase tracking-wider hover:bg-black transition-colors disabled:opacity-60"
                                 >
-                                    {processing ? "applying..." : "stay — $2.50/mo"}
+                                    {processing ? "applying..." : "stay — $12.50/mo"}
                                 </button>
                                 <button
                                     onClick={handleFinalCancel}

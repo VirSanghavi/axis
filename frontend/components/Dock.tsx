@@ -159,7 +159,7 @@ export default function Dock({
     // Pure motion value for indicator position — no React state, no re-renders
     const indicatorTarget = useMotionValue(0);
     const indicatorX = useSpring(indicatorTarget, { stiffness: 500, damping: 30, mass: 0.5 });
-    const indicatorOpacity = useMotionValue(activeIndex >= 0 ? 1 : 0);
+    const indicatorOpacity = useMotionValue(0);
 
     // Get the center-x of item[i] relative to panel left (only dock items, exclude indicator)
     const getItemCenterInPanel = (index: number): number | null => {
@@ -173,9 +173,9 @@ export default function Dock({
         return itemRect.left + itemRect.width / 2 - panelRect.left;
     };
 
-    // Set indicator to active item on mount and when active changes
+    // Set indicator to active item on mount, when active changes, or when isMobile changes
     useLayoutEffect(() => {
-        if (activeIndex < 0) {
+        if (isMobile || activeIndex < 0) {
             indicatorOpacity.set(0);
             return;
         }
@@ -185,10 +185,10 @@ export default function Dock({
             if (x !== null) indicatorTarget.set(x);
         };
         updatePos();
-        // Re-read after a frame in case layout hasn't settled (e.g. magnification)
         const id = requestAnimationFrame(updatePos);
-        return () => cancelAnimationFrame(id);
-    }, [activeIndex, indicatorTarget, indicatorOpacity]);
+        const id2 = requestAnimationFrame(updatePos); // Double RAF for mobile layout
+        return () => { cancelAnimationFrame(id); cancelAnimationFrame(id2); };
+    }, [activeIndex, indicatorTarget, indicatorOpacity, isMobile]);
 
     useEffect(() => {
         const checkMobile = () => {

@@ -36,7 +36,7 @@ export default function TermsPage() {
                         <section>
                             <h2 className="text-[11px] font-bold uppercase tracking-[0.2em] text-neutral-900 mb-4">3. subscription and payments</h2>
                             <p>
-                                axis operates on a pro subscription model of $5/month. fees are non-refundable and charged at the beginning of each billing cycle. we do not offer free trials; our approach is focused on zero friction and immediate utility for committed developers.
+                                axis operates on a pro subscription model of $25/month. fees are non-refundable and charged at the beginning of each billing cycle. we do not offer free trials; our approach is focused on zero friction and immediate utility for committed developers.
                             </p>
                         </section>
 

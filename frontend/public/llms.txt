@@ -16,5 +16,5 @@ Axis is a high-performance orchestration layer designed to enable **Parallel Age
 - **[Home Page](https://aicontext.vercel.app/)**: Overview of the distributed orchestration plane.
 - **[About](https://aicontext.vercel.app/about)**: Technical topology, mission statement, and system specifications.
 - **[Documentation](https://aicontext.vercel.app/docs)**: Installation, MCP configuration, and API reference.
-- **[Billing](https://aicontext.vercel.app/billing)**: Tier Pro ($5/mo) subscription benefits for distributed swarms.
+- **[Billing](https://aicontext.vercel.app/billing)**: Tier Pro ($25/mo) subscription benefits for distributed swarms.
 - **[GitHub](https://github.com/VirSanghavi/shared-context)**: Source code and technical artifacts.

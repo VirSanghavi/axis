@@ -32,24 +32,24 @@ export default function Docs() {
             <div className="bg-avalanche" />
             <Navbar />
 
-            <main className="pt-32 pb-20 px-6 relative z-10 flex items-center justify-center">
-                <div className="w-full max-w-5xl bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl p-0 text-neutral-900 overflow-hidden flex flex-col md:flex-row h-[75vh]">
+            <main className="pt-24 md:pt-32 pb-12 md:pb-20 px-4 md:px-6 relative z-10 flex items-center justify-center">
+                <div className="w-full max-w-5xl bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl p-0 text-neutral-900 overflow-hidden flex flex-col md:flex-row h-[80vh] md:h-[75vh]">
 
-                    {/* Sidebar */}
-                    <nav className="w-full md:w-64 bg-neutral-50 border-r border-neutral-200 p-8 flex flex-col" aria-label="Documentation navigation">
-                        <div className="mb-10">
+                    {/* Sidebar — horizontal scroll on mobile, vertical on desktop */}
+                    <nav className="flex-shrink-0 md:w-64 bg-neutral-50 border-b md:border-b-0 md:border-r border-neutral-200 p-4 md:p-8 flex flex-row md:flex-col gap-2 md:gap-0 overflow-x-auto md:overflow-visible" aria-label="Documentation navigation">
+                        <div className="hidden md:block mb-10">
                             <h1 className="text-2xl font-medium tracking-tighter mb-1">documentation</h1>
                             <p className="text-[10px] text-neutral-400 uppercase tracking-[0.2em]">axis v1.0</p>
                         </div>
 
-                        <div className="space-y-1">
+                        <div className="flex md:flex-col gap-2 md:gap-1 md:space-y-0 flex-1 md:flex-initial min-w-0">
                             {tabs.map(tab => (
                                 <button
                                     key={tab.id}
                                     onClick={() => setActiveTab(tab.id)}
                                     aria-selected={activeTab === tab.id}
                                     role="tab"
-                                    className={`w-full text-left px-4 py-3 rounded-lg text-[11px] font-bold tracking-[0.15em] uppercase transition-all ${activeTab === tab.id
+                                    className={`flex-shrink-0 md:w-full text-left px-3 py-2 md:px-4 md:py-3 rounded-lg text-[10px] md:text-[11px] font-bold tracking-[0.15em] uppercase transition-all whitespace-nowrap [touch-action:manipulation] ${activeTab === tab.id
                                         ? 'bg-neutral-900 text-white shadow-lg shadow-neutral-200'
                                         : 'text-neutral-400 hover:text-neutral-900 hover:bg-neutral-100'
                                         }`}
@@ -59,15 +59,18 @@ export default function Docs() {
                             ))}
                         </div>
 
-                        <div className="mt-auto pt-8 border-t border-neutral-200">
+                        <div className="hidden md:block mt-auto pt-8 border-t border-neutral-200">
                             <Link href="/support" className="text-[10px] font-mono text-neutral-400 hover:text-neutral-900 transition-colors uppercase tracking-widest">
                                 need help? support ↗
                             </Link>
                         </div>
+                        <Link href="/support" className="md:hidden flex-shrink-0 text-[10px] font-mono text-neutral-400 hover:text-neutral-900 uppercase tracking-widest self-center ml-2">
+                            support ↗
+                        </Link>
                     </nav>
 
                     {/* Content Area */}
-                    <div className="flex-1 p-10 md:p-14 overflow-y-auto max-h-[85vh]" role="tabpanel">
+                    <div className="flex-1 min-h-0 p-6 md:p-14 overflow-y-auto" role="tabpanel">
                         <motion.div
                             key={activeTab}
                             initial={{ opacity: 0, x: 10 }}
@@ -97,9 +100,9 @@ export default function Docs() {
 
 function Section({ title, subtitle, children }: { title: string; subtitle: string; children: React.ReactNode }) {
     return (
-        <div className="space-y-8">
+        <div className="space-y-6 md:space-y-8">
             <div className="space-y-2">
-                <h2 className="text-4xl font-medium tracking-tighter text-neutral-900">{title}</h2>
+                <h2 className="text-2xl md:text-4xl font-medium tracking-tighter text-neutral-900">{title}</h2>
                 <p className="text-[11px] text-neutral-500 uppercase tracking-[0.2em] font-medium">{subtitle}</p>
             </div>
             <div className="prose prose-neutral max-w-none text-neutral-600 leading-relaxed text-[14px]">
@@ -132,7 +135,7 @@ function CodeBlock({ code, lang = 'bash' }: { code: string; lang?: string }) {
     }, [code]);
 
     return (
-        <div className="rounded-xl overflow-hidden border border-neutral-200 shadow-sm my-6 w-full">
+        <div className="rounded-xl overflow-x-auto overflow-y-hidden border border-neutral-200 shadow-sm my-6 w-full">
             <div className="bg-neutral-50 px-5 py-3 text-[10px] text-neutral-400 font-mono border-b border-neutral-200 flex justify-between items-center tracking-widest uppercase font-bold">
                 <span>{lang}</span>
                 <button

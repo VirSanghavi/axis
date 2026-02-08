@@ -108,7 +108,7 @@ Axis exposes a standardized toolset via the **Model Context Protocol**:
 - **Latency**: Sub-100ms synchronization across globe-spanning agent instances.
 
 ### 5. Tier Pro: Distributed Capabilities
-- **Monthly Subscription**: $5 USD
+- **Monthly Subscription**: $25 USD
 - **Shared Memory Mirroring**: Real-time sync for the Live Notepad across all workers.
 - **Unlimited Worker Nodes**: No cap on the number of concurrent agents managed.
 - **Priority Task Queue**: Sub-second job board responsiveness.
@@ -269,7 +269,7 @@ Axis exposes a standardized toolset via the **Model Context Protocol**:
                             <div className="flex flex-col flex-1 h-full">
                                 <h2 className="text-[14px] font-mono tracking-[0.5em] text-neutral-900 mb-10 font-black uppercase">tier pro</h2>
                                 <div className="flex items-baseline justify-center gap-2 mb-12">
-                                    <span className="text-8xl font-black tracking-tighter text-neutral-900 leading-none">$5</span>
+                                    <span className="text-8xl font-black tracking-tighter text-neutral-900 leading-none">$25</span>
                                     <span className="text-neutral-400 text-sm font-mono tracking-[0.3em]">/month</span>
                                 </div>
                                 <div className="space-y-6 mb-10 text-left px-4">

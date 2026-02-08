@@ -72,7 +72,7 @@ export async function POST(req: NextRequest) {
         // Log activity
         const userId = session.sub || session.id || await resolveUserId(session.email);
         if (userId) {
-            await logActivity(userId as string, "DISCOUNT_APPLIED", "RETENTION_50", { subscription_id: sub.id, coupon: 'CvcPuGJs' });
+            await logActivity(userId as string, "DISCOUNT_APPLIED", "RETENTION_12.5", { subscription_id: sub.id, coupon: 'CvcPuGJs' });
         }
 
         return NextResponse.json({ success: true, message: "Retention offer applied" });

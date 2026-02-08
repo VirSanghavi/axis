@@ -45,12 +45,13 @@
     align-items: center;
     justify-content: center;
     border-radius: 9999px;
-    /* Circular items */
     background-color: transparent;
     cursor: pointer;
     outline: none;
     transition: background-color 0.2s;
     user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
 }
 
 .dock-item:hover {
@@ -102,7 +103,9 @@
     margin-left: -5px;
 }
 
-/* Fix for lag/jitter: ensure mouse tracking doesn't trigger layout shifts */
-.dock-panel * {
-    will-change: transform, width, height;
+/* Desktop only: mouse tracking uses transforms — avoid on mobile for responsiveness */
+@media (min-width: 768px) {
+    .dock-panel * {
+        will-change: transform, width, height;
+    }
 }
