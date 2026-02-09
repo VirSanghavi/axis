@@ -121,10 +121,9 @@ export async function POST(req: NextRequest) {
         // 3. Store in Embeddings Table
         const { error: embedError } = await supabase.from("embeddings").insert({
             project_id: projectId,
-            session_id: sessionRecord.id,
             content: context,
             embedding,
-            metadata: { ...metadata, source: "session_sync" }
+            metadata: { ...metadata, source: "session_sync", session_id: sessionRecord.id }
         });
 
         if (embedError) throw embedError;
