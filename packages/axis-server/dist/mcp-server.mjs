@@ -1119,8 +1119,10 @@ ${notepad}`;
   }
   async getProjectSoul() {
     let soul = "## Project Soul\n";
+    let context = "";
+    let couldNotRead = false;
     try {
-      const context = await this.contextManager.readFile("context.md");
+      context = await this.contextManager.readFile("context.md");
       soul += `
 ### Context
 ${context}`;
@@ -1129,7 +1131,18 @@ ${context}`;
 ### Conventions
 ${conventions}`;
     } catch (_e) {
+      couldNotRead = true;
       soul += "\n(Could not read local context files)";
+    }
+    const unfilled = couldNotRead || /Describe your project|<!-- Describe|This project uses Axis/i.test(context) || context.trim().length < 450 && /# Project Context/i.test(context);
+    if (unfilled) {
+      soul += `
+
+### MANDATORY: Project soul is not yet filled
+You MUST fill the project soul before doing any other work. Do not proceed with other tasks until it is filled.
+- If the codebase has content to search: use \`search_codebase\` to explore, then \`read_context\` and \`update_context\` to populate \`context.md\` and \`conventions.md\`.
+- If there is nothing in the directory to search through: you MUST ask the user what the project is about, then update the soul files with their answer.
+This requirement is mandatory; ignoring it means working without context.`;
     }
     return soul;
   }
@@ -1847,30 +1860,18 @@ async function ensureFileSystem() {
         ["context.md", `# Project Context
 
 ## Overview
-This project uses Axis \u2014 an open-source coordination layer for AI agents.
-Axis provides shared context, atomic file locks, a job board, and real-time
-activity feeds so that multiple agents (Cursor, Claude, Windsurf, Codex, etc.)
-can work on the same codebase without conflicts.
+<!-- Describe your project's goals and what it does. If this file is still just placeholders, agents MUST fill it: use search_codebase to infer content from the repo, or if there is nothing to search, ask the user what the project is about, then update via update_context. Do not proceed with other work until the soul is filled. -->
 
 ## Architecture
-- **MCP Server**: Exposes tools (locks, jobs, context, search) via the Model Context Protocol.
-- **Supabase Backend**: Postgres for state (locks, jobs, profiles); Realtime for live feeds.
-- **Frontend**: Next.js App Router + Tailwind CSS dashboard at useaxis.dev.
-- **npm Packages**: @virsanghavi/axis-server (runtime), @virsanghavi/axis-init (scaffolding).
+<!-- Stack, high-level design, and key systems -->
 
 ## Core Features
-1. File Locking \u2014 atomic, cross-IDE locks with 30-min TTL.
-2. Job Board \u2014 post / claim / complete tasks with priorities and dependencies.
-3. Shared Context \u2014 live notepad visible to every agent in real time.
-4. RAG Search \u2014 vector search over the indexed codebase.
-5. Soul Files \u2014 context.md, conventions.md, activity.md define project identity.
+<!-- List main capabilities of this project -->
 `],
         ["conventions.md", `# Coding Conventions
 
 ## Language & Style
-- TypeScript everywhere (strict mode).
-- Tailwind CSS for styling; no raw CSS unless unavoidable.
-- Functional React components; prefer server components in Next.js App Router.
+<!-- Your language, framework, and styling guidelines -->
 
 ## Agent Behavioral Norms (MANDATORY)
 
@@ -2083,7 +2084,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     },
     {
       name: "get_project_soul",
-      description: "**MANDATORY FIRST CALL**: Returns the project's goals, architecture, conventions, and active state.\n- Combines `context.md`, `conventions.md`, and other core directives into a single prompt.\n- You MUST call this as your FIRST action in every new session or task \u2014 before reading files, before responding to the user, before anything else.\n- Skipping this call means you are working without context and will make wrong decisions.",
+      description: "**MANDATORY FIRST CALL**: Returns the project's goals, architecture, conventions, and active state.\n- Combines `context.md`, `conventions.md`, and other core directives into a single prompt.\n- You MUST call this as your FIRST action in every new session or task \u2014 before reading files, before responding to the user, before anything else.\n- If the project soul is not yet filled, you MUST fill it before any other work: use search_codebase then update_context, or if there is nothing to search, you MUST ask the user what the project is about and then update the soul files. Do not proceed with other tasks until the soul is filled.\n- Skipping this call means you are working without context and will make wrong decisions.",
       inputSchema: { type: "object", properties: {}, required: [] }
     },
     // --- Job Board (Task Orchestration) ---

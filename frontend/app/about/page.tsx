@@ -184,7 +184,7 @@ export default function AboutPage() {
                                 axis exposes tools via the model context protocol (mcp). works with cursor, claude code, windsurf, vs code, and any mcp client. same config in every ide — one api key, one project path.
                             </p>
                             <div className="flex flex-wrap gap-2">
-                                {['cursor', 'claude code', 'windsurf', 'vs code'].map((ide) => (
+                                {['cursor', 'antigravity', 'claude code', 'windsurf', 'vs code', 'replit', 'codex', 'tabnine'].map((ide) => (
                                     <span key={ide} className="px-2.5 py-1 bg-neutral-100 rounded text-[11px] font-mono text-neutral-600">{ide}</span>
                                 ))}
                             </div>
@@ -193,10 +193,10 @@ export default function AboutPage() {
 
                         <div className="pt-4 border-t border-neutral-100 flex justify-between items-center">
                             <p className="text-[10px] font-mono text-neutral-400 uppercase tracking-widest">
-                                axis v1.0.0-prod // sf, ca
+                                axis v1.9.3-prod // sf, ca
                             </p>
                             <div className="flex gap-6">
-                                <a href="https://github.com/VirSanghavi/shared-context" target="_blank" rel="noopener noreferrer" className="text-[10px] font-bold uppercase tracking-widest text-neutral-400 hover:text-neutral-900 transition-colors">github ↗</a>
+                                <a href="https://github.com/VirSanghavi/axis" target="_blank" rel="noopener noreferrer" className="text-[10px] font-bold uppercase tracking-widest text-neutral-400 hover:text-neutral-900 transition-colors">github ↗</a>
                                 <a href="https://twitter.com/VirSanghavi13" target="_blank" rel="noopener noreferrer" className="text-[10px] font-bold uppercase tracking-widest text-neutral-400 hover:text-neutral-900 transition-colors">twitter ↗</a>
                             </div>
                         </div>

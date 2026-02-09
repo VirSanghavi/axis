@@ -1132,13 +1132,29 @@ export class NerveCenter {
 
     async getProjectSoul() {
         let soul = "## Project Soul\n";
+        let context = "";
+        let couldNotRead = false;
         try {
-            const context = await this.contextManager.readFile("context.md");
+            context = await this.contextManager.readFile("context.md");
             soul += `\n### Context\n${context}`;
             const conventions = await this.contextManager.readFile("conventions.md");
             soul += `\n### Conventions\n${conventions}`;
         } catch (_e) {
+            couldNotRead = true;
             soul += "\n(Could not read local context files)";
+        }
+        const unfilled =
+            couldNotRead ||
+            /Describe your project|<!-- Describe|This project uses Axis/i.test(context) ||
+            (context.trim().length < 450 && /# Project Context/i.test(context));
+        if (unfilled) {
+            soul += `
+
+### MANDATORY: Project soul is not yet filled
+You MUST fill the project soul before doing any other work. Do not proceed with other tasks until it is filled.
+- If the codebase has content to search: use \`search_codebase\` to explore, then \`read_context\` and \`update_context\` to populate \`context.md\` and \`conventions.md\`.
+- If there is nothing in the directory to search through: you MUST ask the user what the project is about, then update the soul files with their answer.
+This requirement is mandatory; ignoring it means working without context.`;
         }
         return soul;
     }
