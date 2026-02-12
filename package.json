@@ -7,7 +7,9 @@
     "start:server": "bun run src/local/server.ts",
     "start:api": "bun run src/api/index.ts",
     "cli": "bun run src/local/cli.ts",
-    "dev": "npx tsx watch src/api/index.ts"
+    "dev": "npx tsx watch src/api/index.ts",
+    "test:search": "npx tsx scripts/test-search.ts",
+    "test:search:mcp": "npx tsx scripts/test-mcp-search.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^0.6.0",

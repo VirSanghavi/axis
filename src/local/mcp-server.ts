@@ -623,18 +623,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   logger.info("Tool call", { name });
 
   // ── Subscription gate (runs before ANY tool logic) ──
-  // Re-check if stale (every 30 min)
-  if (isSubscriptionStale()) {
-    await verifySubscription();
-  }
+  // AXIS_SKIP_SUBSCRIPTION_CHECK=1 skips gate (for local/testing only)
+  if (process.env.AXIS_SKIP_SUBSCRIPTION_CHECK === "1") {
+    // Skip — allow tools to run
+  } else {
+    // Re-check if stale (every 30 min)
+    if (isSubscriptionStale()) {
+      await verifySubscription();
+    }
 
-  // Hard block if subscription is invalid — no tool executes
-  if (!subscription.valid) {
-    logger.warn(`[subscription] Blocking tool call "${name}" — subscription invalid`);
-    return {
-      content: [{ type: "text", text: getSubscriptionBlockMessage() }],
-      isError: true,
-    };
+    // Hard block if subscription is invalid — no tool executes
+    if (!subscription.valid) {
+      logger.warn(`[subscription] Blocking tool call "${name}" — subscription invalid`);
+      return {
+        content: [{ type: "text", text: getSubscriptionBlockMessage() }],
+        isError: true,
+      };
+    }
   }
 
   if (name === READ_CONTEXT_TOOL) {

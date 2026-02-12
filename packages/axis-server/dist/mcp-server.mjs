@@ -1283,6 +1283,7 @@ import fs4 from "fs";
 import fs3 from "fs/promises";
 import fsSync2 from "fs";
 import path3 from "path";
+import { spawnSync } from "child_process";
 var SKIP_DIRS = /* @__PURE__ */ new Set([
   "node_modules",
   ".git",
@@ -1443,14 +1444,7 @@ var STOP_WORDS = /* @__PURE__ */ new Set([
   "also",
   "very",
   "really",
-  "quite",
-  "show",
-  "look",
-  "locate",
-  "using",
-  "used",
-  "need",
-  "want"
+  "quite"
 ]);
 var MAX_FILE_SIZE = 256 * 1024;
 var MAX_RESULTS = 20;
@@ -1459,7 +1453,7 @@ var MAX_MATCHES_PER_FILE = 6;
 function extractKeywords(query) {
   const words = query.toLowerCase().replace(/[^\w\s\-_.]/g, " ").split(/\s+/).filter((w) => w.length >= 2);
   const filtered = words.filter((w) => !STOP_WORDS.has(w));
-  const result = filtered.length > 0 ? filtered : words.filter((w) => w.length >= 3);
+  const result = filtered.length > 0 ? filtered : words;
   return [...new Set(result)];
 }
 var PROJECT_ROOT_MARKERS = [
@@ -1477,7 +1471,7 @@ var PROJECT_ROOT_MARKERS = [
   "AGENTS.md"
 ];
 function detectProjectRoot(startDir) {
-  let current = startDir;
+  let current = path3.resolve(startDir);
   const root = path3.parse(current).root;
   while (current !== root) {
     for (const marker of PROJECT_ROOT_MARKERS) {
@@ -1540,8 +1534,7 @@ async function searchFile(filePath, rootDir, keywords) {
   const matchedKeywords = keywords.filter((kw) => contentLower.includes(kw));
   if (matchedKeywords.length === 0) return null;
   const coverage = matchedKeywords.length / keywords.length;
-  if (keywords.length >= 3 && coverage < 0.4) return null;
-  if (keywords.length === 2 && matchedKeywords.length < 1) return null;
+  if (coverage < 0.2) return null;
   const lines = content.split("\n");
   let score = coverage * coverage * matchedKeywords.length;
   const relLower = relativePath.toLowerCase();
@@ -1593,58 +1586,200 @@ async function searchFile(filePath, rootDir, keywords) {
   }
   return { filePath, relativePath, score, matchedKeywords, regions };
 }
+function runRipgrep(pattern, cwd) {
+  const p = (pattern || "").trim();
+  if (!p || p.length > 200) return [];
+  const result = spawnSync("rg", [
+    "--line-number",
+    "--no-heading",
+    "--color",
+    "never",
+    "--max-count",
+    "3",
+    // Max 3 matches per file per pattern
+    "-C",
+    "1",
+    // 1 line context
+    "--ignore-case",
+    "--max-filesize",
+    "256K",
+    "-F",
+    p,
+    // Fixed string (literal) — no regex escaping needed
+    "."
+  ], {
+    cwd,
+    encoding: "utf-8",
+    timeout: 8e3,
+    maxBuffer: 4 * 1024 * 1024
+  });
+  if (result.error || result.status !== 0) {
+    return [];
+  }
+  const hits = [];
+  const lines = (result.stdout || "").trim().split("\n").filter(Boolean);
+  for (const line of lines) {
+    const match = line.match(/^(.+?):(\d+):(.+)$/);
+    if (match) {
+      const [, file, lineNum, content] = match;
+      const relPath = path3.relative(cwd, file);
+      hits.push({
+        file: relPath,
+        line: parseInt(lineNum, 10),
+        content: content.trim(),
+        pattern: p
+      });
+    }
+  }
+  return hits;
+}
+function ripgrepAvailable() {
+  const r = spawnSync("rg", ["--version"], { encoding: "utf-8" });
+  return !r.error && r.status === 0;
+}
+async function warpgrepSearch(query, cwd) {
+  const keywords = extractKeywords(query);
+  if (keywords.length === 0) {
+    const tokens = query.replace(/[^\w\s]/g, " ").split(/\s+/).filter((w) => w.length >= 2);
+    if (tokens.length === 0) return "";
+    keywords.push(tokens[0]);
+  }
+  const allHits = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const kw of keywords.slice(0, 5)) {
+    const hits = runRipgrep(kw, cwd);
+    for (const h of hits) {
+      const key = `${h.file}:${h.line}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        allHits.push(h);
+      }
+    }
+  }
+  if (allHits.length === 0) return "";
+  const byFile = /* @__PURE__ */ new Map();
+  for (const h of allHits) {
+    const list = byFile.get(h.file) || [];
+    if (list.length < MAX_MATCHES_PER_FILE) list.push(h);
+    byFile.set(h.file, list);
+  }
+  const lines = [];
+  lines.push(`Found ${allHits.length} match(es) via ripgrep (keywords: ${keywords.join(", ")})
+`);
+  lines.push("\u2550".repeat(60) + "\n");
+  const sortedFiles = [...byFile.keys()].sort();
+  for (const relPath of sortedFiles.slice(0, MAX_RESULTS)) {
+    const hits = byFile.get(relPath);
+    lines.push(`${relPath}
+`);
+    for (const h of hits) {
+      lines.push(`   ${h.line.toString().padStart(4)}| ${h.content}`);
+    }
+    lines.push("");
+  }
+  return lines.join("\n");
+}
 async function localSearch(query, rootDir) {
+  const q = typeof query === "string" ? query.trim() : "";
   const rawCwd = rootDir || process.cwd();
   const cwd = detectProjectRoot(rawCwd);
-  const keywords = extractKeywords(query);
+  const keywords = extractKeywords(q);
   if (cwd !== rawCwd) {
     logger.info(`[localSearch] Detected project root: ${cwd} (CWD was: ${rawCwd})`);
   }
-  if (keywords.length === 0) {
+  const hasTerms = keywords.length > 0 || q.replace(/[^\w\s]/g, " ").split(/\s+/).some((w) => w.length >= 2);
+  if (!hasTerms) {
     return "Could not extract meaningful search terms from the query. Try being more specific (e.g. 'authentication middleware' instead of 'how does it work').";
   }
-  logger.info(`[localSearch] Query: "${query}" \u2192 Keywords: [${keywords.join(", ")}] in ${cwd}`);
-  const files = await walkDir(cwd);
-  logger.info(`[localSearch] Scanning ${files.length} files`);
-  const BATCH_SIZE = 50;
-  const allMatches = [];
-  for (let i = 0; i < files.length; i += BATCH_SIZE) {
-    const batch = files.slice(i, i + BATCH_SIZE);
-    const results = await Promise.all(
-      batch.map((f) => searchFile(f, cwd, keywords))
-    );
-    for (const r of results) {
-      if (r) allMatches.push(r);
-    }
-  }
-  allMatches.sort((a, b) => b.score - a.score);
-  const topMatches = allMatches.slice(0, MAX_RESULTS);
-  if (topMatches.length === 0) {
-    return `No matches found for: "${query}" (searched ${files.length} files for keywords: ${keywords.join(", ")}).
-Try different terms or check if the code exists in this project.`;
-  }
-  let output = `Found ${allMatches.length} matching file${allMatches.length === 1 ? "" : "s"} (showing top ${topMatches.length}, searched ${files.length} files)
-`;
-  output += `Keywords: ${keywords.join(", ")}
-`;
-  output += "\u2550".repeat(60) + "\n\n";
-  for (const match of topMatches) {
-    output += `\u{1F4C4} ${match.relativePath}
-`;
-    output += `   Keywords matched: ${match.matchedKeywords.join(", ")} | Score: ${match.score.toFixed(1)}
-`;
-    if (match.regions.length > 0) {
-      output += "   \u2500\u2500\u2500\u2500\u2500\n";
-      for (const region of match.regions) {
-        output += region.lines.split("\n").map((l) => `   ${l}`).join("\n") + "\n";
-        if (region !== match.regions[match.regions.length - 1]) {
-          output += "   ...\n";
+  logger.info(`[localSearch] Query: "${q}" \u2192 Keywords: [${keywords.join(", ")}] in ${cwd}`);
+  const useRipgrep = ripgrepAvailable();
+  const [rgResults, keyResults] = await Promise.all([
+    useRipgrep ? warpgrepSearch(q, cwd) : Promise.resolve(""),
+    (async () => {
+      const kws2 = keywords.length > 0 ? keywords : q.replace(/[^\w\s]/g, " ").split(/\s+/).filter((w) => w.length >= 2).slice(0, 5);
+      if (kws2.length === 0) return "";
+      const files = await walkDir(cwd);
+      logger.info(`[localSearch] Scanning ${files.length} files (keyword search)`);
+      const BATCH_SIZE = 50;
+      const allMatches = [];
+      for (let i = 0; i < files.length; i += BATCH_SIZE) {
+        const batch = files.slice(i, i + BATCH_SIZE);
+        const results = await Promise.all(batch.map((f) => searchFile(f, cwd, kws2)));
+        for (const r of results) {
+          if (r) allMatches.push(r);
         }
       }
-    }
-    output += "\n";
+      allMatches.sort((a, b) => b.score - a.score);
+      const topMatches = allMatches.slice(0, MAX_RESULTS);
+      if (topMatches.length === 0) return "";
+      let out = `Found ${allMatches.length} matching file${allMatches.length === 1 ? "" : "s"} (showing top ${topMatches.length}, searched ${files.length} files)
+`;
+      out += `Keywords: ${kws2.join(", ")}
+`;
+      out += "\u2550".repeat(60) + "\n\n";
+      for (const match of topMatches) {
+        out += `${match.relativePath}
+`;
+        out += `   Keywords matched: ${match.matchedKeywords.join(", ")} | Score: ${match.score.toFixed(1)}
+`;
+        if (match.regions.length > 0) {
+          out += "   \u2500\u2500\u2500\u2500\u2500\n";
+          for (const region of match.regions) {
+            out += region.lines.split("\n").map((l) => `   ${l}`).join("\n") + "\n";
+            if (region !== match.regions[match.regions.length - 1]) out += "   ...\n";
+          }
+        }
+        out += "\n";
+      }
+      return out;
+    })()
+  ]);
+  const rgHasResults = rgResults && !rgResults.startsWith("Found 0");
+  const keyHasResults = keyResults && keyResults.length > 50;
+  if (rgHasResults && keyHasResults) {
+    return rgResults + "\n\n--- Also from keyword search ---\n\n" + keyResults;
   }
-  return output;
+  if (rgHasResults) return rgResults;
+  if (keyHasResults) return keyResults;
+  const kws = keywords.length > 0 ? keywords : q.replace(/[^\w\s]/g, " ").split(/\s+/).filter((w) => w.length >= 2).slice(0, 5);
+  if (kws.length >= 3) {
+    const fallbackKws = kws.slice(0, 2);
+    const files = await walkDir(cwd);
+    const fallbackMatches = [];
+    for (let i = 0; i < files.length; i += 50) {
+      const batch = files.slice(i, i + 50);
+      const results = await Promise.all(batch.map((f) => searchFile(f, cwd, fallbackKws)));
+      for (const r of results) {
+        if (r) fallbackMatches.push(r);
+      }
+    }
+    if (fallbackMatches.length > 0) {
+      fallbackMatches.sort((a, b) => b.score - a.score);
+      const top = fallbackMatches.slice(0, MAX_RESULTS);
+      let out = `Found ${fallbackMatches.length} matching file${fallbackMatches.length === 1 ? "" : "s"} (fallback: fewer keywords, showing top ${top.length})
+`;
+      out += `Keywords: ${fallbackKws.join(", ")} (original: ${kws.join(", ")})
+`;
+      out += "\u2550".repeat(60) + "\n\n";
+      for (const match of top) {
+        out += `\u{1F4C4} ${match.relativePath}
+`;
+        out += `   Keywords matched: ${match.matchedKeywords.join(", ")} | Score: ${match.score.toFixed(1)}
+`;
+        if (match.regions.length > 0) {
+          out += "   \u2500\u2500\u2500\u2500\u2500\n";
+          for (const region of match.regions) {
+            out += region.lines.split("\n").map((l) => `   ${l}`).join("\n") + "\n";
+            if (region !== match.regions[match.regions.length - 1]) out += "   ...\n";
+          }
+        }
+        out += "\n";
+      }
+      return out;
+    }
+  }
+  return `No matches found for: "${q}" (searched for: ${kws.join(", ") || "query terms"}).
+Try different terms or check if the code exists in this project.`;
 }
 
 // ../../src/local/mcp-server.ts
@@ -2170,15 +2305,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
   logger.info("Tool call", { name });
-  if (isSubscriptionStale()) {
-    await verifySubscription();
-  }
-  if (!subscription.valid) {
-    logger.warn(`[subscription] Blocking tool call "${name}" \u2014 subscription invalid`);
-    return {
-      content: [{ type: "text", text: getSubscriptionBlockMessage() }],
-      isError: true
-    };
+  if (process.env.AXIS_SKIP_SUBSCRIPTION_CHECK === "1") {
+  } else {
+    if (isSubscriptionStale()) {
+      await verifySubscription();
+    }
+    if (!subscription.valid) {
+      logger.warn(`[subscription] Blocking tool call "${name}" \u2014 subscription invalid`);
+      return {
+        content: [{ type: "text", text: getSubscriptionBlockMessage() }],
+        isError: true
+      };
+    }
   }
   if (name === READ_CONTEXT_TOOL) {
     const filename = String(args?.filename);

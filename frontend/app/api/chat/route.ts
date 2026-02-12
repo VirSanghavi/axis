@@ -54,6 +54,10 @@ export async function POST(req: NextRequest) {
 
         query = query.trim().slice(0, 500);
 
+        // Detect avalanche/background questions and add special instruction
+        const isAvalancheQuestion = /\b(avalanche|background)\b/i.test(query) &&
+            /\b(why|what|mean|meaning|symbolize|represent|depict|about)\b/i.test(query);
+
         let contextContent = "";
 
         // 1. Try Vector Search
@@ -101,6 +105,8 @@ YOU MUST:
 2. if context is missing, use your base knowledge about axis to provide a smart, helpful response.
 3. maintain a professional, technical, and slightly "machine-mode" aesthetic.
 4. use markdown formatting (bolding, code blocks) for clarity.
+${isAvalancheQuestion ? `
+5. **AVALANCHE BACKGROUND**: If the user asks about the avalanche background, explain that it metaphorically depicts the **power and momentum of multi-agent processing** — many agents working in parallel, each contributing to a cascading wave of output, like an avalanche gathering force. It represents the idea that coordinated parallel agents can achieve exponential impact rather than linear, single-agent progress.` : ""}
 
 CURRENT CONTEXT:
 ${contextContent}`

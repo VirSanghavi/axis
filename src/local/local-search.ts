@@ -1,6 +1,7 @@
 import fs from "fs/promises";
 import fsSync from "fs";
 import path from "path";
+import { spawnSync } from "child_process";
 import { logger } from "../utils/logger.js";
 
 // ── Defaults ──
@@ -49,7 +50,6 @@ const STOP_WORDS = new Set([
   "and", "but", "or", "nor", "not", "so", "if", "then",
   "all", "each", "every", "both", "few", "more", "most", "some", "any",
   "there", "here", "just", "also", "very", "really", "quite",
-  "show", "look", "locate", "using", "used", "need", "want",
 ]);
 
 const MAX_FILE_SIZE = 256 * 1024; // 256 KB
@@ -68,10 +68,10 @@ function extractKeywords(query: string): string[] {
 
   const filtered = words.filter(w => !STOP_WORDS.has(w));
 
-  // If stop-word filtering removed everything, fall back to all words >= 3 chars
+  // If stop-word filtering removed everything, fall back to all words >= 2 chars
   const result = filtered.length > 0
     ? filtered
-    : words.filter(w => w.length >= 3);
+    : words;
 
   // Deduplicate
   return [...new Set(result)];
@@ -86,25 +86,24 @@ const PROJECT_ROOT_MARKERS = [
 ];
 
 function detectProjectRoot(startDir: string): string {
-  let current = startDir;
+  let current = path.resolve(startDir);
   const root = path.parse(current).root;
 
-  // Walk up looking for project markers
+  // Walk up: return FIRST directory with a project marker (nearest to startDir)
   while (current !== root) {
     for (const marker of PROJECT_ROOT_MARKERS) {
       try {
         fsSync.accessSync(path.join(current, marker));
-        return current; // Found a project root marker
+        return current;
       } catch {
-        // Not here, keep going
+        // Not here
       }
     }
     const parent = path.dirname(current);
-    if (parent === current) break; // Reached filesystem root
+    if (parent === current) break;
     current = parent;
   }
 
-  // No marker found — fall back to original directory
   return startDir;
 }
 
@@ -185,13 +184,10 @@ async function searchFile(
   const matchedKeywords = keywords.filter(kw => contentLower.includes(kw));
   if (matchedKeywords.length === 0) return null;
 
-  // ── Relevance gate: require minimum keyword coverage ──
-  // With 3+ keywords, require at least 40% keyword match (rounds up).
-  // This prevents files matching only one generic word (e.g. "handler")
-  // from appearing in results for "authentication login route handler".
+  // ── Relevance gate: require at least one keyword match ──
+  // WarpGrep-style: prefer recall over precision; let the agent filter.
   const coverage = matchedKeywords.length / keywords.length;
-  if (keywords.length >= 3 && coverage < 0.4) return null;
-  if (keywords.length === 2 && matchedKeywords.length < 1) return null;
+  if (coverage < 0.2) return null; // Need at least 1 of 5, or 1 of 3, etc.
 
   const lines = content.split("\n");
 
@@ -268,6 +264,114 @@ async function searchFile(
   return { filePath, relativePath, score, matchedKeywords, regions };
 }
 
+// ── WarpGrep-style: Ripgrep-based parallel search ──
+
+interface RipgrepHit {
+  file: string;
+  line: number;
+  content: string;
+  pattern: string;
+}
+
+function runRipgrep(pattern: string, cwd: string): RipgrepHit[] {
+  const p = (pattern || "").trim();
+  if (!p || p.length > 200) return [];
+  const result = spawnSync("rg", [
+    "--line-number",
+    "--no-heading",
+    "--color", "never",
+    "--max-count", "3",  // Max 3 matches per file per pattern
+    "-C", "1",           // 1 line context
+    "--ignore-case",
+    "--max-filesize", "256K",
+    "-F", p,             // Fixed string (literal) — no regex escaping needed
+    ".",
+  ], {
+    cwd,
+    encoding: "utf-8",
+    timeout: 8000,
+    maxBuffer: 4 * 1024 * 1024,
+  });
+
+  if (result.error || result.status !== 0) {
+    return [];
+  }
+
+  const hits: RipgrepHit[] = [];
+  const lines = (result.stdout || "").trim().split("\n").filter(Boolean);
+  for (const line of lines) {
+    const match = line.match(/^(.+?):(\d+):(.+)$/);
+    if (match) {
+      const [, file, lineNum, content] = match;
+      const relPath = path.relative(cwd, file);
+      hits.push({
+        file: relPath,
+        line: parseInt(lineNum!, 10),
+        content: content!.trim(),
+        pattern: p,
+      });
+    }
+  }
+  return hits;
+}
+
+function ripgrepAvailable(): boolean {
+  const r = spawnSync("rg", ["--version"], { encoding: "utf-8" });
+  return !r.error && r.status === 0;
+}
+
+async function warpgrepSearch(query: string, cwd: string): Promise<string> {
+  const keywords = extractKeywords(query);
+  if (keywords.length === 0) {
+    // Fallback: use first 2+ char token as pattern
+    const tokens = query.replace(/[^\w\s]/g, " ").split(/\s+/).filter(w => w.length >= 2);
+    if (tokens.length === 0) return "";
+    keywords.push(tokens[0]!);
+  }
+
+  // Run ripgrep in parallel for each keyword (WarpGrep-style: parallel multi-pattern)
+  const allHits: RipgrepHit[] = [];
+  const seen = new Set<string>();
+
+  for (const kw of keywords.slice(0, 5)) {
+    const hits = runRipgrep(kw, cwd);
+    for (const h of hits) {
+      const key = `${h.file}:${h.line}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        allHits.push(h);
+      }
+    }
+  }
+
+  if (allHits.length === 0) return "";
+
+  // Group by file, limit per file
+  const byFile = new Map<string, RipgrepHit[]>();
+  for (const h of allHits) {
+    const list = byFile.get(h.file) || [];
+    if (list.length < MAX_MATCHES_PER_FILE) list.push(h);
+    byFile.set(h.file, list);
+  }
+
+  // Format: file:line:content (WarpGrep-style snippet return)
+  const lines: string[] = [];
+  lines.push(`Found ${allHits.length} match(es) via ripgrep (keywords: ${keywords.join(", ")})\n`);
+  lines.push("═".repeat(60) + "\n");
+
+  const sortedFiles = [...byFile.keys()].sort();
+  for (const relPath of sortedFiles.slice(0, MAX_RESULTS)) {
+    const hits = byFile.get(relPath)!;
+    lines.push(`${relPath}\n`);
+    for (const h of hits) {
+      lines.push(`   ${h.line.toString().padStart(4)}| ${h.content}`);
+    }
+    lines.push("");
+  }
+
+  return lines.join("\n");
+}
+
 // ── Public API ──
 
 export interface LocalSearchResult {
@@ -278,66 +382,108 @@ export interface LocalSearchResult {
 }
 
 export async function localSearch(query: string, rootDir?: string): Promise<string> {
+  const q = typeof query === "string" ? query.trim() : "";
   const rawCwd = rootDir || process.cwd();
   const cwd = detectProjectRoot(rawCwd);
-  const keywords = extractKeywords(query);
+  const keywords = extractKeywords(q);
 
   if (cwd !== rawCwd) {
     logger.info(`[localSearch] Detected project root: ${cwd} (CWD was: ${rawCwd})`);
   }
 
-  if (keywords.length === 0) {
+  // WarpGrep-style: require at least one searchable term
+  const hasTerms = keywords.length > 0 ||
+    q.replace(/[^\w\s]/g, " ").split(/\s+/).some(w => w.length >= 2);
+  if (!hasTerms) {
     return "Could not extract meaningful search terms from the query. Try being more specific (e.g. 'authentication middleware' instead of 'how does it work').";
   }
 
-  logger.info(`[localSearch] Query: "${query}" → Keywords: [${keywords.join(", ")}] in ${cwd}`);
+  logger.info(`[localSearch] Query: "${q}" → Keywords: [${keywords.join(", ")}] in ${cwd}`);
 
-  const files = await walkDir(cwd);
-  logger.info(`[localSearch] Scanning ${files.length} files`);
-
-  // Search all files in parallel (batched to avoid fd exhaustion)
-  const BATCH_SIZE = 50;
-  const allMatches: SearchMatch[] = [];
-
-  for (let i = 0; i < files.length; i += BATCH_SIZE) {
-    const batch = files.slice(i, i + BATCH_SIZE);
-    const results = await Promise.all(
-      batch.map(f => searchFile(f, cwd, keywords))
-    );
-    for (const r of results) {
-      if (r) allMatches.push(r);
-    }
-  }
-
-  // Sort by score descending
-  allMatches.sort((a, b) => b.score - a.score);
-
-  const topMatches = allMatches.slice(0, MAX_RESULTS);
-
-  if (topMatches.length === 0) {
-    return `No matches found for: "${query}" (searched ${files.length} files for keywords: ${keywords.join(", ")}).\nTry different terms or check if the code exists in this project.`;
-  }
-
-  // Format output
-  let output = `Found ${allMatches.length} matching file${allMatches.length === 1 ? "" : "s"} (showing top ${topMatches.length}, searched ${files.length} files)\n`;
-  output += `Keywords: ${keywords.join(", ")}\n`;
-  output += "═".repeat(60) + "\n\n";
-
-  for (const match of topMatches) {
-    output += `📄 ${match.relativePath}\n`;
-    output += `   Keywords matched: ${match.matchedKeywords.join(", ")} | Score: ${match.score.toFixed(1)}\n`;
-
-    if (match.regions.length > 0) {
-      output += "   ─────\n";
-      for (const region of match.regions) {
-        output += region.lines.split("\n").map(l => `   ${l}`).join("\n") + "\n";
-        if (region !== match.regions[match.regions.length - 1]) {
-          output += "   ...\n";
+  // WarpGrep-style: run ripgrep + keyword search in parallel
+  const useRipgrep = ripgrepAvailable();
+  const [rgResults, keyResults] = await Promise.all([
+    useRipgrep ? warpgrepSearch(q, cwd) : Promise.resolve(""),
+    (async () => {
+      const kws = keywords.length > 0 ? keywords : q.replace(/[^\w\s]/g, " ").split(/\s+/).filter(w => w.length >= 2).slice(0, 5);
+      if (kws.length === 0) return "";
+      const files = await walkDir(cwd);
+      logger.info(`[localSearch] Scanning ${files.length} files (keyword search)`);
+      const BATCH_SIZE = 50;
+      const allMatches: SearchMatch[] = [];
+      for (let i = 0; i < files.length; i += BATCH_SIZE) {
+        const batch = files.slice(i, i + BATCH_SIZE);
+        const results = await Promise.all(batch.map(f => searchFile(f, cwd, kws)));
+        for (const r of results) {
+          if (r) allMatches.push(r);
         }
       }
+      allMatches.sort((a, b) => b.score - a.score);
+      const topMatches = allMatches.slice(0, MAX_RESULTS);
+      if (topMatches.length === 0) return "";
+      let out = `Found ${allMatches.length} matching file${allMatches.length === 1 ? "" : "s"} (showing top ${topMatches.length}, searched ${files.length} files)\n`;
+      out += `Keywords: ${kws.join(", ")}\n`;
+      out += "═".repeat(60) + "\n\n";
+      for (const match of topMatches) {
+        out += `${match.relativePath}\n`;
+        out += `   Keywords matched: ${match.matchedKeywords.join(", ")} | Score: ${match.score.toFixed(1)}\n`;
+        if (match.regions.length > 0) {
+          out += "   ─────\n";
+          for (const region of match.regions) {
+            out += region.lines.split("\n").map(l => `   ${l}`).join("\n") + "\n";
+            if (region !== match.regions[match.regions.length - 1]) out += "   ...\n";
+          }
+        }
+        out += "\n";
+      }
+      return out;
+    })(),
+  ]);
+
+  // Prefer ripgrep if it found results; otherwise keyword; merge if both have unique value
+  const rgHasResults = rgResults && !rgResults.startsWith("Found 0");
+  const keyHasResults = keyResults && keyResults.length > 50;
+
+  if (rgHasResults && keyHasResults) {
+    return rgResults + "\n\n--- Also from keyword search ---\n\n" + keyResults;
+  }
+  if (rgHasResults) return rgResults;
+  if (keyHasResults) return keyResults;
+
+  // Fallback: when 3+ keywords yield nothing, retry with fewer (WarpGrep-style refinement)
+  const kws = keywords.length > 0 ? keywords : q.replace(/[^\w\s]/g, " ").split(/\s+/).filter(w => w.length >= 2).slice(0, 5);
+  if (kws.length >= 3) {
+    const fallbackKws = kws.slice(0, 2);
+    const files = await walkDir(cwd);
+    const fallbackMatches: SearchMatch[] = [];
+    for (let i = 0; i < files.length; i += 50) {
+      const batch = files.slice(i, i + 50);
+      const results = await Promise.all(batch.map(f => searchFile(f, cwd, fallbackKws)));
+      for (const r of results) {
+        if (r) fallbackMatches.push(r);
+      }
     }
-    output += "\n";
+    if (fallbackMatches.length > 0) {
+      fallbackMatches.sort((a, b) => b.score - a.score);
+      const top = fallbackMatches.slice(0, MAX_RESULTS);
+      let out = `Found ${fallbackMatches.length} matching file${fallbackMatches.length === 1 ? "" : "s"} (fallback: fewer keywords, showing top ${top.length})\n`;
+      out += `Keywords: ${fallbackKws.join(", ")} (original: ${kws.join(", ")})\n`;
+      out += "═".repeat(60) + "\n\n";
+      for (const match of top) {
+        out += `📄 ${match.relativePath}\n`;
+        out += `   Keywords matched: ${match.matchedKeywords.join(", ")} | Score: ${match.score.toFixed(1)}\n`;
+        if (match.regions.length > 0) {
+          out += "   ─────\n";
+          for (const region of match.regions) {
+            out += region.lines.split("\n").map(l => `   ${l}`).join("\n") + "\n";
+            if (region !== match.regions[match.regions.length - 1]) out += "   ...\n";
+          }
+        }
+        out += "\n";
+      }
+      return out;
+    }
   }
 
-  return output;
+  return `No matches found for: "${q}" (searched for: ${kws.join(", ") || "query terms"}).\nTry different terms or check if the code exists in this project.`;
 }
