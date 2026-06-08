@@ -116,7 +116,9 @@ The server exposes these tools to agents (23 total in the current source).
 - `cancel_job` — withdraw a posted job
 - `propose_file_access` — pessimistically lock files before editing
 - `list_locks` — inspect active file ownership and intent
+- `verify_file_lock` — confirm a locked file wasn't changed under you before overwriting (tamper check)
 - `release_file_access` — release an owned lock early
+- `list_agents` — see which agents are active or idle on the project (visible before jobs are posted)
 - `switch_project` — rebind a live MCP session to another workspace without reconnecting
 - `force_unlock` — admin override for stale locks from crashed agents
 - `update_shared_context` — append to the Live Notepad
