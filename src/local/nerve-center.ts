@@ -5,6 +5,8 @@ import { existsSync } from "fs";
 import path from "path";
 import { logger } from "../utils/logger.js";
 import { deriveProjectName, projectStateFilePath } from "./project-identity.js";
+import { buildIntegrityReport, hashFileIfExists } from "./lock-integrity.js";
+import { findReclaimable } from "./job-hygiene.js";
 
 // Interfaces
 interface FileLock {
@@ -13,6 +15,8 @@ interface FileLock {
     intent: string;
     userPrompt: string;
     timestamp: number;
+    /** Content fingerprint captured when the lock was granted (tamper detection). */
+    contentHash?: string;
 }
 
 interface Job {
@@ -729,6 +733,25 @@ export class NerveCenter {
             // --- Path 3: Local-only fallback ---
             const priorities = ["critical", "high", "medium", "low"];
             const allJobs = Object.values(this.state.jobs);
+
+            // Reclaim abandoned jobs: anything stuck in_progress past the lock
+            // timeout (its agent is effectively gone) returns to the board so it
+            // stops silently blocking work.
+            const reclaimable = findReclaimable(
+                allJobs.map((job) => ({ id: job.id, status: job.status, updatedAt: job.updatedAt })),
+                Date.now(),
+                this.lockTimeout
+            );
+            for (const stale of reclaimable) {
+                const job = this.state.jobs[stale.id];
+                if (job) {
+                    job.status = "todo";
+                    job.assignedTo = undefined;
+                    job.updatedAt = Date.now();
+                    await this.appendToNotepad(`\n- [JOB RECLAIMED] '${job.title}' was abandoned in_progress; returned to the board.`);
+                }
+            }
+
             const jobsById = new Map(allJobs.map((job) => [job.id, job]));
             const availableJobs = allJobs
                 .filter((job) => job.status === "todo")
@@ -1143,6 +1166,20 @@ export class NerveCenter {
         return null;
     }
 
+    /**
+     * Build an actionable denial message: who holds the lock, why, and how to
+     * recover. Vague "locked by another agent" errors leave agents stuck; this
+     * tells them what to do next.
+     */
+    private orchestrationMessage(normalizedPath: string, ownerId?: string, intent?: string): string {
+        const mins = Math.round(this.lockTimeout / 60000);
+        const owner = ownerId || "another agent";
+        const why = intent ? ` for: "${intent}"` : "";
+        return `File '${normalizedPath}' is locked by '${owner}'${why}. `
+            + `Pick a different file or job, or coordinate via update_shared_context. `
+            + `The lock auto-expires after ${mins} min; use force_unlock only if '${owner}' has crashed.`;
+    }
+
     async proposeFileAccess(agentId: string, filePath: string, intent: string, userPrompt: string) {
         return await this.mutex.runExclusive(async () => {
             logger.info(`[proposeFileAccess] Starting - agentId: ${agentId}, filePath: ${filePath}`);
@@ -1178,14 +1215,19 @@ export class NerveCenter {
                         await this.logLockEvent("BLOCKED", normalizedPath, agentId, result.current_lock?.agent_id, intent);
                         return {
                             status: "REQUIRES_ORCHESTRATION",
-                            message: result.message || `File '${normalizedPath}' is locked by another agent`,
+                            message: result.message
+                                || this.orchestrationMessage(normalizedPath, result.current_lock?.agent_id, result.current_lock?.intent),
                             currentLock: result.current_lock
                         };
                     }
 
                     if (result.status === "REJECTED") {
                         logger.warn(`[proposeFileAccess] REJECTED by server: ${result.message}`);
-                        return { status: "REJECTED", message: result.message };
+                        return {
+                            status: "REJECTED",
+                            message: result.message
+                                || `Lock rejected for '${normalizedPath}'. Lock an individual file (not a directory) inside the project root.`
+                        };
                     }
 
                     logger.info(`[proposeFileAccess] GRANTED by server`);
@@ -1210,7 +1252,7 @@ export class NerveCenter {
 
                         return {
                             status: "REQUIRES_ORCHESTRATION",
-                            message: `File '${normalizedPath}' is locked by another agent`,
+                            message: this.orchestrationMessage(normalizedPath, blockingAgent),
                         };
                     }
                     logger.error(`[proposeFileAccess] API lock failed: ${e.message}`, e);
@@ -1239,7 +1281,7 @@ export class NerveCenter {
                         await this.logLockEvent("BLOCKED", normalizedPath, agentId, row.owner_id, intent);
                         return {
                             status: "REQUIRES_ORCHESTRATION",
-                            message: `Conflict: File '${normalizedPath}' is locked by '${row.owner_id}'`,
+                            message: this.orchestrationMessage(normalizedPath, row.owner_id, row.intent),
                             currentLock: {
                                 agentId: row.owner_id,
                                 filePath: normalizedPath,
@@ -1265,16 +1307,69 @@ export class NerveCenter {
                 await this.logLockEvent("BLOCKED", normalizedPath, agentId, conflict.agentId, intent);
                 return {
                     status: "REQUIRES_ORCHESTRATION",
-                    message: `Conflict: File '${normalizedPath}' is locked by '${conflict.agentId}'`,
+                    message: this.orchestrationMessage(normalizedPath, conflict.agentId, conflict.intent),
                     currentLock: conflict
                 };
             }
 
-            this.state.locks[normalizedPath] = { agentId, filePath: normalizedPath, intent, userPrompt, timestamp: Date.now() };
+            const contentHash = await hashFileIfExists(path.resolve(process.cwd(), filePath));
+            this.state.locks[normalizedPath] = { agentId, filePath: normalizedPath, intent, userPrompt, timestamp: Date.now(), contentHash };
             await this.saveState();
             await this.logLockEvent("GRANTED", normalizedPath, agentId, undefined, intent);
             await this.appendToNotepad(`\n- [LOCK] ${agentId} locked ${normalizedPath}\n  Intent: ${intent}`);
             return { status: "GRANTED", message: `Access granted for ${normalizedPath}` };
+        });
+    }
+
+    /**
+     * Tamper check for a held lock: compare the file's current content against
+     * the fingerprint captured when the lock was granted. Lets a holder confirm
+     * nobody rewrote the file out from under their (advisory) lock before they
+     * overwrite it — the realistic defense against the "edited, then clobbered"
+     * collision. Remote-backed locks without a stored hash return "unknown".
+     */
+    async verifyFileAccess(agentId: string, filePath: string) {
+        return await this.mutex.runExclusive(async () => {
+            const normalizedPath = NerveCenter.normalizeLockPath(filePath);
+            const lock = this.state.locks[normalizedPath]
+                || (await this.listLocks()).find(
+                    (l) => NerveCenter.normalizeLockPath(l.filePath) === normalizedPath
+                );
+
+            if (!lock) {
+                return {
+                    status: "NO_LOCK",
+                    message: `No active lock for '${normalizedPath}'. Acquire one with propose_file_access first.`,
+                };
+            }
+
+            const currentHash = await hashFileIfExists(path.resolve(process.cwd(), filePath));
+            const report = buildIntegrityReport(lock.contentHash, currentHash, lock.contentHash !== undefined);
+            const heldByOther = lock.agentId !== agentId;
+
+            if (report.tampered) {
+                return {
+                    status: "CONFLICT",
+                    verdict: report.verdict,
+                    heldBy: lock.agentId,
+                    message: `File '${normalizedPath}' was ${report.verdict} since the lock was granted${heldByOther ? ` (lock held by '${lock.agentId}')` : ""}. Re-read it before writing to avoid clobbering concurrent changes.`,
+                };
+            }
+
+            if (report.verdict === "unknown") {
+                return {
+                    status: "UNKNOWN",
+                    heldBy: lock.agentId,
+                    message: `No fingerprint recorded for '${normalizedPath}' (remote-backed lock); integrity can't be verified.`,
+                };
+            }
+
+            return {
+                status: "OK",
+                verdict: report.verdict,
+                heldBy: lock.agentId,
+                message: `'${normalizedPath}' is unchanged since the lock was granted.`,
+            };
         });
     }
 

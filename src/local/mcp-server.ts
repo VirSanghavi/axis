@@ -10,6 +10,7 @@ import dotenv from "dotenv";
 import { ContextManager } from "./context-manager.js";
 import { NerveCenter } from "./nerve-center.js";
 import { createSessionIdentity } from "./agent-identity.js";
+import { PresenceRoster } from "./agent-presence.js";
 import { RagEngine } from "./rag-engine.js";
 import { indexCodebase } from "./indexer.js";
 import { logger } from "../utils/logger.js";
@@ -116,6 +117,10 @@ const nerveCenter = new NerveCenter(manager, {
 // is normalized onto it (see CallTool handler) so two concurrent sessions never
 // silently share an id and skip each other's locks. AXIS_AGENT_ID overrides.
 const sessionIdentity = createSessionIdentity(process.env);
+
+// Tracks which agents are online/idle so workers started before jobs are posted
+// are visible to the orchestrator (see claim_next_job / list_agents).
+const presence = new PresenceRoster();
 
 logger.info("=== Axis MCP Server Initialized ===");
 logger.info(`Session agent identity: ${sessionIdentity.id} (${sessionIdentity.source})`);
@@ -568,6 +573,23 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         inputSchema: { type: "object", properties: {}, required: [] }
       },
       {
+        name: "verify_file_lock",
+        description: "**TAMPER CHECK BEFORE WRITING**: Confirm a file you hold a lock on hasn't changed since the lock was granted.\n- Locks are advisory — another process can still edit the file. Call this right before overwriting to avoid clobbering concurrent changes.\n- Returns `OK` (unchanged), `CONFLICT` (modified/deleted — re-read before writing), `NO_LOCK`, or `UNKNOWN` (no fingerprint recorded).",
+        inputSchema: {
+          type: "object",
+          properties: {
+            agentId: { type: "string" },
+            filePath: { type: "string" }
+          },
+          required: ["agentId", "filePath"]
+        }
+      },
+      {
+        name: "list_agents",
+        description: "**WHO'S ONLINE**: List agents currently active or idle on this project.\n- Use to see your team before posting jobs — idle workers started early show up here, so you don't have to make the user wait for jobs before launching agents.\n- Returns each agent's status (active/idle), last activity, and last-seen time.",
+        inputSchema: { type: "object", properties: {}, required: [] }
+      },
+      {
         name: "update_shared_context",
         description: "**LIVE NOTEPAD**: The project's short-term working memory.\n- **ALWAYS** call this after completing a significant step (e.g., 'Fixed bug in auth.ts', 'Ran tests, all passed').\n- This content is visible to *all* other agents immediately.\n- Think of this as a team chat or 'standup' update.",
         inputSchema: {
@@ -754,9 +776,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   // locks/jobs/notepad attribution can never collide across concurrent
   // sessions that send the same generic id (e.g. "claude-code").
   if (args && typeof (args as Record<string, unknown>).agentId === "string") {
-    (args as Record<string, unknown>).agentId = sessionIdentity.resolve(
-      (args as Record<string, unknown>).agentId as string
-    );
+    const resolvedId = sessionIdentity.resolve((args as Record<string, unknown>).agentId as string);
+    (args as Record<string, unknown>).agentId = resolvedId;
+    // Record presence so the orchestrator can see active/idle agents.
+    presence.seen(resolvedId, Date.now(), "active", name);
   }
 
   logger.info("Tool call", { name });
@@ -1119,6 +1142,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (name === "claim_next_job") {
     const { agentId } = args as any;
     const result = await nerveCenter.claimNextJob(agentId);
+    // Idle-claim: instead of a dead NO_JOBS, register the agent as idle and
+    // return the roster so the orchestrator sees workers waiting for work.
+    if (result && (result as any).status === "NO_JOBS_AVAILABLE") {
+      presence.seen(agentId, Date.now(), "idle", "waiting for work");
+      const roster = presence.list(Date.now());
+      return { content: [{ type: "text", text: JSON.stringify({
+        status: "WAITING",
+        message: "No jobs on the board yet. You're registered as idle — the orchestrator can see you (list_agents) and you'll pick up work as soon as it's posted. Call claim_next_job again shortly.",
+        agentsOnline: roster.length,
+        idle: roster.filter((a) => a.status === "idle").length,
+        roster
+      }, null, 2) }] };
+    }
     return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   }
   if (name === "claim_job") {
@@ -1130,6 +1166,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { agentId, jobId, outcome, completionKey } = args as any;
     const result = await nerveCenter.completeJob(agentId, jobId, outcome, completionKey);
     return { content: [{ type: "text", text: JSON.stringify(result) }] };
+  }
+
+  if (name === "verify_file_lock") {
+    const { agentId, filePath } = args as any;
+    const result = await nerveCenter.verifyFileAccess(agentId, filePath);
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+  }
+  if (name === "list_agents") {
+    const roster = presence.list(Date.now());
+    return { content: [{ type: "text", text: JSON.stringify({
+      agentsOnline: roster.length,
+      active: roster.filter((a) => a.status === "active").length,
+      idle: roster.filter((a) => a.status === "idle").length,
+      agents: roster
+    }, null, 2) }] };
   }
 
   throw new Error(`Tool not found: ${name}`);

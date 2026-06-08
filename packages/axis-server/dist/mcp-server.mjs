@@ -272,7 +272,7 @@ var ContextManager = class {
 // ../../src/local/nerve-center.ts
 import { Mutex as Mutex2 } from "async-mutex";
 import { createClient } from "@supabase/supabase-js";
-import fs3 from "fs/promises";
+import fs4 from "fs/promises";
 import { existsSync as existsSync2 } from "fs";
 import path3 from "path";
 
@@ -330,6 +330,46 @@ function resolveProjectIdentity(configuredRoot, cwd, env = process.env) {
     source,
     ...switchedWorkspace ? { ignoredConfiguredRoot: configuredProjectRoot } : {}
   };
+}
+
+// ../../src/local/lock-integrity.ts
+import { createHash } from "crypto";
+import fs3 from "fs/promises";
+function hashContent(content) {
+  return createHash("sha256").update(content).digest("hex").slice(0, 16);
+}
+async function hashFileIfExists(absolutePath) {
+  try {
+    const buf = await fs3.readFile(absolutePath);
+    return hashContent(buf);
+  } catch {
+    return void 0;
+  }
+}
+function compareFingerprint(lockedHash, currentHash, fingerprintRecorded) {
+  if (!fingerprintRecorded) return "unknown";
+  if (lockedHash === void 0 && currentHash === void 0) return "unchanged";
+  if (lockedHash === void 0 && currentHash !== void 0) return "created";
+  if (lockedHash !== void 0 && currentHash === void 0) return "deleted";
+  return lockedHash === currentHash ? "unchanged" : "modified";
+}
+function buildIntegrityReport(lockedHash, currentHash, fingerprintRecorded) {
+  const verdict = compareFingerprint(lockedHash, currentHash, fingerprintRecorded);
+  return {
+    verdict,
+    tampered: verdict === "modified" || verdict === "deleted",
+    lockedHash,
+    currentHash
+  };
+}
+
+// ../../src/local/job-hygiene.ts
+var DEFAULT_JOB_STALE_MS = 30 * 60 * 1e3;
+function isReclaimable(job, now, ttlMs = DEFAULT_JOB_STALE_MS) {
+  return job.status === "in_progress" && now - job.updatedAt > ttlMs;
+}
+function findReclaimable(jobs, now, ttlMs = DEFAULT_JOB_STALE_MS) {
+  return jobs.filter((j) => isReclaimable(j, now, ttlMs));
 }
 
 // ../../src/local/nerve-center.ts
@@ -477,7 +517,7 @@ var NerveCenter = class _NerveCenter {
     }
     try {
       const axisConfigPath = path3.join(projectRoot, ".axis", "axis.json");
-      const configData = await fs3.readFile(axisConfigPath, "utf-8");
+      const configData = await fs4.readFile(axisConfigPath, "utf-8");
       const config = JSON.parse(configData);
       if (config.project) {
         this.projectName = String(config.project);
@@ -728,15 +768,15 @@ var NerveCenter = class _NerveCenter {
   }
   async saveState() {
     try {
-      await fs3.mkdir(path3.dirname(this.stateFilePath), { recursive: true });
-      await fs3.writeFile(this.stateFilePath, JSON.stringify(this.state, null, 2));
+      await fs4.mkdir(path3.dirname(this.stateFilePath), { recursive: true });
+      await fs4.writeFile(this.stateFilePath, JSON.stringify(this.state, null, 2));
     } catch (error) {
       logger.error("Failed to persist state", error);
     }
   }
   async loadState() {
     try {
-      const data = await fs3.readFile(this.stateFilePath, "utf-8");
+      const data = await fs4.readFile(this.stateFilePath, "utf-8");
       const parsed = JSON.parse(data);
       this.state = {
         ..._NerveCenter.createEmptyState(),
@@ -845,6 +885,21 @@ var NerveCenter = class _NerveCenter {
       }
       const priorities = ["critical", "high", "medium", "low"];
       const allJobs = Object.values(this.state.jobs);
+      const reclaimable = findReclaimable(
+        allJobs.map((job2) => ({ id: job2.id, status: job2.status, updatedAt: job2.updatedAt })),
+        Date.now(),
+        this.lockTimeout
+      );
+      for (const stale of reclaimable) {
+        const job2 = this.state.jobs[stale.id];
+        if (job2) {
+          job2.status = "todo";
+          job2.assignedTo = void 0;
+          job2.updatedAt = Date.now();
+          await this.appendToNotepad(`
+- [JOB RECLAIMED] '${job2.title}' was abandoned in_progress; returned to the board.`);
+        }
+      }
       const jobsById = new Map(allJobs.map((job2) => [job2.id, job2]));
       const availableJobs = allJobs.filter((job2) => job2.status === "todo").filter((job2) => {
         if (!job2.dependencies || job2.dependencies.length === 0) return true;
@@ -1153,7 +1208,7 @@ ${notepad}`;
       return { valid: false, reason: "Cannot lock files outside the project root." };
     }
     try {
-      const stat = await fs3.stat(absolutePath);
+      const stat = await fs4.stat(absolutePath);
       if (stat.isDirectory()) {
         return {
           valid: false,
@@ -1190,6 +1245,17 @@ ${notepad}`;
     }
     return null;
   }
+  /**
+   * Build an actionable denial message: who holds the lock, why, and how to
+   * recover. Vague "locked by another agent" errors leave agents stuck; this
+   * tells them what to do next.
+   */
+  orchestrationMessage(normalizedPath, ownerId, intent) {
+    const mins = Math.round(this.lockTimeout / 6e4);
+    const owner = ownerId || "another agent";
+    const why = intent ? ` for: "${intent}"` : "";
+    return `File '${normalizedPath}' is locked by '${owner}'${why}. Pick a different file or job, or coordinate via update_shared_context. The lock auto-expires after ${mins} min; use force_unlock only if '${owner}' has crashed.`;
+  }
   async proposeFileAccess(agentId, filePath, intent, userPrompt) {
     return await this.mutex.runExclusive(async () => {
       logger.info(`[proposeFileAccess] Starting - agentId: ${agentId}, filePath: ${filePath}`);
@@ -1217,13 +1283,16 @@ ${notepad}`;
             await this.logLockEvent("BLOCKED", normalizedPath, agentId, result.current_lock?.agent_id, intent);
             return {
               status: "REQUIRES_ORCHESTRATION",
-              message: result.message || `File '${normalizedPath}' is locked by another agent`,
+              message: result.message || this.orchestrationMessage(normalizedPath, result.current_lock?.agent_id, result.current_lock?.intent),
               currentLock: result.current_lock
             };
           }
           if (result.status === "REJECTED") {
             logger.warn(`[proposeFileAccess] REJECTED by server: ${result.message}`);
-            return { status: "REJECTED", message: result.message };
+            return {
+              status: "REJECTED",
+              message: result.message || `Lock rejected for '${normalizedPath}'. Lock an individual file (not a directory) inside the project root.`
+            };
           }
           logger.info(`[proposeFileAccess] GRANTED by server`);
           await this.logLockEvent("GRANTED", normalizedPath, agentId, void 0, intent);
@@ -1246,7 +1315,7 @@ ${notepad}`;
             await this.logLockEvent("BLOCKED", normalizedPath, agentId, blockingAgent, intent);
             return {
               status: "REQUIRES_ORCHESTRATION",
-              message: `File '${normalizedPath}' is locked by another agent`
+              message: this.orchestrationMessage(normalizedPath, blockingAgent)
             };
           }
           logger.error(`[proposeFileAccess] API lock failed: ${e.message}`, e);
@@ -1269,7 +1338,7 @@ ${notepad}`;
             await this.logLockEvent("BLOCKED", normalizedPath, agentId, row.owner_id, intent);
             return {
               status: "REQUIRES_ORCHESTRATION",
-              message: `Conflict: File '${normalizedPath}' is locked by '${row.owner_id}'`,
+              message: this.orchestrationMessage(normalizedPath, row.owner_id, row.intent),
               currentLock: {
                 agentId: row.owner_id,
                 filePath: normalizedPath,
@@ -1293,17 +1362,63 @@ ${notepad}`;
         await this.logLockEvent("BLOCKED", normalizedPath, agentId, conflict.agentId, intent);
         return {
           status: "REQUIRES_ORCHESTRATION",
-          message: `Conflict: File '${normalizedPath}' is locked by '${conflict.agentId}'`,
+          message: this.orchestrationMessage(normalizedPath, conflict.agentId, conflict.intent),
           currentLock: conflict
         };
       }
-      this.state.locks[normalizedPath] = { agentId, filePath: normalizedPath, intent, userPrompt, timestamp: Date.now() };
+      const contentHash = await hashFileIfExists(path3.resolve(process.cwd(), filePath));
+      this.state.locks[normalizedPath] = { agentId, filePath: normalizedPath, intent, userPrompt, timestamp: Date.now(), contentHash };
       await this.saveState();
       await this.logLockEvent("GRANTED", normalizedPath, agentId, void 0, intent);
       await this.appendToNotepad(`
 - [LOCK] ${agentId} locked ${normalizedPath}
   Intent: ${intent}`);
       return { status: "GRANTED", message: `Access granted for ${normalizedPath}` };
+    });
+  }
+  /**
+   * Tamper check for a held lock: compare the file's current content against
+   * the fingerprint captured when the lock was granted. Lets a holder confirm
+   * nobody rewrote the file out from under their (advisory) lock before they
+   * overwrite it — the realistic defense against the "edited, then clobbered"
+   * collision. Remote-backed locks without a stored hash return "unknown".
+   */
+  async verifyFileAccess(agentId, filePath) {
+    return await this.mutex.runExclusive(async () => {
+      const normalizedPath = _NerveCenter.normalizeLockPath(filePath);
+      const lock = this.state.locks[normalizedPath] || (await this.listLocks()).find(
+        (l) => _NerveCenter.normalizeLockPath(l.filePath) === normalizedPath
+      );
+      if (!lock) {
+        return {
+          status: "NO_LOCK",
+          message: `No active lock for '${normalizedPath}'. Acquire one with propose_file_access first.`
+        };
+      }
+      const currentHash = await hashFileIfExists(path3.resolve(process.cwd(), filePath));
+      const report = buildIntegrityReport(lock.contentHash, currentHash, lock.contentHash !== void 0);
+      const heldByOther = lock.agentId !== agentId;
+      if (report.tampered) {
+        return {
+          status: "CONFLICT",
+          verdict: report.verdict,
+          heldBy: lock.agentId,
+          message: `File '${normalizedPath}' was ${report.verdict} since the lock was granted${heldByOther ? ` (lock held by '${lock.agentId}')` : ""}. Re-read it before writing to avoid clobbering concurrent changes.`
+        };
+      }
+      if (report.verdict === "unknown") {
+        return {
+          status: "UNKNOWN",
+          heldBy: lock.agentId,
+          message: `No fingerprint recorded for '${normalizedPath}' (remote-backed lock); integrity can't be verified.`
+        };
+      }
+      return {
+        status: "OK",
+        verdict: report.verdict,
+        heldBy: lock.agentId,
+        message: `'${normalizedPath}' is unchanged since the lock was granted.`
+      };
     });
   }
   async updateSharedContext(text, agentId) {
@@ -1319,8 +1434,8 @@ ${notepad}`;
       const filename = `session-${(/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-")}.md`;
       const historyPath = path3.join(this.projectRoot, "history", filename);
       try {
-        await fs3.mkdir(path3.dirname(historyPath), { recursive: true });
-        await fs3.writeFile(historyPath, content);
+        await fs4.mkdir(path3.dirname(historyPath), { recursive: true });
+        await fs4.writeFile(historyPath, content);
       } catch (e) {
         logger.warn("Failed to write local session log", e);
       }
@@ -1494,6 +1609,42 @@ function createSessionIdentity(env = process.env) {
   };
 }
 
+// ../../src/local/agent-presence.ts
+var DEFAULT_PRESENCE_TTL_MS = 5 * 60 * 1e3;
+var PresenceRoster = class {
+  agents = /* @__PURE__ */ new Map();
+  /** Record activity from an agent. Idempotent per call; updates lastSeenAt. */
+  seen(agentId, now, status = "active", activity) {
+    const existing = this.agents.get(agentId);
+    const presence2 = existing ? { ...existing, status, lastSeenAt: now, lastActivity: activity ?? existing.lastActivity } : { agentId, status, firstSeenAt: now, lastSeenAt: now, lastActivity: activity };
+    this.agents.set(agentId, presence2);
+    return presence2;
+  }
+  /** Agents seen within the TTL window, most-recently-active first. */
+  list(now, ttlMs = DEFAULT_PRESENCE_TTL_MS) {
+    return [...this.agents.values()].filter((a) => now - a.lastSeenAt <= ttlMs).sort((a, b) => b.lastSeenAt - a.lastSeenAt);
+  }
+  /** Count online agents, optionally filtered by status. */
+  count(now, ttlMs = DEFAULT_PRESENCE_TTL_MS, status) {
+    return this.list(now, ttlMs).filter((a) => !status || a.status === status).length;
+  }
+  /** Drop agents that have been silent past the TTL. Returns removed ids. */
+  prune(now, ttlMs = DEFAULT_PRESENCE_TTL_MS) {
+    const removed = [];
+    for (const [id, a] of this.agents) {
+      if (now - a.lastSeenAt > ttlMs) {
+        this.agents.delete(id);
+        removed.push(id);
+      }
+    }
+    return removed;
+  }
+  /** Test/inspection helper. */
+  size() {
+    return this.agents.size;
+  }
+};
+
 // ../../src/local/rag-engine.ts
 import { createClient as createClient2 } from "@supabase/supabase-js";
 import OpenAI from "openai";
@@ -1568,9 +1719,9 @@ var RagEngine = class {
 };
 
 // ../../src/local/indexer.ts
-import * as fs4 from "fs";
+import * as fs5 from "fs";
 import * as path4 from "path";
-import { createHash } from "crypto";
+import { createHash as createHash2 } from "crypto";
 var DEFAULT_IGNORE_DIRS = /* @__PURE__ */ new Set([
   ".git",
   "node_modules",
@@ -1650,7 +1801,7 @@ function loadGitignore(root) {
   const file = path4.join(root, ".gitignore");
   let patterns = [];
   try {
-    patterns = fs4.readFileSync(file, "utf8").split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
+    patterns = fs5.readFileSync(file, "utf8").split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
   } catch {
   }
   const exts = patterns.filter((p) => p.startsWith("*.")).map((p) => p.slice(1));
@@ -1680,7 +1831,7 @@ function walk(root, ignored) {
     const absDir = path4.join(root, relDir);
     let entries;
     try {
-      entries = fs4.readdirSync(absDir, { withFileTypes: true });
+      entries = fs5.readdirSync(absDir, { withFileTypes: true });
     } catch {
       continue;
     }
@@ -1718,12 +1869,12 @@ async function indexCodebase(apiUrl2, apiSecret2, projectName, rootDir, logger2)
   const contentByPath = /* @__PURE__ */ new Map();
   for (const rel of relPaths) {
     try {
-      const stat = fs4.statSync(path4.join(rootDir, rel));
+      const stat = fs5.statSync(path4.join(rootDir, rel));
       if (stat.size > MAX_FILE_BYTES) continue;
-      const content = fs4.readFileSync(path4.join(rootDir, rel), "utf8");
+      const content = fs5.readFileSync(path4.join(rootDir, rel), "utf8");
       if (content.includes("\0")) continue;
       contentByPath.set(rel, content);
-      manifest.push({ path: rel, hash: createHash("sha256").update(content, "utf8").digest("hex") });
+      manifest.push({ path: rel, hash: createHash2("sha256").update(content, "utf8").digest("hex") });
     } catch {
     }
   }
@@ -1747,10 +1898,10 @@ async function indexCodebase(apiUrl2, apiSecret2, projectName, rootDir, logger2)
 
 // ../../src/local/mcp-server.ts
 import path6 from "path";
-import fs6 from "fs";
+import fs7 from "fs";
 
 // ../../src/local/local-search.ts
-import fs5 from "fs/promises";
+import fs6 from "fs/promises";
 import fsSync2 from "fs";
 import path5 from "path";
 import { spawnSync } from "child_process";
@@ -1963,7 +2114,7 @@ async function walkDir(dir, maxDepth = 12) {
     if (depth > maxDepth) return;
     let entries;
     try {
-      entries = await fs5.readdir(current, { withFileTypes: true });
+      entries = await fs6.readdir(current, { withFileTypes: true });
     } catch {
       return;
     }
@@ -1980,7 +2131,7 @@ async function walkDir(dir, maxDepth = 12) {
         const ext = path5.extname(entry.name).toLowerCase();
         if (SKIP_EXTENSIONS.has(ext)) continue;
         try {
-          const stat = await fs5.stat(fullPath);
+          const stat = await fs6.stat(fullPath);
           if (stat.size > MAX_FILE_SIZE || stat.size === 0) continue;
         } catch {
           continue;
@@ -1995,7 +2146,7 @@ async function walkDir(dir, maxDepth = 12) {
 async function searchFile(filePath, rootDir, keywords) {
   let content;
   try {
-    content = await fs5.readFile(filePath, "utf-8");
+    content = await fs6.readFile(filePath, "utf-8");
   } catch {
     return null;
   }
@@ -2265,7 +2416,7 @@ if (process.env.SHARED_CONTEXT_API_URL || process.env.AXIS_API_KEY) {
   let envLoaded = false;
   for (const envPath of possiblePaths) {
     try {
-      if (fs6.existsSync(envPath)) {
+      if (fs7.existsSync(envPath)) {
         logger.info(`[Fallback] Loading .env.local from: ${envPath}`);
         dotenv2.config({ path: envPath });
         envLoaded = true;
@@ -2322,6 +2473,7 @@ var nerveCenter = new NerveCenter(manager, {
   projectRoot: process.env.AXIS_PROJECT_ROOT || process.env.SUPERSET_WORKSPACE_PATH || process.env.SUPERSET_ROOT_PATH
 });
 var sessionIdentity = createSessionIdentity(process.env);
+var presence = new PresenceRoster();
 logger.info("=== Axis MCP Server Initialized ===");
 logger.info(`Session agent identity: ${sessionIdentity.id} (${sessionIdentity.source})`);
 var RECHECK_INTERVAL_MS = 30 * 60 * 1e3;
@@ -2458,13 +2610,13 @@ if (!useRemoteApiOnly && process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.SUP
 }
 async function ensureFileSystem() {
   try {
-    const fs7 = await import("fs/promises");
+    const fs8 = await import("fs/promises");
     const path7 = await import("path");
     const fsSync3 = await import("fs");
     const cwd = process.cwd();
     logger.info(`Server CWD: ${cwd}`);
     const historyDir = path7.join(cwd, "history");
-    await fs7.mkdir(historyDir, { recursive: true }).catch(() => {
+    await fs8.mkdir(historyDir, { recursive: true }).catch(() => {
     });
     const axisDir = path7.join(cwd, ".axis");
     const axisInstructions = path7.join(axisDir, "instructions");
@@ -2472,7 +2624,7 @@ async function ensureFileSystem() {
     if (fsSync3.existsSync(legacyInstructions) && !fsSync3.existsSync(axisDir)) {
       logger.info("Using legacy agent-instructions directory");
     } else {
-      await fs7.mkdir(axisInstructions, { recursive: true }).catch(() => {
+      await fs8.mkdir(axisInstructions, { recursive: true }).catch(() => {
       });
       const defaults = [
         ["context.md", `# Project Context
@@ -2528,9 +2680,9 @@ force_unlock is a LAST RESORT \u2014 only for locks >25 min old from a crashed a
       for (const [file, content] of defaults) {
         const p = path7.join(axisInstructions, file);
         try {
-          await fs7.access(p);
+          await fs8.access(p);
         } catch {
-          await fs7.writeFile(p, content);
+          await fs8.writeFile(p, content);
           logger.info(`Created default context file: ${file}`);
         }
       }
@@ -2716,6 +2868,23 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       inputSchema: { type: "object", properties: {}, required: [] }
     },
     {
+      name: "verify_file_lock",
+      description: "**TAMPER CHECK BEFORE WRITING**: Confirm a file you hold a lock on hasn't changed since the lock was granted.\n- Locks are advisory \u2014 another process can still edit the file. Call this right before overwriting to avoid clobbering concurrent changes.\n- Returns `OK` (unchanged), `CONFLICT` (modified/deleted \u2014 re-read before writing), `NO_LOCK`, or `UNKNOWN` (no fingerprint recorded).",
+      inputSchema: {
+        type: "object",
+        properties: {
+          agentId: { type: "string" },
+          filePath: { type: "string" }
+        },
+        required: ["agentId", "filePath"]
+      }
+    },
+    {
+      name: "list_agents",
+      description: "**WHO'S ONLINE**: List agents currently active or idle on this project.\n- Use to see your team before posting jobs \u2014 idle workers started early show up here, so you don't have to make the user wait for jobs before launching agents.\n- Returns each agent's status (active/idle), last activity, and last-seen time.",
+      inputSchema: { type: "object", properties: {}, required: [] }
+    },
+    {
       name: "update_shared_context",
       description: "**LIVE NOTEPAD**: The project's short-term working memory.\n- **ALWAYS** call this after completing a significant step (e.g., 'Fixed bug in auth.ts', 'Ran tests, all passed').\n- This content is visible to *all* other agents immediately.\n- Think of this as a team chat or 'standup' update.",
       inputSchema: {
@@ -2880,16 +3049,16 @@ function recordToolCall(name, args) {
       // Arg keys only, never values (privacy + log size).
       argKeys: args && typeof args === "object" ? Object.keys(args) : []
     };
-    fs6.appendFileSync(TOOL_LOG_PATH, JSON.stringify(entry) + "\n");
+    fs7.appendFileSync(TOOL_LOG_PATH, JSON.stringify(entry) + "\n");
   } catch {
   }
 }
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
   if (args && typeof args.agentId === "string") {
-    args.agentId = sessionIdentity.resolve(
-      args.agentId
-    );
+    const resolvedId = sessionIdentity.resolve(args.agentId);
+    args.agentId = resolvedId;
+    presence.seen(resolvedId, Date.now(), "active", name);
   }
   logger.info("Tool call", { name });
   recordToolCall(name, args);
@@ -2967,7 +3136,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       try {
         const projectRoot = path6.resolve(process.cwd());
         const rebased = path6.isAbsolute(filePath) ? path6.join(projectRoot, filePath.replace(/^\/+/, "")) : path6.resolve(projectRoot, filePath);
-        const resolved = await fs6.promises.realpath(rebased).catch(() => rebased);
+        const resolved = await fs7.promises.realpath(rebased).catch(() => rebased);
         const rel = path6.relative(projectRoot, resolved);
         if (rel.startsWith("..") || path6.isAbsolute(rel)) {
           return {
@@ -2992,7 +3161,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             isError: true
           };
         }
-        const stat = await fs6.promises.stat(resolved);
+        const stat = await fs7.promises.stat(resolved);
         const MAX_BYTES = 1024 * 1024;
         if (stat.size > MAX_BYTES) {
           return {
@@ -3000,7 +3169,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             isError: true
           };
         }
-        content = await fs6.promises.readFile(resolved, "utf-8");
+        content = await fs7.promises.readFile(resolved, "utf-8");
       } catch (e) {
         return {
           content: [{
@@ -3188,6 +3357,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (name === "claim_next_job") {
     const { agentId } = args;
     const result = await nerveCenter.claimNextJob(agentId);
+    if (result && result.status === "NO_JOBS_AVAILABLE") {
+      presence.seen(agentId, Date.now(), "idle", "waiting for work");
+      const roster = presence.list(Date.now());
+      return { content: [{ type: "text", text: JSON.stringify({
+        status: "WAITING",
+        message: "No jobs on the board yet. You're registered as idle \u2014 the orchestrator can see you (list_agents) and you'll pick up work as soon as it's posted. Call claim_next_job again shortly.",
+        agentsOnline: roster.length,
+        idle: roster.filter((a) => a.status === "idle").length,
+        roster
+      }, null, 2) }] };
+    }
     return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   }
   if (name === "claim_job") {
@@ -3199,6 +3379,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { agentId, jobId, outcome, completionKey } = args;
     const result = await nerveCenter.completeJob(agentId, jobId, outcome, completionKey);
     return { content: [{ type: "text", text: JSON.stringify(result) }] };
+  }
+  if (name === "verify_file_lock") {
+    const { agentId, filePath } = args;
+    const result = await nerveCenter.verifyFileAccess(agentId, filePath);
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+  }
+  if (name === "list_agents") {
+    const roster = presence.list(Date.now());
+    return { content: [{ type: "text", text: JSON.stringify({
+      agentsOnline: roster.length,
+      active: roster.filter((a) => a.status === "active").length,
+      idle: roster.filter((a) => a.status === "idle").length,
+      agents: roster
+    }, null, 2) }] };
   }
   throw new Error(`Tool not found: ${name}`);
 });
