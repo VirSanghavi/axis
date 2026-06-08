@@ -7,27 +7,7 @@ import path from "path";
 import { fileURLToPath } from 'url';
 import fs from 'fs';
 import { indexCodebase } from "../../../src/local/indexer";
-
-/** Walk up for the repo root (nearest .git/package.json), like the server does. */
-function findRoot(start: string): string {
-    let dir = start;
-    for (let i = 0; i < 20; i++) {
-        if (fs.existsSync(path.join(dir, ".git")) || fs.existsSync(path.join(dir, "package.json"))) return dir;
-        const parent = path.dirname(dir);
-        if (parent === dir) break;
-        dir = parent;
-    }
-    return start;
-}
-
-function deriveProjectName(root: string): string {
-    if (process.env.PROJECT_NAME) return process.env.PROJECT_NAME;
-    try {
-        const cfg = JSON.parse(fs.readFileSync(path.join(root, ".axis", "axis.json"), "utf8"));
-        if (cfg.project) return String(cfg.project);
-    } catch { /* none */ }
-    return path.basename(root);
-}
+import { deriveProjectName, findProjectRoot, resolveProjectIdentity } from "../../../src/local/project-identity";
 
 // ESM dirname shim
 const __filename = fileURLToPath(import.meta.url);
@@ -43,17 +23,18 @@ program
     .action((root) => {
         console.error(chalk.bold.blue("Axis MCP Server Starting..."));
 
-        // If root is provided, change CWD
-        if (root) {
-            const resolvedRoot = path.resolve(root);
-            if (fs.existsSync(resolvedRoot)) {
-                console.error(chalk.blue(`Setting CWD to: ${resolvedRoot}`));
-                process.chdir(resolvedRoot);
-            } else {
-                console.error(chalk.red(`Error: Project root not found: ${resolvedRoot}`));
-                process.exit(1);
-            }
+        const identity = resolveProjectIdentity(root, process.cwd());
+        if (root && !fs.existsSync(path.resolve(root)) && identity.source !== "runtime") {
+            console.error(chalk.red(`Error: Project root not found: ${path.resolve(root)}`));
+            process.exit(1);
         }
+        if (identity.ignoredConfiguredRoot) {
+            console.error(chalk.yellow(
+                `Active workspace changed to ${identity.root}; ignoring stale configured root ${identity.ignoredConfiguredRoot}.`
+            ));
+        }
+        console.error(chalk.blue(`Project: ${identity.projectName} (${identity.root})`));
+        process.chdir(identity.root);
 
         // Locate the bundled server script
         const serverScript = path.resolve(__dirname, "../dist/mcp-server.mjs");
@@ -74,7 +55,12 @@ program
         const proc = spawn("node", args, {
             stdio: "inherit",
             cwd: process.cwd(),
-            env: { ...process.env, FORCE_COLOR: '1' }
+            env: {
+                ...process.env,
+                PROJECT_NAME: identity.projectName,
+                AXIS_PROJECT_ROOT: identity.root,
+                FORCE_COLOR: '1'
+            }
         });
 
         proc.on("close", (code) => {
@@ -106,7 +92,7 @@ program
             process.exit(1);
         }
         const apiUrl = process.env.SHARED_CONTEXT_API_URL || "https://useaxis.dev/api/v1";
-        const rootDir = findRoot(path.resolve(root || process.cwd()));
+        const rootDir = findProjectRoot(path.resolve(root || process.cwd()));
         const projectName = opts.project || deriveProjectName(rootDir);
 
         console.error(chalk.bold.blue(`Indexing "${projectName}"`) + chalk.gray(` (${rootDir})`));

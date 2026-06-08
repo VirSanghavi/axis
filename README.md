@@ -61,6 +61,13 @@ PROJECT_NAME=default
     }
     ```
 
+    Axis derives project identity from the active repository. Supported agent
+    hosts can provide `AXIS_WORKSPACE_ROOT`, `SUPERSET_WORKSPACE_PATH`, or
+    `SUPERSET_ROOT_PATH`; these per-session values override a stale positional
+    root in global MCP config so project souls, jobs, and locks cannot leak
+    across repository switches. Set `AXIS_PROJECT_NAME` only when a project
+    name must intentionally remain fixed across workspace changes.
+
 4.  **CLI Usage**:
     ```bash
     # Add an entry to activity.md

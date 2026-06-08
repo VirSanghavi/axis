@@ -31,9 +31,9 @@ var importMetaUrl = /* @__PURE__ */ getImportMetaUrl();
 var import_commander = require("commander");
 var import_chalk = __toESM(require("chalk"));
 var import_child_process = require("child_process");
-var import_path = __toESM(require("path"));
+var import_path2 = __toESM(require("path"));
 var import_url = require("url");
-var import_fs = __toESM(require("fs"));
+var import_fs2 = __toESM(require("fs"));
 
 // ../../src/local/indexer.ts
 var fs = __toESM(require("fs"), 1);
@@ -213,43 +213,79 @@ async function indexCodebase(apiUrl, apiSecret, projectName, rootDir, logger) {
   return { scanned: manifest.length, uploaded, unchanged: manifest.length - toUpload.length, pruned, chunks };
 }
 
-// bin/cli.ts
-function findRoot(start) {
-  let dir = start;
-  for (let i = 0; i < 20; i++) {
-    if (import_fs.default.existsSync(import_path.default.join(dir, ".git")) || import_fs.default.existsSync(import_path.default.join(dir, "package.json"))) return dir;
-    const parent = import_path.default.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
+// ../../src/local/project-identity.ts
+var import_fs = __toESM(require("fs"), 1);
+var import_path = __toESM(require("path"), 1);
+function findProjectRoot(start) {
+  let current = import_path.default.resolve(start);
+  const filesystemRoot = import_path.default.parse(current).root;
+  while (true) {
+    if (import_fs.default.existsSync(import_path.default.join(current, ".axis", "axis.json")) || import_fs.default.existsSync(import_path.default.join(current, ".git")) || import_fs.default.existsSync(import_path.default.join(current, "package.json"))) {
+      return current;
+    }
+    if (current === filesystemRoot) return import_path.default.resolve(start);
+    current = import_path.default.dirname(current);
   }
-  return start;
+}
+function existingDirectory(candidate) {
+  if (!candidate) return void 0;
+  const resolved = import_path.default.resolve(candidate);
+  try {
+    return import_fs.default.statSync(resolved).isDirectory() ? resolved : void 0;
+  } catch {
+    return void 0;
+  }
 }
 function deriveProjectName(root) {
-  if (process.env.PROJECT_NAME) return process.env.PROJECT_NAME;
   try {
-    const cfg = JSON.parse(import_fs.default.readFileSync(import_path.default.join(root, ".axis", "axis.json"), "utf8"));
-    if (cfg.project) return String(cfg.project);
+    const config = JSON.parse(
+      import_fs.default.readFileSync(import_path.default.join(root, ".axis", "axis.json"), "utf8")
+    );
+    const configuredName = config.project ?? config.projectName;
+    if (configuredName) return String(configuredName);
   } catch {
   }
-  return import_path.default.basename(root);
+  return import_path.default.basename(root).toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "default";
 }
+function resolveProjectIdentity(configuredRoot, cwd, env = process.env) {
+  const runtimeCandidate = existingDirectory(env.AXIS_WORKSPACE_ROOT) || existingDirectory(env.SUPERSET_WORKSPACE_PATH) || existingDirectory(env.SUPERSET_ROOT_PATH);
+  const configuredCandidate = existingDirectory(configuredRoot);
+  const runtimeRoot = runtimeCandidate ? findProjectRoot(runtimeCandidate) : void 0;
+  const configuredProjectRoot = configuredCandidate ? findProjectRoot(configuredCandidate) : void 0;
+  const root = runtimeRoot || configuredProjectRoot || findProjectRoot(cwd);
+  const source = runtimeRoot ? "runtime" : configuredProjectRoot ? "configured" : "cwd";
+  const switchedWorkspace = Boolean(
+    runtimeRoot && configuredProjectRoot && import_path.default.resolve(runtimeRoot) !== import_path.default.resolve(configuredProjectRoot)
+  );
+  const projectName = env.AXIS_PROJECT_NAME || (!switchedWorkspace ? env.PROJECT_NAME : void 0) || deriveProjectName(root);
+  return {
+    root,
+    projectName,
+    source,
+    ...switchedWorkspace ? { ignoredConfiguredRoot: configuredProjectRoot } : {}
+  };
+}
+
+// bin/cli.ts
 var __filename2 = (0, import_url.fileURLToPath)(importMetaUrl);
-var __dirname = import_path.default.dirname(__filename2);
+var __dirname = import_path2.default.dirname(__filename2);
 import_commander.program.name("axis-server").description("Start the Axis Shared Context MCP Server").version("1.0.0");
 import_commander.program.argument("[root]", "Project root directory (optional)").action((root) => {
   console.error(import_chalk.default.bold.blue("Axis MCP Server Starting..."));
-  if (root) {
-    const resolvedRoot = import_path.default.resolve(root);
-    if (import_fs.default.existsSync(resolvedRoot)) {
-      console.error(import_chalk.default.blue(`Setting CWD to: ${resolvedRoot}`));
-      process.chdir(resolvedRoot);
-    } else {
-      console.error(import_chalk.default.red(`Error: Project root not found: ${resolvedRoot}`));
-      process.exit(1);
-    }
+  const identity = resolveProjectIdentity(root, process.cwd());
+  if (root && !import_fs2.default.existsSync(import_path2.default.resolve(root)) && identity.source !== "runtime") {
+    console.error(import_chalk.default.red(`Error: Project root not found: ${import_path2.default.resolve(root)}`));
+    process.exit(1);
   }
-  const serverScript = import_path.default.resolve(__dirname, "../dist/mcp-server.mjs");
-  if (!import_fs.default.existsSync(serverScript)) {
+  if (identity.ignoredConfiguredRoot) {
+    console.error(import_chalk.default.yellow(
+      `Active workspace changed to ${identity.root}; ignoring stale configured root ${identity.ignoredConfiguredRoot}.`
+    ));
+  }
+  console.error(import_chalk.default.blue(`Project: ${identity.projectName} (${identity.root})`));
+  process.chdir(identity.root);
+  const serverScript = import_path2.default.resolve(__dirname, "../dist/mcp-server.mjs");
+  if (!import_fs2.default.existsSync(serverScript)) {
     console.error(import_chalk.default.red("Error: Server script not found."));
     console.error(import_chalk.default.yellow(`Expected at: ${serverScript}`));
     console.error(import_chalk.default.gray("Did you run 'npm run build'?"));
@@ -260,7 +296,12 @@ import_commander.program.argument("[root]", "Project root directory (optional)")
   const proc = (0, import_child_process.spawn)("node", args, {
     stdio: "inherit",
     cwd: process.cwd(),
-    env: { ...process.env, FORCE_COLOR: "1" }
+    env: {
+      ...process.env,
+      PROJECT_NAME: identity.projectName,
+      AXIS_PROJECT_ROOT: identity.root,
+      FORCE_COLOR: "1"
+    }
   });
   proc.on("close", (code) => {
     if (code !== 0) {
@@ -283,7 +324,7 @@ import_commander.program.command("index").description("Index the codebase for se
     process.exit(1);
   }
   const apiUrl = process.env.SHARED_CONTEXT_API_URL || "https://useaxis.dev/api/v1";
-  const rootDir = findRoot(import_path.default.resolve(root || process.cwd()));
+  const rootDir = findProjectRoot(import_path2.default.resolve(root || process.cwd()));
   const projectName = opts.project || deriveProjectName(rootDir);
   console.error(import_chalk.default.bold.blue(`Indexing "${projectName}"`) + import_chalk.default.gray(` (${rootDir})`));
   try {

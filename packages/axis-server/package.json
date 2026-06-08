@@ -6,6 +6,10 @@
   "bin": {
     "axis-server": "dist/cli.js"
   },
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "scripts": {
     "start": "node dist/cli.js",
     "build": "tsup bin/cli.ts --format cjs --out-dir dist --clean --shims && tsup ../../src/local/mcp-server.ts --format esm --out-dir dist",
