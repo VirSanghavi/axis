@@ -5,7 +5,7 @@ import { existsSync } from "fs";
 import path from "path";
 import { logger } from "../utils/logger.js";
 import { deriveProjectName, projectStateFilePath } from "./project-identity.js";
-import { buildIntegrityReport, hashFileIfExists } from "./lock-integrity.js";
+import { buildIntegrityReport, hashContent, hashFileIfExists } from "./lock-integrity.js";
 import { findReclaimable } from "./job-hygiene.js";
 
 // Interfaces
@@ -519,7 +519,8 @@ export class NerveCenter {
                     filePath: row.file_path,
                     intent: row.intent,
                     userPrompt: row.user_prompt,
-                    timestamp: Date.parse(row.updated_at)
+                    timestamp: Date.parse(row.updated_at),
+                    contentHash: row.content_hash ?? undefined
                 }));
             } catch (e) {
                 logger.warn("Failed to fetch locks from DB", e as any);
@@ -1291,6 +1292,22 @@ export class NerveCenter {
                         };
                     }
 
+                    // Persist a content fingerprint for tamper detection. Best-effort:
+                    // tolerate the column being absent until migration 0009 is applied.
+                    try {
+                        const contentHash = await hashFileIfExists(path.resolve(process.cwd(), filePath));
+                        if (contentHash) {
+                            await this.supabase
+                                .from("locks")
+                                .update({ content_hash: contentHash })
+                                .eq("project_id", this._projectId)
+                                .eq("file_path", normalizedPath)
+                                .eq("agent_id", agentId);
+                        }
+                    } catch (hashErr) {
+                        logger.warn("[NerveCenter] Could not persist lock content_hash (migration 0009 applied?)", hashErr as any);
+                    }
+
                     await this.logLockEvent("GRANTED", normalizedPath, agentId, undefined, intent);
                     await this.appendToNotepad(`\n- [LOCK] ${agentId} locked ${normalizedPath}\n  Intent: ${intent}`);
                     return { status: "GRANTED", message: `Access granted for ${normalizedPath}` };
@@ -1370,6 +1387,58 @@ export class NerveCenter {
                 heldBy: lock.agentId,
                 message: `'${normalizedPath}' is unchanged since the lock was granted.`,
             };
+        });
+    }
+
+    /**
+     * Write a file THROUGH the lock — the enforced (not just evident) path.
+     * The server performs the write only if the caller holds the lock AND the
+     * file hasn't changed since the lock was granted (optimistic concurrency),
+     * then refreshes the fingerprint. Agents that route writes here cannot
+     * clobber a file locked by someone else or overwrite concurrent changes —
+     * real prevention, where verify_file_lock is only detection.
+     */
+    async guardedWrite(agentId: string, filePath: string, content: string) {
+        return await this.mutex.runExclusive(async () => {
+            const normalizedPath = NerveCenter.normalizeLockPath(filePath);
+
+            const fileCheck = await NerveCenter.validateFileOnly(filePath);
+            if (!fileCheck.valid) return { status: "REJECTED", message: fileCheck.reason };
+
+            const lock = this.state.locks[normalizedPath]
+                || (await this.listLocks()).find(
+                    (l) => NerveCenter.normalizeLockPath(l.filePath) === normalizedPath
+                );
+            if (!lock) {
+                return { status: "NO_LOCK", message: `Acquire a lock with propose_file_access before writing '${normalizedPath}'.` };
+            }
+            if (lock.agentId !== agentId) {
+                return { status: "DENIED", message: this.orchestrationMessage(normalizedPath, lock.agentId, lock.intent) };
+            }
+
+            const absolutePath = path.resolve(process.cwd(), filePath);
+            const currentHash = await hashFileIfExists(absolutePath);
+            // Optimistic concurrency: refuse if the file changed since the lock
+            // was granted (someone edited it outside this lock).
+            if (lock.contentHash !== undefined && currentHash !== undefined && currentHash !== lock.contentHash) {
+                return {
+                    status: "CONFLICT",
+                    message: `'${normalizedPath}' changed since you locked it. Re-read and re-lock before writing to avoid clobbering concurrent changes.`,
+                };
+            }
+
+            await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+            await fs.writeFile(absolutePath, content);
+
+            // Refresh the fingerprint so later verifies/writes compare against
+            // what we just wrote.
+            if (this.state.locks[normalizedPath]) {
+                this.state.locks[normalizedPath].contentHash = hashContent(content);
+                this.state.locks[normalizedPath].timestamp = Date.now();
+                await this.saveState();
+            }
+            await this.appendToNotepad(`\n- [WRITE] ${agentId} wrote ${normalizedPath} (guarded)`);
+            return { status: "WRITTEN", filePath: normalizedPath, bytes: Buffer.byteLength(content) };
         });
     }
 

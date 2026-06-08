@@ -86,6 +86,17 @@ describe("createSessionIdentity", () => {
         expect(session.resolve("whatever-cursor")).toBe("orchestrator");
     });
 
+    test("resolve() honors a specific incoming label, pinned to the session token", () => {
+        const session = createSessionIdentity({ AXIS_AGENT_SUFFIX: "fixed" });
+        // A client that sends a distinct, meaningful id keeps it (not discarded),
+        // while still getting this session's unique suffix.
+        expect(session.resolve("reviewer")).toBe("reviewer-fixed");
+        expect(session.resolve("builder")).toBe("builder-fixed");
+        // ...but an explicit AXIS_AGENT_ID still overrides any incoming label.
+        const fixed = createSessionIdentity({ AXIS_AGENT_ID: "orchestrator", AXIS_AGENT_SUFFIX: "x" });
+        expect(fixed.resolve("reviewer")).toBe("orchestrator");
+    });
+
     test("two independent sessions never share an id", () => {
         // No fixed suffix => each session mints its own; ids must differ.
         const a = createSessionIdentity({ CLAUDECODE: "1" });

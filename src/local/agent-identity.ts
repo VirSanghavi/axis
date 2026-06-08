@@ -98,11 +98,13 @@ export function createSessionIdentity(env: NodeJS.ProcessEnv = process.env): Ses
     const token = defaultSessionSuffix(env);
     const explicit = env.AXIS_AGENT_ID?.trim();
     const base = explicit || detectHostBase(env) || normalizeBase(env.AXIS_AGENT_BASE);
-    const id = explicit ? explicit : `${base}-${token}`;
-    const resolve = (): string => id;
+    // Honor the per-call label (via resolveAgentId) so a client that sends a
+    // specific id keeps it, while still pinning every result to this process's
+    // token for uniqueness. AXIS_AGENT_ID overrides regardless of `incoming`.
+    const resolve = (incoming?: string): string => resolveAgentId(incoming, env, token);
 
     return {
-        id,
+        id: resolve(),
         base,
         source: explicit ? "explicit" : "derived",
         resolve,

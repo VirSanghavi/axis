@@ -590,6 +590,19 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         inputSchema: { type: "object", properties: {}, required: [] }
       },
       {
+        name: "guarded_write",
+        description: "**ENFORCED WRITE**: Write a file *through* your lock. The server writes only if you hold the lock AND the file is unchanged since you locked it — otherwise it returns NO_LOCK, DENIED (held by another agent), or CONFLICT (changed underneath you). Use this instead of a raw editor when you want Axis to actually *prevent* clobbering, not just detect it. Refreshes the lock's fingerprint on success.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            agentId: { type: "string" },
+            filePath: { type: "string" },
+            content: { type: "string", description: "Full new file contents." }
+          },
+          required: ["agentId", "filePath", "content"]
+        }
+      },
+      {
         name: "update_shared_context",
         description: "**LIVE NOTEPAD**: The project's short-term working memory.\n- **ALWAYS** call this after completing a significant step (e.g., 'Fixed bug in auth.ts', 'Ran tests, all passed').\n- This content is visible to *all* other agents immediately.\n- Think of this as a team chat or 'standup' update.",
         inputSchema: {
@@ -1171,6 +1184,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (name === "verify_file_lock") {
     const { agentId, filePath } = args as any;
     const result = await nerveCenter.verifyFileAccess(agentId, filePath);
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+  }
+  if (name === "guarded_write") {
+    const { agentId, filePath, content } = args as any;
+    const result = await nerveCenter.guardedWrite(agentId, filePath, content);
     return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   }
   if (name === "list_agents") {

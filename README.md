@@ -117,6 +117,7 @@ The server exposes these tools to agents (23 total in the current source).
 - `propose_file_access` — pessimistically lock files before editing
 - `list_locks` — inspect active file ownership and intent
 - `verify_file_lock` — confirm a locked file wasn't changed under you before overwriting (tamper check)
+- `guarded_write` — enforced write: the server writes only if you hold the lock and the file is unchanged (rejects clobbers)
 - `release_file_access` — release an owned lock early
 - `list_agents` — see which agents are active or idle on the project (visible before jobs are posted)
 - `switch_project` — rebind a live MCP session to another workspace without reconnecting

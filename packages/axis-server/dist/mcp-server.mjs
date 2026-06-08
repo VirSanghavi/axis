@@ -708,7 +708,8 @@ var NerveCenter = class _NerveCenter {
           filePath: row.file_path,
           intent: row.intent,
           userPrompt: row.user_prompt,
-          timestamp: Date.parse(row.updated_at)
+          timestamp: Date.parse(row.updated_at),
+          contentHash: row.content_hash ?? void 0
         }));
       } catch (e) {
         logger.warn("Failed to fetch locks from DB", e);
@@ -1347,6 +1348,14 @@ ${notepad}`;
               }
             };
           }
+          try {
+            const contentHash2 = await hashFileIfExists(path3.resolve(process.cwd(), filePath));
+            if (contentHash2) {
+              await this.supabase.from("locks").update({ content_hash: contentHash2 }).eq("project_id", this._projectId).eq("file_path", normalizedPath).eq("agent_id", agentId);
+            }
+          } catch (hashErr) {
+            logger.warn("[NerveCenter] Could not persist lock content_hash (migration 0009 applied?)", hashErr);
+          }
           await this.logLockEvent("GRANTED", normalizedPath, agentId, void 0, intent);
           await this.appendToNotepad(`
 - [LOCK] ${agentId} locked ${normalizedPath}
@@ -1419,6 +1428,48 @@ ${notepad}`;
         heldBy: lock.agentId,
         message: `'${normalizedPath}' is unchanged since the lock was granted.`
       };
+    });
+  }
+  /**
+   * Write a file THROUGH the lock — the enforced (not just evident) path.
+   * The server performs the write only if the caller holds the lock AND the
+   * file hasn't changed since the lock was granted (optimistic concurrency),
+   * then refreshes the fingerprint. Agents that route writes here cannot
+   * clobber a file locked by someone else or overwrite concurrent changes —
+   * real prevention, where verify_file_lock is only detection.
+   */
+  async guardedWrite(agentId, filePath, content) {
+    return await this.mutex.runExclusive(async () => {
+      const normalizedPath = _NerveCenter.normalizeLockPath(filePath);
+      const fileCheck = await _NerveCenter.validateFileOnly(filePath);
+      if (!fileCheck.valid) return { status: "REJECTED", message: fileCheck.reason };
+      const lock = this.state.locks[normalizedPath] || (await this.listLocks()).find(
+        (l) => _NerveCenter.normalizeLockPath(l.filePath) === normalizedPath
+      );
+      if (!lock) {
+        return { status: "NO_LOCK", message: `Acquire a lock with propose_file_access before writing '${normalizedPath}'.` };
+      }
+      if (lock.agentId !== agentId) {
+        return { status: "DENIED", message: this.orchestrationMessage(normalizedPath, lock.agentId, lock.intent) };
+      }
+      const absolutePath = path3.resolve(process.cwd(), filePath);
+      const currentHash = await hashFileIfExists(absolutePath);
+      if (lock.contentHash !== void 0 && currentHash !== void 0 && currentHash !== lock.contentHash) {
+        return {
+          status: "CONFLICT",
+          message: `'${normalizedPath}' changed since you locked it. Re-read and re-lock before writing to avoid clobbering concurrent changes.`
+        };
+      }
+      await fs4.mkdir(path3.dirname(absolutePath), { recursive: true });
+      await fs4.writeFile(absolutePath, content);
+      if (this.state.locks[normalizedPath]) {
+        this.state.locks[normalizedPath].contentHash = hashContent(content);
+        this.state.locks[normalizedPath].timestamp = Date.now();
+        await this.saveState();
+      }
+      await this.appendToNotepad(`
+- [WRITE] ${agentId} wrote ${normalizedPath} (guarded)`);
+      return { status: "WRITTEN", filePath: normalizedPath, bytes: Buffer.byteLength(content) };
     });
   }
   async updateSharedContext(text, agentId) {
@@ -1595,14 +1646,20 @@ function defaultSessionSuffix(env = process.env) {
   const salt = Math.random().toString(36).slice(2, 6);
   return `${pid.toString(36)}${salt}`;
 }
+function resolveAgentId(requestedId, env, token) {
+  const explicit = env.AXIS_AGENT_ID?.trim();
+  if (explicit) return explicit;
+  const requestedBase = normalizeBase(requestedId);
+  const base = requestedBase !== "agent" ? requestedBase : detectHostBase(env) || normalizeBase(env.AXIS_AGENT_BASE);
+  return `${base}-${token}`;
+}
 function createSessionIdentity(env = process.env) {
   const token = defaultSessionSuffix(env);
   const explicit = env.AXIS_AGENT_ID?.trim();
   const base = explicit || detectHostBase(env) || normalizeBase(env.AXIS_AGENT_BASE);
-  const id = explicit ? explicit : `${base}-${token}`;
-  const resolve = () => id;
+  const resolve = (incoming) => resolveAgentId(incoming, env, token);
   return {
-    id,
+    id: resolve(),
     base,
     source: explicit ? "explicit" : "derived",
     resolve
@@ -2885,6 +2942,19 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       inputSchema: { type: "object", properties: {}, required: [] }
     },
     {
+      name: "guarded_write",
+      description: "**ENFORCED WRITE**: Write a file *through* your lock. The server writes only if you hold the lock AND the file is unchanged since you locked it \u2014 otherwise it returns NO_LOCK, DENIED (held by another agent), or CONFLICT (changed underneath you). Use this instead of a raw editor when you want Axis to actually *prevent* clobbering, not just detect it. Refreshes the lock's fingerprint on success.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          agentId: { type: "string" },
+          filePath: { type: "string" },
+          content: { type: "string", description: "Full new file contents." }
+        },
+        required: ["agentId", "filePath", "content"]
+      }
+    },
+    {
       name: "update_shared_context",
       description: "**LIVE NOTEPAD**: The project's short-term working memory.\n- **ALWAYS** call this after completing a significant step (e.g., 'Fixed bug in auth.ts', 'Ran tests, all passed').\n- This content is visible to *all* other agents immediately.\n- Think of this as a team chat or 'standup' update.",
       inputSchema: {
@@ -3383,6 +3453,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (name === "verify_file_lock") {
     const { agentId, filePath } = args;
     const result = await nerveCenter.verifyFileAccess(agentId, filePath);
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+  }
+  if (name === "guarded_write") {
+    const { agentId, filePath, content } = args;
+    const result = await nerveCenter.guardedWrite(agentId, filePath, content);
     return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   }
   if (name === "list_agents") {

@@ -50,6 +50,7 @@ next-env.d.ts
 !/supabase/migrations/
 /supabase/migrations/*
 !/supabase/migrations/0008_oauth_org_binding.sql
+!/supabase/migrations/0009_lock_content_hash.sql
 /sandbox_mcp_test
 /sandboxpackages/python-sdk/axis/__pycache__/
 sandbox/

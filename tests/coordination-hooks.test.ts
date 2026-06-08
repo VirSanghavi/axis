@@ -71,6 +71,50 @@ describe("tamper-evident locks (verifyFileAccess)", () => {
     });
 });
 
+describe("enforced writes (guardedWrite)", () => {
+    test("NO_LOCK when writing a file you haven't locked", async () => {
+        const { nc, dir } = await makeNerveCenter();
+        cleanups.push(() => rm(dir, { recursive: true, force: true }));
+        const res = await nc.guardedWrite("A", "out.ts", "data");
+        expect(res.status).toBe("NO_LOCK");
+    });
+
+    test("writes when you hold the lock and refreshes the fingerprint", async () => {
+        const { nc, dir } = await makeNerveCenter();
+        cleanups.push(() => rm(dir, { recursive: true, force: true }));
+        const file = path.join(process.cwd(), "out.ts");
+        await nc.proposeFileAccess("A", file, "create", "p");
+        const res = await nc.guardedWrite("A", file, "export const x = 1;");
+        expect(res.status).toBe("WRITTEN");
+        // The write landed, and a subsequent verify sees no tampering.
+        expect((await nc.verifyFileAccess("A", file)).status).toBe("OK");
+        // A second guarded write still works (fingerprint was refreshed).
+        expect((await nc.guardedWrite("A", file, "export const x = 2;")).status).toBe("WRITTEN");
+    });
+
+    test("DENIED when another agent holds the lock", async () => {
+        const { nc, dir } = await makeNerveCenter();
+        cleanups.push(() => rm(dir, { recursive: true, force: true }));
+        const file = path.join(process.cwd(), "shared.ts");
+        await nc.proposeFileAccess("A", file, "owns it", "p");
+        const res = await nc.guardedWrite("B", file, "B's content");
+        expect(res.status).toBe("DENIED");
+        expect(res.message).toContain("A");
+    });
+
+    test("CONFLICT when the file changed since the lock was granted", async () => {
+        const { nc, dir } = await makeNerveCenter();
+        const { writeFile } = await import("fs/promises");
+        cleanups.push(() => rm(dir, { recursive: true, force: true }));
+        const file = path.join(process.cwd(), "race.ts");
+        await writeFile(file, "original");
+        await nc.proposeFileAccess("A", file, "edit", "p"); // fingerprint = hash("original")
+        await writeFile(file, "rewritten by someone outside the lock");
+        const res = await nc.guardedWrite("A", file, "A's intended content");
+        expect(res.status).toBe("CONFLICT");
+    });
+});
+
 describe("actionable lock denials", () => {
     test("REQUIRES_ORCHESTRATION says who holds it, why, and how to recover", async () => {
         const { nc, dir } = await makeNerveCenter();
