@@ -9,12 +9,14 @@ import {
 import dotenv from "dotenv";
 import { ContextManager } from "./context-manager.js";
 import { NerveCenter } from "./nerve-center.js";
+import { createSessionIdentity } from "./agent-identity.js";
 import { RagEngine } from "./rag-engine.js";
 import { indexCodebase } from "./indexer.js";
 import { logger } from "../utils/logger.js";
 import path from "path";
 import fs from "fs";
 import { localSearch } from "./local-search.js";
+import { resolveProjectIdentity } from "./project-identity.js";
 
 // MCP servers receive configuration via environment variables passed by the MCP client (Cursor)
 // These come from the mcp.json config file, not from .env.local
@@ -106,10 +108,17 @@ const nerveCenter = new NerveCenter(manager, {
   supabaseServiceRoleKey: useRemoteApiOnly ? null : process.env.SUPABASE_SERVICE_ROLE_KEY,
   // Leave undefined when unset so NerveCenter auto-derives the project from the
   // working directory (and .axis/axis.json) instead of pinning to "default".
-  projectName: process.env.PROJECT_NAME
+  projectName: process.env.PROJECT_NAME,
+  projectRoot: process.env.AXIS_PROJECT_ROOT || process.env.SUPERSET_WORKSPACE_PATH || process.env.SUPERSET_ROOT_PATH
 });
 
+// Mint one unique identity for this server process. Every tool call's agentId
+// is normalized onto it (see CallTool handler) so two concurrent sessions never
+// silently share an id and skip each other's locks. AXIS_AGENT_ID overrides.
+const sessionIdentity = createSessionIdentity(process.env);
+
 logger.info("=== Axis MCP Server Initialized ===");
+logger.info(`Session agent identity: ${sessionIdentity.id} (${sessionIdentity.source})`);
 
 // ── Subscription Verification (server-level gate — prompt-injection proof) ──
 // This runs in the Node.js process, not in the LLM context.
@@ -593,6 +602,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           required: []
         }
       },
+      {
+        name: "switch_project",
+        description: "**SWITCH PROJECT**: Rebind the live MCP session to another workspace without reconnecting.\n- Use this when you move from one repository to another inside the same client session.\n- If `projectRoot` is omitted, the server re-detects from the current runtime hints.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            projectRoot: { type: "string", description: "Absolute path to the target repository root." },
+            projectName: { type: "string", description: "Optional explicit project name override." }
+          },
+          required: []
+        }
+      },
       // --- Job Board (Task Orchestration) ---
       {
         name: "post_job",
@@ -728,6 +749,15 @@ function recordToolCall(name: string, args: unknown): void {
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
+
+  // Normalize the caller's agentId onto this session's unique identity so
+  // locks/jobs/notepad attribution can never collide across concurrent
+  // sessions that send the same generic id (e.g. "claude-code").
+  if (args && typeof (args as Record<string, unknown>).agentId === "string") {
+    (args as Record<string, unknown>).agentId = sessionIdentity.resolve(
+      (args as Record<string, unknown>).agentId as string
+    );
+  }
 
   logger.info("Tool call", { name });
   recordToolCall(name, args);
@@ -1038,9 +1068,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const result = await nerveCenter.getProjectSoul();
     return { content: [{ type: "text", text: result }] };
   }
-  if (name === "update_project_soul") {
-    const { context, conventions } = args as any;
-    const updated: string[] = [];
+            if (name === "update_project_soul") {
+                const { context, conventions } = args as any;
+                const updated: string[] = [];
     if (context) {
       await manager.updateFile("context.md", context, false);
       updated.push("context.md");
@@ -1051,14 +1081,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
     if (updated.length === 0) {
       return { content: [{ type: "text", text: "No changes — provide `context` and/or `conventions` parameters." }] };
-    }
-    return { content: [{ type: "text", text: `Project soul updated: ${updated.join(", ")}` }] };
-  }
-  if (name === "post_job") {
-    const { title, description, priority, dependencies } = args as any;
-    const result = await nerveCenter.postJob(title, description, priority, dependencies);
-    return { content: [{ type: "text", text: JSON.stringify(result) }] };
-  }
+                }
+                return { content: [{ type: "text", text: `Project soul updated: ${updated.join(", ")}` }] };
+            }
+            if (name === "switch_project") {
+                const { projectRoot, projectName } = args as any;
+                const identity = resolveProjectIdentity(projectRoot, process.cwd(), process.env);
+                const result = await nerveCenter.switchProject({
+                    root: identity.root,
+                    projectName: projectName || identity.projectName
+                });
+                return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+            }
+            if (name === "post_job") {
+                const { title, description, priority, dependencies } = args as any;
+                const result = await nerveCenter.postJob(title, description, priority, dependencies);
+                return { content: [{ type: "text", text: JSON.stringify(result) }] };
+            }
   if (name === "list_jobs") {
     const includeCompleted = Boolean(args?.includeCompleted);
     const jobs = await nerveCenter.listJobs();

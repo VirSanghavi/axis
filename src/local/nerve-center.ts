@@ -4,6 +4,7 @@ import fs from "fs/promises";
 import { existsSync } from "fs";
 import path from "path";
 import { logger } from "../utils/logger.js";
+import { deriveProjectName, projectStateFilePath } from "./project-identity.js";
 
 // Interfaces
 interface FileLock {
@@ -45,8 +46,6 @@ interface NerveCenterState {
     jobs: Record<string, Job>; // Fallback local jobs
     liveNotepad: string;
 }
-
-const STATE_FILE = process.env.NERVE_CENTER_STATE_FILE || path.join(process.cwd(), "history", "nerve-center-state.json");
 const LOCK_TIMEOUT_DEFAULT = 30 * 60 * 1000; // 30 minutes
 
 // Circuit breaker constants
@@ -62,6 +61,7 @@ class CircuitOpenError extends Error {
 
 interface NerveCenterOptions {
     stateFilePath?: string;
+    projectRoot?: string;
     lockTimeout?: number;
     supabaseUrl?: string | null;
     supabaseServiceRoleKey?: string | null;
@@ -77,6 +77,8 @@ export class NerveCenter {
     private state: NerveCenterState;
     private contextManager: any;
     private stateFilePath: string;
+    private stateFilePathExplicit: boolean;
+    private projectRoot: string;
     private lockTimeout: number;
     private supabase?: SupabaseClient;
     private _projectId?: string; // Renamed backing field
@@ -93,7 +95,9 @@ export class NerveCenter {
     constructor(contextManager: any, options: NerveCenterOptions = {}) {
         this.mutex = new Mutex();
         this.contextManager = contextManager; // this handles apiUrl/apiSecret
-        this.stateFilePath = options.stateFilePath || STATE_FILE;
+        this.projectRoot = path.resolve(options.projectRoot || process.cwd());
+        this.stateFilePathExplicit = options.stateFilePath !== undefined;
+        this.stateFilePath = options.stateFilePath || projectStateFilePath(this.projectRoot);
         this.lockTimeout = options.lockTimeout || LOCK_TIMEOUT_DEFAULT;
         
         // Check if remote API is configured (customer mode)
@@ -156,33 +160,72 @@ export class NerveCenter {
         // 2. We're in dev mode (not using remote API only)
         // This ensures customer mode uses consistent project names from env vars
         if (!this.projectNameExplicit) {
-            await this.detectProjectName();
+            await this.detectProjectName(this.projectRoot);
         }
 
         if (this.useSupabase) {
             await this.ensureProjectId();
         }
 
-        // Recover notepad and projectId from cloud if Remote API is available
-        if (this.contextManager.apiUrl) {
-            try {
-                const { liveNotepad, projectId } = await this.callCoordination(`sessions/sync?projectName=${this.projectName}`) as { liveNotepad: string, projectId: string };
-                if (projectId) {
-                    this._projectId = projectId;
-                    logger.info(`NerveCenter: Resolved projectId from cloud: ${this._projectId}`);
-                }
-                if (liveNotepad && (!this.state.liveNotepad || this.state.liveNotepad.startsWith("Session Start:"))) {
-                    this.state.liveNotepad = liveNotepad;
-                    logger.info(`NerveCenter: Recovered live notepad from cloud for project: ${this.projectName}`);
-                }
-            } catch (e: any) {
-                logger.warn("Failed to sync project/notepad with Remote API. Using local/fallback.", e);
+        await this.syncRemoteProjectState();
+    }
+
+    async switchProject(identity: { root: string; projectName?: string }) {
+        return await this.mutex.runExclusive(async () => {
+            await this.saveState();
+
+            this.projectRoot = path.resolve(identity.root);
+            process.chdir(this.projectRoot);
+            if (!this.stateFilePathExplicit) {
+                this.stateFilePath = projectStateFilePath(this.projectRoot);
             }
+
+            this.projectName = identity.projectName || deriveProjectName(this.projectRoot);
+            this.projectNameExplicit = Boolean(identity.projectName);
+            this._projectId = undefined;
+            this.state = NerveCenter.createEmptyState();
+
+            await this.loadState();
+            if (this.useSupabase) {
+                await this.ensureProjectId();
+            }
+            await this.syncRemoteProjectState();
+
+            return {
+                status: "SWITCHED",
+                projectRoot: this.projectRoot,
+                projectName: this.projectName,
+                stateFilePath: this.stateFilePath
+            };
+        });
+    }
+
+    private static createEmptyState(): NerveCenterState {
+        return {
+            locks: {},
+            jobs: {},
+            liveNotepad: "Session Start: " + new Date().toISOString() + "\n"
+        };
+    }
+
+    private async syncRemoteProjectState() {
+        if (!this.contextManager.apiUrl) return;
+        try {
+            const { liveNotepad, projectId } = await this.callCoordination(`sessions/sync?projectName=${this.projectName}`) as { liveNotepad: string, projectId: string };
+            if (projectId) {
+                this._projectId = projectId;
+                logger.info(`NerveCenter: Resolved projectId from cloud: ${this._projectId}`);
+            }
+            if (liveNotepad && (!this.state.liveNotepad || this.state.liveNotepad.startsWith("Session Start:"))) {
+                this.state.liveNotepad = liveNotepad;
+                logger.info(`NerveCenter: Recovered live notepad from cloud for project: ${this.projectName}`);
+            }
+        } catch (e: any) {
+            logger.warn("Failed to sync project/notepad with Remote API. Using local/fallback.", e);
         }
     }
 
-    private async detectProjectName() {
-        const startDir = process.cwd();
+    private async detectProjectName(startDir: string = this.projectRoot) {
         let projectRoot = startDir;
         let current = startDir;
         const filesystemRoot = path.parse(current).root;
@@ -562,10 +605,17 @@ export class NerveCenter {
     private async loadState() {
         try {
             const data = await fs.readFile(this.stateFilePath, "utf-8");
-            this.state = JSON.parse(data);
+            const parsed = JSON.parse(data) as Partial<NerveCenterState>;
+            this.state = {
+                ...NerveCenter.createEmptyState(),
+                ...parsed,
+                locks: parsed.locks || {},
+                jobs: parsed.jobs || {},
+                liveNotepad: parsed.liveNotepad || NerveCenter.createEmptyState().liveNotepad,
+            };
             logger.info("State loaded from disk");
         } catch (_error) {
-            // Ignore ENOENT
+            this.state = NerveCenter.createEmptyState();
         }
     }
 
@@ -1239,7 +1289,7 @@ export class NerveCenter {
         return await this.mutex.runExclusive(async () => {
             const content = await this.getNotepad();
             const filename = `session-${new Date().toISOString().replace(/[:.]/g, "-")}.md`;
-            const historyPath = path.join(process.cwd(), "history", filename);
+            const historyPath = path.join(this.projectRoot, "history", filename);
 
             try {
                 await fs.mkdir(path.dirname(historyPath), { recursive: true });

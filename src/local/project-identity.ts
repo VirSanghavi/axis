@@ -8,6 +8,10 @@ export interface ProjectIdentity {
     ignoredConfiguredRoot?: string;
 }
 
+export function projectStateFilePath(root: string): string {
+    return path.join(path.resolve(root), "history", "nerve-center-state.json");
+}
+
 export function findProjectRoot(start: string): string {
     let current = path.resolve(start);
     const filesystemRoot = path.parse(current).root;

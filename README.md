@@ -68,6 +68,10 @@ PROJECT_NAME=default
     across repository switches. Set `AXIS_PROJECT_NAME` only when a project
     name must intentionally remain fixed across workspace changes.
 
+If you switch repositories inside the same MCP session, call `switch_project`
+with the new workspace root instead of reconnecting. It reloads the active
+project state in-process.
+
 4.  **CLI Usage**:
     ```bash
     # Add an entry to activity.md
@@ -98,7 +102,7 @@ Configure your IDE (Claude Desktop, Cursor, etc.) to launch the published wrappe
 For the **hosted** backend (recommended for teams), point at `https://useaxis.dev/api/mcp` with a Bearer key instead — see [agent-instructions/mcp-setup.md](agent-instructions/mcp-setup.md).
 
 ### MCP Tooling
-The server exposes these tools to agents (22 total in the current source).
+The server exposes these tools to agents (23 total in the current source).
 
 **Coordination (free, open-core):**
 
@@ -113,6 +117,7 @@ The server exposes these tools to agents (22 total in the current source).
 - `propose_file_access` — pessimistically lock files before editing
 - `list_locks` — inspect active file ownership and intent
 - `release_file_access` — release an owned lock early
+- `switch_project` — rebind a live MCP session to another workspace without reconnecting
 - `force_unlock` — admin override for stale locks from crashed agents
 - `update_shared_context` — append to the Live Notepad
 - `finalize_session` — archive the session and clear all remaining locks

@@ -1,0 +1,11 @@
+# Publish guardrails
+.env
+.env.*
+*.pem
+*.map
+*.log
+.axis/
+src/
+tests/
+supabase/
+frontend/

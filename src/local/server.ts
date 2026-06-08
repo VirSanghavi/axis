@@ -11,6 +11,7 @@ import dotenv from "dotenv";
 import { ContextManager } from "./context-manager.js";
 import { NerveCenter } from "./nerve-center.js";
 import { logger } from "../utils/logger.js";
+import { resolveProjectIdentity } from "./project-identity.js";
 
 // Load environment variables
 dotenv.config({ path: ".env.local" });
@@ -20,7 +21,10 @@ const manager = new ContextManager(
     process.env.SHARED_CONTEXT_API_SECRET
 );
 
-const nerveCenter = new NerveCenter(manager);
+const nerveCenter = new NerveCenter(manager, {
+    projectRoot: process.env.AXIS_PROJECT_ROOT || process.env.SUPERSET_WORKSPACE_PATH || process.env.SUPERSET_ROOT_PATH,
+    projectName: process.env.PROJECT_NAME
+});
 
 // --- File System Operations (Checklist #9) ---
 const REQUIRED_DIRS = ["agent-instructions", "history"];
@@ -215,6 +219,18 @@ app.get("/sse", async (req, res) => {
                         required: []
                     }
                 },
+                {
+                    name: "switch_project",
+                    description: "Rebind the live MCP session to another workspace without reconnecting.",
+                    inputSchema: {
+                        type: "object",
+                        properties: {
+                            projectRoot: { type: "string" },
+                            projectName: { type: "string" }
+                        },
+                        required: []
+                    }
+                },
                 // --- Job Board (Task Orchestration) ---
                 {
                     name: "post_job",
@@ -355,6 +371,15 @@ app.get("/sse", async (req, res) => {
                     return { content: [{ type: "text", text: "No changes — provide `context` and/or `conventions` parameters." }] };
                 }
                 return { content: [{ type: "text", text: `Project soul updated: ${updated.join(", ")}` }] };
+            }
+            if (name === "switch_project") {
+                const { projectRoot, projectName } = args as any;
+                const identity = resolveProjectIdentity(projectRoot, process.cwd(), process.env);
+                const result = await nerveCenter.switchProject({
+                    root: identity.root,
+                    projectName: projectName || identity.projectName
+                });
+                return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
             }
 
             // Job Board

@@ -54,6 +54,7 @@ Skip jobs ONLY for: single-line fixes, typos, config tweaks.
 - Release locks IMMEDIATELY by completing jobs. Never hold a lock while doing unrelated work.
 - Use `release_file_access` when a file is no longer needed but the job remains active.
 - `force_unlock` is a **last resort** — only for locks >25 min old from a crashed agent. Always give a reason.
+- If the user switches repositories in the same MCP session, call `switch_project` with the new project root instead of reconnecting the server.
 
 ### Releasing Locks (CRITICAL — do not skip)
 **Every file you lock MUST be unlocked before your session ends.** Dangling locks block every other agent in the project.
