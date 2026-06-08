@@ -70,6 +70,11 @@ If the user asks for a specific task OR simply says "help out":
 - Call `propose_file_access(...)` before editing.
 - **Conflict Strategy**: If locked, move to a different task or wait. Do not pester the user unless blocked entirely.
 
+**Locks are advisory — close the gap before you write.** A lock records intent; it does not physically stop another process. So before you overwrite a locked file:
+- Prefer `guarded_write(agentId, filePath, content)` — the server writes only if you still hold the lock **and** the file is unchanged since you locked it (it rejects `NO_LOCK`/`DENIED`/`CONFLICT`). This is enforced prevention.
+- If you must edit with your own editor instead, call `verify_file_lock(agentId, filePath)` immediately before writing. On `CONFLICT`, re-read the file and reconcile — do not clobber.
+- On `CONFLICT`/`DENIED`, never force the write; coordinate via `update_shared_context` or pick another task.
+
 ### 5. Releasing Locks (CRITICAL)
 **Every file you lock MUST be unlocked before your session ends.** Dangling locks block every other agent.
 - Call `complete_job(...)` after finishing each task — this releases locks for that job.
