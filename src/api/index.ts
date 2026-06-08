@@ -1,10 +1,8 @@
 import { Hono } from "hono";
 import { createClient } from "@supabase/supabase-js";
 import OpenAI from "openai";
-import { bearerAuth } from "hono/bearer-auth";
 import { z } from "zod";
 import { cors } from 'hono/cors';
-import { logger } from "../utils/logger.js"; // Note: Need to ensure this path works or use local logger if running in diff context
 import dotenv from "dotenv";
 
 dotenv.config({ path: ".env.local" });
@@ -27,7 +25,10 @@ type Bindings = {
     PROJECT_NAME?: string;
 };
 
-const app = new Hono<{ Bindings: Bindings, Variables: { user: any } }>();
+const app = new Hono<{
+    Bindings: Bindings,
+    Variables: { user?: unknown, projectId?: string }
+}>();
 
 // Enable CORS — restricted to authorized domains only
 const ALLOWED_ORIGINS = [
@@ -42,9 +43,8 @@ app.use("/*", cors({
     }
 }));
 
-// Auth Middleware with Subscription Check
+// Unified auth: master secret, Supabase user session, or hashed Axis API key.
 app.use("/*", async (c, next) => {
-    // Skip public endpoints if any (e.g. health)
     if (c.req.path === '/health') return next();
 
     const authHeader = c.req.header("Authorization");
@@ -52,8 +52,7 @@ app.use("/*", async (c, next) => {
         return c.json({ error: "Unauthorized: Missing Authorization header" }, 401);
     }
 
-    const token = authHeader.replace("Bearer ", "");
-    // Reuse Supabase client or create new one with bindings
+    const token = authHeader.replace(/^Bearer\s+/i, "");
     const supabaseUrl = process.env.SUPABASE_URL || c.env?.SUPABASE_URL;
     const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || c.env?.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -62,30 +61,45 @@ app.use("/*", async (c, next) => {
     }
 
     const supabase = createClient(supabaseUrl, supabaseKey);
+    const masterKey = process.env.SHARED_CONTEXT_API_SECRET || c.env?.SHARED_CONTEXT_API_SECRET;
+    if (masterKey && token === masterKey) {
+        await next();
+        return;
+    }
 
-    // Validate Token
     const { data: { user }, error } = await supabase.auth.getUser(token);
+    if (!error && user) {
+        const { data: profile } = await supabase
+            .from('profiles')
+            .select('subscription_status')
+            .eq('id', user.id)
+            .single();
 
-    if (error || !user) {
-        // Fallback: Check if it's a shared-context-api-key (custom logic)
-        if (token === (process.env.SHARED_CONTEXT_API_SECRET || c.env?.SHARED_CONTEXT_API_SECRET)) {
-            return next();
+        if (profile?.subscription_status !== 'active' && profile?.subscription_status !== 'pro') {
+            return c.json({ error: "Payment Required: Please subscribe to continue." }, 402);
         }
-        return c.json({ error: "Unauthorized: Invalid Token" }, 401);
+
+        c.set('user', user);
+        await next();
+        return;
     }
 
-    // Check subscription
-    const { data: profile } = await supabase.from('profiles').select('subscription_status').eq('id', user.id).single();
+    const crypto = await import('node:crypto');
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+    const { data: keyData, error: keyError } = await supabase
+        .from('api_keys')
+        .select('id, project_id, is_active')
+        .eq('key_hash', tokenHash)
+        .maybeSingle();
 
-    if (profile?.subscription_status !== 'active' && profile?.subscription_status !== 'pro') {
-        return c.json({ error: "Payment Required: Please subscribe to continue." }, 402);
+    if (keyError || !keyData || keyData.is_active === false) {
+        return c.json({ error: "Unauthorized: Invalid API Key" }, 401);
     }
 
-    // Attach user to context
-    c.set('user', user);
+    supabase.from('api_keys').update({ last_used_at: new Date().toISOString() }).eq('id', keyData.id).then();
+    c.set('projectId', keyData.project_id);
     await next();
 });
-
 
 // Rate Limiting Middleware
 app.use("/*", async (c, next) => {
@@ -97,52 +111,6 @@ app.use("/*", async (c, next) => {
         return c.json({ error: "Too many requests" }, 429);
     }
     await next();
-});
-
-// Auth Middleware with Database Keys
-app.use("/*", async (c, next) => {
-    // 1. Skip if no secret configured (Warning mode)
-    // But wait, user wants SECURE. So we enforce keys.
-    const supabaseUrl = c.env.SUPABASE_URL || process.env.SUPABASE_URL;
-    const supabaseKey = c.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-    if (!supabaseUrl || !supabaseKey) {
-        return c.json({ error: "Server Configuration Error: Missing Supabase Keys" }, 500);
-    }
-
-    const authHeader = c.req.header("Authorization");
-    if (!authHeader) {
-        return c.json({ error: "Unauthorized: Missing Authorization header" }, 401);
-    }
-
-    const token = authHeader.replace("Bearer ", "");
-
-    // 2. Check Master Key (Emergency Bypass)
-    const masterKey = c.env.SHARED_CONTEXT_API_SECRET || process.env.SHARED_CONTEXT_API_SECRET;
-    if (masterKey && token === masterKey) {
-        return next();
-    }
-
-    // 3. Check Database Keys using HASH
-    const crypto = await import('node:crypto'); // Dynamic import for Edge/Bun compatibility
-    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
-
-    const supabase = createClient(supabaseUrl, supabaseKey);
-    const { data: keyData, error } = await supabase
-        .from('api_keys')
-        .select('id, project_id, is_active')
-        .eq('key_hash', tokenHash) // Check against HASH
-        .maybeSingle();
-
-    if (error || !keyData) { // Removed is_active check for now as it wasn't in schema V3 yet, or add it to schema
-        // console.error("Auth Fail:", error); // Debug
-        return c.json({ error: "Unauthorized: Invalid API Key" }, 401);
-    }
-
-    // Update last_used_at (async, don't await)
-    supabase.from('api_keys').update({ last_used_at: new Date().toISOString() }).eq('id', keyData.id).then();
-
-    return next();
 });
 
 // Initialize Clients
@@ -167,7 +135,8 @@ app.post("/embed", async (c) => {
         items: z.array(z.object({
             content: z.string(),
             metadata: z.record(z.any()).optional()
-        }))
+        })),
+        projectName: z.string().min(1).optional()
     });
 
     let payload;
@@ -182,11 +151,14 @@ app.post("/embed", async (c) => {
 
 
     const { items } = payload;
-    const projectName = c.env.PROJECT_NAME || process.env.PROJECT_NAME || "default";
+    const projectName = payload.projectName || c.env.PROJECT_NAME || process.env.PROJECT_NAME || "default";
 
     // Get/Create Project ID
-    let projectId;
+    let projectId = c.get('projectId');
     try {
+        if (projectId) {
+            // API keys are permanently scoped to their owning project.
+        } else {
         const { data: project, error: projectError } = await supabase
             .from('projects')
             .select('id')
@@ -206,6 +178,7 @@ app.post("/embed", async (c) => {
 
             if (createError) throw createError;
             projectId = newProj.id;
+        }
         }
     } catch (dbErr) {
         console.error("DB Error getting project:", dbErr);
@@ -267,7 +240,8 @@ app.post("/search", async (c) => {
     const schema = z.object({
         query: z.string(),
         limit: z.number().optional().default(5),
-        threshold: z.number().optional().default(0.5)
+        threshold: z.number().optional().default(0.5),
+        projectName: z.string().min(1).optional()
     });
 
     let payload;
@@ -279,18 +253,20 @@ app.post("/search", async (c) => {
     }
 
     const { query, limit, threshold } = payload;
-    const projectName = c.env.PROJECT_NAME || process.env.PROJECT_NAME || "default";
+    const projectName = payload.projectName || c.env.PROJECT_NAME || process.env.PROJECT_NAME || "default";
 
-    let projectId: string | undefined;
+    let projectId: string | undefined = c.get('projectId');
     try {
-        const { data: project, error: projectError } = await supabase
-            .from('projects')
-            .select('id')
-            .eq('name', projectName)
-            .maybeSingle();
+        if (!projectId) {
+            const { data: project, error: projectError } = await supabase
+                .from('projects')
+                .select('id')
+                .eq('name', projectName)
+                .maybeSingle();
 
-        if (projectError) throw projectError;
-        projectId = project?.id;
+            if (projectError) throw projectError;
+            projectId = project?.id;
+        }
     } catch (dbErr) {
         console.error("DB Error getting project:", dbErr);
         return c.json({ error: "Database error" }, 500);

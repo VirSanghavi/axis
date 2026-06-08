@@ -164,6 +164,23 @@ app.get("/sse", async (req, res) => {
                     }
                 },
                 {
+                    name: "release_file_access",
+                    description: "Release a file lock owned by the calling agent.",
+                    inputSchema: {
+                        type: "object",
+                        properties: {
+                            agentId: { type: "string" },
+                            filePath: { type: "string" }
+                        },
+                        required: ["agentId", "filePath"]
+                    }
+                },
+                {
+                    name: "list_locks",
+                    description: "List active file locks and their owners.",
+                    inputSchema: { type: "object", properties: {}, required: [] }
+                },
+                {
                     name: "update_shared_context",
                     description: "Write to the in-memory Live Notepad.",
                     inputSchema: {
@@ -214,6 +231,17 @@ app.get("/sse", async (req, res) => {
                     }
                 },
                 {
+                    name: "list_jobs",
+                    description: "List current jobs on the shared board.",
+                    inputSchema: {
+                        type: "object",
+                        properties: {
+                            includeCompleted: { type: "boolean" }
+                        },
+                        required: []
+                    }
+                },
+                {
                     name: "cancel_job",
                     description: "Cancel a job that is no longer needed.",
                     inputSchema: {
@@ -249,6 +277,18 @@ app.get("/sse", async (req, res) => {
                     }
                 },
                 {
+                    name: "claim_job",
+                    description: "Atomically claim a specific available job by ID.",
+                    inputSchema: {
+                        type: "object",
+                        properties: {
+                            agentId: { type: "string" },
+                            jobId: { type: "string" }
+                        },
+                        required: ["agentId", "jobId"]
+                    }
+                },
+                {
                     name: "complete_job",
                     description: "Mark your assigned job as done.",
                     inputSchema: {
@@ -277,6 +317,15 @@ app.get("/sse", async (req, res) => {
                 const { agentId, filePath, intent, userPrompt } = args as any;
                 const result = await nerveCenter.proposeFileAccess(agentId, filePath, intent, userPrompt);
                 return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+            }
+            if (name === "release_file_access") {
+                const { agentId, filePath } = args as any;
+                const result = await nerveCenter.releaseFileAccess(agentId, filePath);
+                return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+            }
+            if (name === "list_locks") {
+                const locks = await nerveCenter.listLocks();
+                return { content: [{ type: "text", text: JSON.stringify({ locks }, null, 2) }] };
             }
             if (name === "update_shared_context") {
                 const { agentId, text } = args as any;
@@ -314,6 +363,14 @@ app.get("/sse", async (req, res) => {
                 const result = await nerveCenter.postJob(title, description, priority, dependencies);
                 return { content: [{ type: "text", text: JSON.stringify(result) }] };
             }
+            if (name === "list_jobs") {
+                const includeCompleted = Boolean(args?.includeCompleted);
+                const jobs = await nerveCenter.listJobs();
+                const visibleJobs = includeCompleted
+                    ? jobs
+                    : jobs.filter((job) => job.status !== "done" && job.status !== "cancelled");
+                return { content: [{ type: "text", text: JSON.stringify({ jobs: visibleJobs }, null, 2) }] };
+            }
             if (name === "cancel_job") {
                 const { jobId, reason } = args as any;
                 const result = await nerveCenter.cancelJob(jobId, reason);
@@ -327,6 +384,11 @@ app.get("/sse", async (req, res) => {
             if (name === "claim_next_job") {
                 const { agentId } = args as any;
                 const result = await nerveCenter.claimNextJob(agentId);
+                return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+            }
+            if (name === "claim_job") {
+                const { agentId, jobId } = args as any;
+                const result = await nerveCenter.claimJob(agentId, jobId);
                 return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
             }
             if (name === "complete_job") {

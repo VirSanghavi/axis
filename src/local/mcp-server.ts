@@ -42,14 +42,14 @@ if (process.env.SHARED_CONTEXT_API_URL || process.env.AXIS_API_KEY) {
         envLoaded = true;
         break;
       }
-    } catch (e) {
+    } catch (_e) {
       // Continue to next path
     }
   }
 
   if (!envLoaded) {
     logger.warn("No configuration found from MCP client (mcp.json) or .env.local");
-    logger.warn("MCP server will use default API URL: https://useaxis.dev/api/v1");
+    logger.info("MCP server will run the open-core coordination tools locally");
   }
 }
 
@@ -66,13 +66,14 @@ logger.info("Environment check:", {
 
 // Configuration from MCP client (mcp.json) or environment
 // These should be set in mcp.json as env vars passed to the server
-const apiUrl = process.env.SHARED_CONTEXT_API_URL || process.env.AXIS_API_URL || "https://useaxis.dev/api/v1";
 const apiSecret = process.env.AXIS_API_KEY || process.env.SHARED_CONTEXT_API_SECRET || process.env.AXIS_API_SECRET;
+const configuredApiUrl = process.env.SHARED_CONTEXT_API_URL || process.env.AXIS_API_URL;
+const apiUrl = configuredApiUrl || (apiSecret ? "https://useaxis.dev/api/v1" : undefined);
 
 // For customer deployments: Only use Supabase if explicitly enabled AND API URL is not the primary
 // If SHARED_CONTEXT_API_URL or AXIS_API_KEY is set, prioritize remote API (customer mode)
 // Only use direct Supabase if API URL is not set (development mode)
-const useRemoteApiOnly = !!process.env.SHARED_CONTEXT_API_URL || !!process.env.AXIS_API_KEY;
+const useRemoteApiOnly = !!apiUrl && !!apiSecret;
 
 // VALIDATION - Only warn about Supabase if NOT using remote API
 if (useRemoteApiOnly) {
@@ -124,8 +125,6 @@ interface SubscriptionState {
 }
 
 const RECHECK_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
-const GRACE_PERIOD_MS = 5 * 60 * 1000; // 5 min grace if verify endpoint is unreachable on first try
-
 let subscription: SubscriptionState = {
   checked: false,
   valid: true, // Assume valid until proven otherwise (for startup)
@@ -135,7 +134,8 @@ let subscription: SubscriptionState = {
 };
 
 async function verifySubscription(): Promise<SubscriptionState> {
-  // No API key — only allow if direct Supabase credentials are configured (Axis developer mode)
+  // No API key means local open-core mode. Hosted intelligence remains unavailable,
+  // but local jobs, locks, context, and search must keep working.
   if (!apiSecret) {
     const hasDirectSupabase = !useRemoteApiOnly
       && !!process.env.NEXT_PUBLIC_SUPABASE_URL
@@ -147,15 +147,25 @@ async function verifySubscription(): Promise<SubscriptionState> {
       return subscription;
     }
 
-    // No API key AND no Supabase = unauthorized
+    subscription = {
+      checked: true,
+      valid: true,
+      plan: "local",
+      reason: "Local open-core mode",
+      checkedAt: Date.now(),
+    };
+    logger.info("[subscription] No API key configured — local open-core coordination enabled");
+    return subscription;
+  }
+
+  if (!apiUrl) {
     subscription = {
       checked: true,
       valid: false,
-      plan: "none",
-      reason: "no_api_key",
+      plan: "unknown",
+      reason: "api_url_missing",
       checkedAt: Date.now(),
     };
-    logger.error("[subscription] No API key configured. Axis requires an API key from https://useaxis.dev/dashboard");
     return subscription;
   }
 
@@ -327,8 +337,9 @@ Agents MUST execute the full Axis workflow without being told:
 - IMMEDIATELY call get_project_soul as the first action in every session.
 
 ### Plan Before Write
-Every non-trivial task MUST follow: post_job → claim_next_job → propose_file_access → (edit) → complete_job.
-Skip ONLY for single-line typo fixes.
+Activate Axis orchestration automatically when ANY condition is true: 2+ files, 2+ independent workstreams, a shared-contract change, refactor/migration/audit, meaningful production risk, or likely duration over 10 minutes.
+Every complex task MUST follow: list_jobs/list_locks → post_job → claim_job or claim_next_job → propose_file_access → (edit) → complete_job.
+Skip job creation ONLY for isolated one-line fixes; project-soul loading still applies.
 
 ### Releasing Locks (CRITICAL)
 Every file you lock MUST be unlocked before your session ends. Dangling locks block all other agents.
@@ -338,7 +349,8 @@ Every file you lock MUST be unlocked before your session ends. Dangling locks bl
 
 ### Session Cleanup (MANDATORY)
 - complete_job IMMEDIATELY after finishing each task — this is how locks get released.
-- update_shared_context after meaningful steps.
+- update_shared_context after claims, design decisions, shared-contract changes, blockers, test results, and handoffs.
+- list_jobs and list_locks again after interruptions or long waits before resuming edits.
 - finalize_session when the user's request is fully complete — do not wait to be told. This clears all remaining locks.
 
 ### Force-Unlock Policy
@@ -530,6 +542,23 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         }
       },
       {
+        name: "release_file_access",
+        description: "**RELEASE YOUR LOCK**: Release one file lock as soon as you no longer need it.\n- Use this before a job is complete when another agent can safely continue on the file.\n- Only the owning agent can release the lock; use `force_unlock` only for a crashed agent.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            agentId: { type: "string" },
+            filePath: { type: "string" }
+          },
+          required: ["agentId", "filePath"]
+        }
+      },
+      {
+        name: "list_locks",
+        description: "**INSPECT ACTIVE LOCKS**: Return current file locks, owners, intents, and timestamps.\n- Call before planning overlapping work or when a lock conflict needs coordination.",
+        inputSchema: { type: "object", properties: {}, required: [] }
+      },
+      {
         name: "update_shared_context",
         description: "**LIVE NOTEPAD**: The project's short-term working memory.\n- **ALWAYS** call this after completing a significant step (e.g., 'Fixed bug in auth.ts', 'Ran tests, all passed').\n- This content is visible to *all* other agents immediately.\n- Think of this as a team chat or 'standup' update.",
         inputSchema: {
@@ -580,6 +609,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         }
       },
       {
+        name: "list_jobs",
+        description: "**INSPECT THE JOB BOARD**: Return all current jobs with status, priority, owner, dependencies, and timestamps.\n- Use before dividing work across agents or when you need to claim a specific ticket.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            includeCompleted: {
+              type: "boolean",
+              description: "Include done and cancelled jobs. Default: false."
+            }
+          },
+          required: []
+        }
+      },
+      {
         name: "cancel_job",
         description: "**KILL TICKET**: Cancel a job that is no longer needed.\n- Requires `jobId` and a `reason`.",
         inputSchema: {
@@ -612,6 +655,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             agentId: { type: "string" }
           },
           required: ["agentId"]
+        }
+      },
+      {
+        name: "claim_job",
+        description: "**CLAIM A SPECIFIC TICKET**: Atomically claim a known job by ID.\n- Prefer this over `claim_next_job` when work has been intentionally assigned or agents have disjoint scopes.\n- Rejects completed, already claimed, or dependency-blocked jobs.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            agentId: { type: "string" },
+            jobId: { type: "string" }
+          },
+          required: ["agentId", "jobId"]
         }
       },
       {
@@ -961,6 +1016,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const result = await nerveCenter.proposeFileAccess(agentId, filePath, intent, userPrompt);
     return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   }
+  if (name === "release_file_access") {
+    const { agentId, filePath } = args as any;
+    const result = await nerveCenter.releaseFileAccess(agentId, filePath);
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+  }
+  if (name === "list_locks") {
+    const result = await nerveCenter.listLocks();
+    return { content: [{ type: "text", text: JSON.stringify({ locks: result }, null, 2) }] };
+  }
   if (name === "update_shared_context") {
     const { agentId, text } = args as any;
     const result = await nerveCenter.updateSharedContext(text, agentId);
@@ -995,6 +1059,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const result = await nerveCenter.postJob(title, description, priority, dependencies);
     return { content: [{ type: "text", text: JSON.stringify(result) }] };
   }
+  if (name === "list_jobs") {
+    const includeCompleted = Boolean(args?.includeCompleted);
+    const jobs = await nerveCenter.listJobs();
+    const result = includeCompleted
+      ? jobs
+      : jobs.filter((job) => job.status !== "done" && job.status !== "cancelled");
+    return { content: [{ type: "text", text: JSON.stringify({ jobs: result }, null, 2) }] };
+  }
   if (name === "cancel_job") {
     const { jobId, reason } = args as any;
     const result = await nerveCenter.cancelJob(jobId, reason);
@@ -1008,6 +1080,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (name === "claim_next_job") {
     const { agentId } = args as any;
     const result = await nerveCenter.claimNextJob(agentId);
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+  }
+  if (name === "claim_job") {
+    const { agentId, jobId } = args as any;
+    const result = await nerveCenter.claimJob(agentId, jobId);
     return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   }
   if (name === "complete_job") {
@@ -1037,15 +1114,19 @@ async function main() {
     logger.info(`[subscription] Subscription verified: ${subscription.plan} (valid until: ${subscription.validUntil || "N/A"})`);
   }
 
-  // Periodic re-check (runs silently in background)
-  setInterval(async () => {
-    try {
-      await verifySubscription();
-      logger.info(`[subscription] Periodic re-check: valid=${subscription.valid}, plan=${subscription.plan}`);
-    } catch (e) {
-      logger.warn(`[subscription] Periodic re-check failed: ${e}`);
-    }
-  }, RECHECK_INTERVAL_MS);
+  // Hosted subscriptions are refreshed in the background. unref() ensures the
+  // timer never keeps a stdio process alive after its MCP client disconnects.
+  if (apiSecret) {
+    const subscriptionTimer = setInterval(async () => {
+      try {
+        await verifySubscription();
+        logger.info(`[subscription] Periodic re-check: valid=${subscription.valid}, plan=${subscription.plan}`);
+      } catch (e) {
+        logger.warn(`[subscription] Periodic re-check failed: ${e}`);
+      }
+    }, RECHECK_INTERVAL_MS);
+    subscriptionTimer.unref();
+  }
   
   // Log that tools are registered before connecting
   logger.info("MCP server ready - all tools and resources registered");

@@ -38,17 +38,21 @@ These norms apply to all AI coding agents. They are not optional or suggestive �
 
 **No agent writes code unless it either owns a file lock OR has explicitly declined the job board for a scoped reason.**
 
-On non-trivial tasks (2+ files, new features, refactors):
-1. `post_job` — break into trackable jobs (do this IMMEDIATELY, not after being asked)
-2. `claim_next_job` — claim before starting
-3. `propose_file_access` — lock with a **descriptive intent**
-4. `complete_job` — report outcome when done (this releases the lock)
+Activate orchestration automatically when ANY condition is true: 2+ files, 2+ independent workstreams, a shared API/schema/protocol change, a refactor/migration/audit, meaningful production risk, or likely duration over 10 minutes.
+
+On complex tasks:
+1. `list_jobs` and `list_locks` — synchronize with active work
+2. `post_job` — break into trackable jobs (do this IMMEDIATELY, not after being asked)
+3. `claim_job` for assigned work, otherwise `claim_next_job`
+4. `propose_file_access` — lock with a **descriptive intent**
+5. `complete_job` — report outcome when done (this releases the lock)
 
 Skip jobs ONLY for: single-line fixes, typos, config tweaks.
 
 ### Lock Hygiene
 - Descriptive `intent` when locking (not "editing file").
 - Release locks IMMEDIATELY by completing jobs. Never hold a lock while doing unrelated work.
+- Use `release_file_access` when a file is no longer needed but the job remains active.
 - `force_unlock` is a **last resort** — only for locks >25 min old from a crashed agent. Always give a reason.
 
 ### Releasing Locks (CRITICAL — do not skip)
@@ -59,5 +63,6 @@ Skip jobs ONLY for: single-line fixes, typos, config tweaks.
 
 ### Session Cleanup (MANDATORY)
 - `complete_job` after EVERY finished task — do not accumulate incomplete jobs. **This is how locks get released.**
-- `update_shared_context` after meaningful steps — log decisions, not just actions.
+- `update_shared_context` after claims, design decisions, shared-contract changes, blockers, verification results, and handoffs.
+- Refresh `list_jobs` and `list_locks` after interruptions or long waits before resuming edits.
 - `finalize_session` when the user's request is fully complete — this is required, not optional. **This clears all remaining locks.**

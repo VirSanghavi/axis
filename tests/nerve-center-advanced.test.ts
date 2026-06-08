@@ -1,30 +1,34 @@
 
-import { describe, it, expect, beforeEach } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { NerveCenter } from "../src/local/nerve-center.js";
 import { ContextManager } from "../src/local/context-manager.js";
-import { existsSync, unlinkSync, writeFileSync } from "fs";
-import { join } from "path";
+import { mkdtemp, rm, writeFile } from "fs/promises";
+import { tmpdir } from "os";
+import path from "path";
 
 // Mocks
 class MockContextManager extends ContextManager {
-    constructor() { super("url", "key"); }
+    constructor() { super(); }
     async search() { return []; }
     async storeMemory() { return true; }
     async embedContent() { return undefined; }
 }
 
-const TEST_STATE_FILE = join(process.cwd(), "tests", "temp-state-adv.json");
-
 describe("NerveCenter Advanced Features", () => {
     let nerveCenter: NerveCenter;
+    let testDir: string;
 
     beforeEach(async () => {
-        // Reset state file before each test to ensure isolation
-        if (existsSync(TEST_STATE_FILE)) unlinkSync(TEST_STATE_FILE);
-        writeFileSync(TEST_STATE_FILE, JSON.stringify({ locks: {}, jobs: {}, liveNotepad: "" }));
+        testDir = await mkdtemp(path.join(tmpdir(), "axis-advanced-"));
+        const stateFile = path.join(testDir, "state.json");
+        await writeFile(stateFile, JSON.stringify({ locks: {}, jobs: {}, liveNotepad: "" }));
 
-        nerveCenter = new NerveCenter(new MockContextManager(), { stateFilePath: TEST_STATE_FILE });
+        nerveCenter = new NerveCenter(new MockContextManager(), { stateFilePath: stateFile });
         await nerveCenter.init();
+    });
+
+    afterEach(async () => {
+        await rm(testDir, { recursive: true, force: true });
     });
 
     it("should prioritize critical jobs", async () => {
@@ -82,5 +86,47 @@ describe("NerveCenter Advanced Features", () => {
 
         const claim = await nerveCenter.claimNextJob("Agent1");
         expect(claim.status).toBe("NO_JOBS_AVAILABLE");
+    });
+
+    it("should claim a specific available job", async () => {
+        const first = await nerveCenter.postJob("First", "desc", "critical");
+        const second = await nerveCenter.postJob("Second", "desc", "low");
+
+        const claim = await nerveCenter.claimJob("Agent2", second.jobId);
+        expect(claim.status).toBe("CLAIMED");
+        expect(claim.job?.id).toBe(second.jobId);
+
+        const next = await nerveCenter.claimNextJob("Agent1");
+        expect(next.job?.id).toBe(first.jobId);
+    });
+
+    it("should reject a specific claim with unmet dependencies", async () => {
+        const parent = await nerveCenter.postJob("Parent", "desc");
+        const child = await nerveCenter.postJob("Child", "desc", "medium", [parent.jobId]);
+
+        const claim = await nerveCenter.claimJob("Agent2", child.jobId);
+        expect(claim.status).toBe("BLOCKED_BY_DEPENDENCIES");
+        expect(claim.dependencies).toEqual([parent.jobId]);
+    });
+
+    it("should release only locks owned by the requesting agent", async () => {
+        await nerveCenter.proposeFileAccess("Agent1", "owned.ts", "edit", "prompt");
+
+        const denied = await nerveCenter.releaseFileAccess("Agent2", "owned.ts");
+        expect(denied.status).toBe("NOT_OWNER");
+
+        const released = await nerveCenter.releaseFileAccess("Agent1", "owned.ts");
+        expect(released.status).toBe("RELEASED");
+        expect(await nerveCenter.listLocks()).toHaveLength(0);
+    });
+
+    it("should release an assigned agent's locks when its job completes", async () => {
+        const posted = await nerveCenter.postJob("Locked work", "desc");
+        await nerveCenter.claimJob("Agent1", posted.jobId);
+        await nerveCenter.proposeFileAccess("Agent1", "work.ts", "edit", "prompt");
+
+        await nerveCenter.completeJob("Agent1", posted.jobId, "done");
+
+        expect(await nerveCenter.listLocks()).toHaveLength(0);
     });
 });

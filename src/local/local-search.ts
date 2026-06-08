@@ -197,11 +197,9 @@ async function searchFile(
 
   // Bonus for keyword in filename/path (these files are almost always relevant)
   const relLower = relativePath.toLowerCase();
-  let pathMatches = 0;
   for (const kw of keywords) {
     if (relLower.includes(kw)) {
       score += 3;
-      pathMatches++;
     }
   }
 

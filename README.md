@@ -98,17 +98,21 @@ Configure your IDE (Claude Desktop, Cursor, etc.) to launch the published wrappe
 For the **hosted** backend (recommended for teams), point at `https://useaxis.dev/api/mcp` with a Bearer key instead — see [agent-instructions/mcp-setup.md](agent-instructions/mcp-setup.md).
 
 ### MCP Tooling
-The server exposes these tools to agents (16 total, as of `@virsanghavi/axis-server@1.12.0`).
+The server exposes these tools to agents (22 total in the current source).
 
 **Coordination (free, open-core):**
 
 - `get_project_soul` — load project context, goals, and conventions
 - `update_project_soul` — write or refresh the project soul
 - `post_job` — add a job to the distributed Job Board
+- `list_jobs` — inspect status, priority, ownership, and dependencies
+- `claim_job` — atomically claim a specific ticket
 - `claim_next_job` — atomically claim the next available job
 - `complete_job` — report a job outcome and release its file locks
 - `cancel_job` — withdraw a posted job
 - `propose_file_access` — pessimistically lock files before editing
+- `list_locks` — inspect active file ownership and intent
+- `release_file_access` — release an owned lock early
 - `force_unlock` — admin override for stale locks from crashed agents
 - `update_shared_context` — append to the Live Notepad
 - `finalize_session` — archive the session and clear all remaining locks

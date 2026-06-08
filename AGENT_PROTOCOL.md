@@ -16,6 +16,19 @@ This protocol is **automatically in effect whenever the Axis MCP tools are avail
 - **Do not** ask the user to resolve locks manually.
 - **Do** handle orchestration silently and efficiently.
 
+## Automatic Activation Threshold
+
+Use Axis automatically when **any** of these is true:
+
+- The task touches two or more files.
+- The task has two or more independent workstreams.
+- The task changes a shared API, schema, protocol, or build/deployment contract.
+- The task is a refactor, migration, audit, broad review, or production incident.
+- The task has meaningful overwrite, concurrency, security, or release risk.
+- The task is likely to take more than ten minutes.
+
+For a tiny isolated typo or one-line edit, loading the project soul is still required, but creating a job is optional.
+
 ## Implementation Notes
 - The hosted MCP server (`https://useaxis.dev/api/mcp`) is the recommended surface — connect by URL and authenticate via OAuth (no API key to manage); see [agent-instructions/mcp-setup.md](agent-instructions/mcp-setup.md).
 - Local npm server tools are exposed by the Nerve Center in [src/local/mcp-server.ts](src/local/mcp-server.ts); orchestration + locking logic lives in [src/local/nerve-center.ts](src/local/nerve-center.ts).
@@ -29,6 +42,7 @@ If the user asks for a complex feature (e.g., "Build an Auth System", "Refactor 
 - **Do not** try to do everything yourself.
 - **Action**: Break the request into atomic tasks.
 - **Call**: `post_job(title="...", description="...")` for each part.
+- **Call**: `list_jobs` and `list_locks` before assigning work so you do not duplicate another agent's effort.
 - **Inform User**: "I've broken this down into tasks. I'll start on [Task A], and the team can pick up the rest."
 
 ### 2. The "Worker" Check (Specific Requests)
@@ -63,7 +77,9 @@ If the user asks for a specific task OR simply says "help out":
 - **Never** stop responding, crash, or go idle while holding locks. If you are about to finish, call `finalize_session` first.
 
 ### 6. Shared Memory
-- If you make a design decision, call `update_shared_context`.
+- Call `update_shared_context` after every meaningful state transition: claimed scope, design decision, shared-contract change, blocker, test result, or handoff.
+- Before editing after a long wait or interruption, call `list_jobs` and `list_locks` again to refresh potentially stale assumptions.
+- Do not wait for the user to ask agents to share context. Sharing is part of completing the work.
 - Maintain the "Project Soul" so other agents don't have to guess.
 
 ### 7. Search Before Write (CRITICAL)

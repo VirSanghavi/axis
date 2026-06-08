@@ -3,7 +3,6 @@ import dotenv from "dotenv";
 import { RagEngine } from "../src/local/rag-engine.js";
 import { NerveCenter } from "../src/local/nerve-center.js";
 import { ContextManager } from "../src/local/context-manager.js";
-import { logger } from "../src/utils/logger.js";
 
 dotenv.config({ path: ".env.local" });
 

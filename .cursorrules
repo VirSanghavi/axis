@@ -18,11 +18,14 @@ Before doing anything on a new task:
 
 **No agent writes code unless it either owns a file lock OR has explicitly declined the job board for a scoped reason.**
 
-On non-trivial tasks (anything touching 2+ files, any new feature, any refactor):
-1. **Break work into jobs** — `post_job` with clear titles and descriptions.
-2. **Claim before editing** — `claim_next_job` to pick up work.
-3. **Lock before writing** — `propose_file_access` with a **descriptive intent**.
-4. **Complete when done** — `complete_job` with a concise outcome.
+Activate orchestration automatically when ANY condition is true: 2+ files, 2+ independent workstreams, a shared API/schema/protocol change, a refactor/migration/audit, meaningful production risk, or likely duration over 10 minutes.
+
+On complex tasks:
+1. **Synchronize** — call `list_jobs` and `list_locks`.
+2. **Break work into jobs** — `post_job` with clear titles and descriptions.
+3. **Claim before editing** — use `claim_job` for assigned work, otherwise `claim_next_job`.
+4. **Lock before writing** — `propose_file_access` with a **descriptive intent**.
+5. **Complete when done** — `complete_job` with a concise outcome.
 
 Direct edits without a job are allowed only for:
 - Single-line fixes, typos, config tweaks
@@ -44,7 +47,8 @@ Direct edits without a job are allowed only for:
 ## 4. Coordinate — Keep Others Informed
 
 - Call `update_shared_context` after completing meaningful steps.
-- Log decisions, not just actions (e.g. "Chose JWT over sessions because X").
+- Publish claims, decisions, shared-contract changes, blockers, verification results, and handoffs without waiting for the user to ask.
+- Refresh `list_jobs` and `list_locks` after interruptions or long waits.
 - Call `finalize_session` at end of session to archive, clear locks, and reset.
 
 ## 5. Tool Reference
@@ -55,10 +59,14 @@ Direct edits without a job are allowed only for:
 | `read_context` | Check goals, conventions, architecture |
 | `search_codebase` | Before creating new files — find existing patterns |
 | `post_job` | Break non-trivial tasks into trackable units |
+| `list_jobs` | Inspect and divide active work |
+| `claim_job` | Claim a specific intended ticket |
 | `claim_next_job` | Pick up work from the board |
 | `complete_job` | Mark work as done with outcome |
 | `cancel_job` | Remove jobs no longer needed |
 | `propose_file_access` | Lock a file before editing |
+| `list_locks` | Inspect active file ownership |
+| `release_file_access` | Release an owned lock early |
 | `force_unlock` | LAST RESORT — break a stale lock from a crashed agent |
 | `update_shared_context` | Log progress for other agents |
 | `index_file` | Add new/refactored files to search index |

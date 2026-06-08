@@ -15,10 +15,11 @@ These rules are mandatory. They are not suggestions. Violating them degrades the
 
 1. **NEVER** wait for the user to tell you to use Axis tools. They are your default workflow the instant a session begins.
 2. **IMMEDIATELY** call \`get_project_soul\` as your very first action when you receive a task. Do not read files, do not respond to the user — call this tool first.
-3. **ALWAYS** post jobs via \`post_job\` before starting non-trivial work (2+ files, new features, refactors). Do this automatically. The user should never have to remind you.
-4. **NEVER** pause to report findings and wait for permission to continue. When you identify issues, fixes needed, or work to do — start building immediately. The user asked you to act, not narrate and wait.
-5. **ALWAYS** complete jobs (\`complete_job\`) as soon as you finish each task. This releases file locks. Do not leave locks dangling.
-6. **ALWAYS** call \`finalize_session\` when the user's entire request is fully complete. This is mandatory — not optional cleanup.
+3. **ALWAYS** activate orchestration before complex work. A task is complex when ANY condition is true: it touches 2+ files, has 2+ independent workstreams, changes a shared contract, is a refactor/migration/audit, carries meaningful production risk, or is likely to take more than 10 minutes.
+4. **ALWAYS** post jobs via \`post_job\` before complex work. Do this automatically. The user should never have to remind you.
+5. **NEVER** pause to report findings and wait for permission to continue. When you identify issues, fixes needed, or work to do — start building immediately. The user asked you to act, not narrate and wait.
+6. **ALWAYS** complete jobs (\`complete_job\`) as soon as you finish each task. This releases file locks. Do not leave locks dangling.
+7. **ALWAYS** call \`finalize_session\` when the user's entire request is fully complete. This is mandatory — not optional cleanup.
 
 ## Session Lifecycle
 
@@ -26,15 +27,16 @@ Execute this sequence automatically. Do not wait for the user to walk you throug
 
 ### START (do this immediately when you receive a task)
 1. \`get_project_soul\` — load project context, goals, conventions
-2. \`search_codebase\` — check for existing patterns relevant to the task
+2. \`list_jobs\` and \`list_locks\` — synchronize with work already in progress
+3. \`search_codebase\` — check for existing patterns relevant to the task
 
 ### WORK (for each unit of work)
 1. \`post_job\` — break the task into trackable jobs (skip ONLY for single-line typo fixes)
-2. \`claim_next_job\` — claim the first job
+2. \`claim_job\` for an assigned ticket, otherwise \`claim_next_job\`
 3. \`propose_file_access\` — lock each file before editing (with descriptive intent)
 4. Make the changes
 5. \`complete_job\` — report outcome (this releases the lock)
-6. \`update_shared_context\` — log what you did and why
+6. \`update_shared_context\` — publish decisions, changed contracts, blockers, and verification results
 7. Repeat from step 2 for remaining jobs
 
 ### CLEANUP (do this when the user's request is fully complete)
@@ -47,6 +49,7 @@ Execute this sequence automatically. Do not wait for the user to walk you throug
 - Provide a descriptive \`intent\` when locking (e.g. "Refactor auth middleware to use JWT" — not "editing file").
 - If \`propose_file_access\` returns \`REQUIRES_ORCHESTRATION\` — do NOT edit that file. Work on a different file or job instead.
 - Release locks early by completing jobs promptly. Do not hold locks while doing unrelated work.
+- Use \`release_file_access\` when a file is no longer needed but the job is still in progress.
 
 ### Force Unlock Policy
 \`force_unlock\` is a **last resort**, not a convenience.
@@ -65,6 +68,7 @@ Execute this sequence automatically. Do not wait for the user to walk you throug
 | \`index_codebase\` | Index/refresh files for search — after writing files, or once for the whole repo |
 | \`search_docs\` | Look up Axis feature usage |
 | \`post_job\` | IMMEDIATELY when you receive a non-trivial task |
+| \`list_jobs\` | Synchronize with the board before dividing or claiming work |
 | \`claim_next_job\` | Load-balanced pickup of the next job |
 | \`claim_job\` | Claim a SPECIFIC job by ID — preferred in multi-agent runs |
 | \`list_jobs\` | See the board before claiming |

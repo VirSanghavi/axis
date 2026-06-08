@@ -19,7 +19,9 @@ function getEffectiveInstructionsDir() {
             console.error(`[ContextManager] Using instructions dir: ${instructionsDir}`);
             return instructionsDir;
         }
-    } catch { }
+    } catch {
+        // Continue through the fallback directory candidates.
+    }
 
     // Check legacy dir in workspace root
     try {
@@ -27,7 +29,9 @@ function getEffectiveInstructionsDir() {
             console.error(`[ContextManager] Using legacy dir: ${legacyDir}`);
             return legacyDir;
         }
-    } catch { }
+    } catch {
+        // Continue through the fallback directory candidates.
+    }
 
     // Fallback to shared-context/agent-instructions if it exists
     try {
@@ -35,7 +39,9 @@ function getEffectiveInstructionsDir() {
             console.error(`[ContextManager] Using shared-context dir: ${sharedContextDir}`);
             return sharedContextDir;
         }
-    } catch { }
+    } catch {
+        // Continue through the fallback directory candidates.
+    }
 
     // Final fallback to legacy dir (even if it doesn't exist, we'll create it)
     console.error(`[ContextManager] Fallback to legacy dir: ${legacyDir}`);

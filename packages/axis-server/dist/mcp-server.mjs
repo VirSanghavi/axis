@@ -275,21 +275,6 @@ import { createClient } from "@supabase/supabase-js";
 import fs2 from "fs/promises";
 import { existsSync as existsSync2 } from "fs";
 import path2 from "path";
-function findProjectRoot(start) {
-  let dir = start;
-  for (let i = 0; i < 40; i++) {
-    if (existsSync2(path2.join(dir, ".git")) || existsSync2(path2.join(dir, "package.json"))) return dir;
-    const parent = path2.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  return start;
-}
-function deriveProjectNameFromCwd() {
-  const root = findProjectRoot(process.cwd());
-  const base = path2.basename(root).toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
-  return base || "default";
-}
 var STATE_FILE = process.env.NERVE_CENTER_STATE_FILE || path2.join(process.cwd(), "history", "nerve-center-state.json");
 var LOCK_TIMEOUT_DEFAULT = 30 * 60 * 1e3;
 var CIRCUIT_FAILURE_THRESHOLD = 5;
@@ -310,7 +295,7 @@ var NerveCenter = class _NerveCenter {
   _projectId;
   // Renamed backing field
   projectName;
-  projectNameExplicit = false;
+  projectNameExplicit;
   useSupabase;
   _circuitFailures = 0;
   _circuitOpenUntil = 0;
@@ -341,7 +326,11 @@ var NerveCenter = class _NerveCenter {
     }
     const explicitProjectName = options.projectName || process.env.PROJECT_NAME;
     this.projectNameExplicit = !!explicitProjectName;
-    this.projectName = explicitProjectName || deriveProjectNameFromCwd();
+    if (explicitProjectName) {
+      this.projectName = explicitProjectName;
+    } else {
+      this.projectName = "default";
+    }
     this.state = {
       locks: {},
       jobs: {},
@@ -379,20 +368,33 @@ var NerveCenter = class _NerveCenter {
     }
   }
   async detectProjectName() {
+    const startDir = process.cwd();
+    let projectRoot = startDir;
+    let current = startDir;
+    const filesystemRoot = path2.parse(current).root;
+    while (current !== filesystemRoot) {
+      if (existsSync2(path2.join(current, ".axis", "axis.json")) || existsSync2(path2.join(current, ".git")) || existsSync2(path2.join(current, "package.json"))) {
+        projectRoot = current;
+        break;
+      }
+      const parent = path2.dirname(current);
+      if (parent === current) break;
+      current = parent;
+    }
     try {
-      const axisConfigPath = path2.join(process.cwd(), ".axis", "axis.json");
+      const axisConfigPath = path2.join(projectRoot, ".axis", "axis.json");
       const configData = await fs2.readFile(axisConfigPath, "utf-8");
       const config = JSON.parse(configData);
       if (config.project) {
-        this.projectName = config.project;
+        this.projectName = String(config.project);
         logger.info(`Detected project name from .axis/axis.json: ${this.projectName}`);
-        console.error(`[NerveCenter] Loaded project name '${this.projectName}' from ${axisConfigPath}`);
-      } else {
-        console.error(`[NerveCenter] .axis/axis.json found but no 'project' field.`);
+        return;
       }
-    } catch (e) {
-      console.error(`[NerveCenter] Could not load .axis/axis.json at ${path2.join(process.cwd(), ".axis", "axis.json")}: ${e}`);
+    } catch {
     }
+    const derived = path2.basename(projectRoot).toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+    this.projectName = derived || "default";
+    logger.info(`Derived project name '${this.projectName}' from ${projectRoot}`);
   }
   async ensureProjectId() {
     if (!this.supabase || this._projectId) return;
@@ -538,7 +540,7 @@ var NerveCenter = class _NerveCenter {
     }
     return Object.values(this.state.jobs);
   }
-  async getLocks() {
+  async listLocks() {
     logger.info(`[getLocks] Starting - projectName: ${this.projectName}`);
     logger.info(`[getLocks] Config - apiUrl: ${this.contextManager.apiUrl}, useSupabase: ${this.useSupabase}, hasSupabase: ${!!this.supabase}`);
     if (this.contextManager.apiUrl) {
@@ -651,6 +653,18 @@ var NerveCenter = class _NerveCenter {
     return await this.mutex.runExclusive(async () => {
       let id = `job-${Date.now()}-${Math.floor(Math.random() * 1e3)}`;
       const completionKey = Math.random().toString(36).substring(2, 10).toUpperCase();
+      const now = Date.now();
+      const localJob = {
+        id,
+        title,
+        description,
+        priority,
+        dependencies,
+        status: "todo",
+        createdAt: now,
+        updatedAt: now,
+        completionKey
+      };
       if (this.useSupabase && this.supabase && this._projectId) {
         const { data, error } = await this.supabase.from("jobs").insert({
           project_id: this._projectId,
@@ -662,7 +676,10 @@ var NerveCenter = class _NerveCenter {
           completion_key: completionKey
         }).select("id").single();
         if (data?.id) id = data.id;
-        if (error) logger.error("Failed to post job to Supabase", error);
+        if (error) {
+          logger.error("Failed to post job to Supabase", error);
+          return { status: "ERROR", error: "Failed to persist job to Supabase" };
+        }
       } else if (this.contextManager.apiUrl) {
         try {
           const data = await this.callCoordination("jobs", "POST", {
@@ -676,20 +693,11 @@ var NerveCenter = class _NerveCenter {
           if (data?.id) id = data.id;
         } catch (e) {
           logger.error("Failed to post job to API", e);
+          return { status: "ERROR", error: `Failed to persist job to remote API: ${e.message}` };
         }
-      }
-      if (!this.useSupabase && !this.contextManager.apiUrl) {
-        this.state.jobs[id] = {
-          id,
-          title,
-          description,
-          priority,
-          dependencies,
-          status: "todo",
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
-          completionKey
-        };
+      } else {
+        localJob.id = id;
+        this.state.jobs[id] = localJob;
       }
       const depText = dependencies.length ? ` (Depends on: ${dependencies.join(", ")})` : "";
       const logEntry = `
@@ -757,6 +765,68 @@ var NerveCenter = class _NerveCenter {
       return { status: "CLAIMED", job };
     });
   }
+  async claimJob(agentId, jobId) {
+    return await this.mutex.runExclusive(async () => {
+      const jobs = await this.listJobs();
+      const job = jobs.find((candidate) => candidate.id === jobId);
+      if (!job) return { status: "NOT_FOUND", message: `Job '${jobId}' was not found.` };
+      if (job.status !== "todo") {
+        return { status: "NOT_AVAILABLE", message: `Job '${jobId}' is ${job.status}.` };
+      }
+      const jobsById = new Map(jobs.map((candidate) => [candidate.id, candidate]));
+      const unmetDependencies = (job.dependencies || []).filter(
+        (dependencyId) => jobsById.get(dependencyId)?.status !== "done"
+      );
+      if (unmetDependencies.length > 0) {
+        return {
+          status: "BLOCKED_BY_DEPENDENCIES",
+          message: `Job '${jobId}' is blocked by: ${unmetDependencies.join(", ")}`,
+          dependencies: unmetDependencies
+        };
+      }
+      if (this.useSupabase && this.supabase && this._projectId) {
+        const { data, error } = await this.supabase.from("jobs").update({
+          status: "in_progress",
+          assigned_to: agentId,
+          updated_at: (/* @__PURE__ */ new Date()).toISOString()
+        }).eq("project_id", this._projectId).eq("id", jobId).eq("status", "todo").select("id,title,description,priority,status,assigned_to,dependencies,completion_key,created_at,updated_at").maybeSingle();
+        if (error) return { status: "ERROR", message: error.message };
+        if (!data) return { status: "NOT_AVAILABLE", message: `Job '${jobId}' was claimed by another agent.` };
+        const claimed = this.jobFromRecord(data);
+        await this.appendToNotepad(`
+- [JOB CLAIMED] Agent '${agentId}' picked up: ${claimed.title}`);
+        return { status: "CLAIMED", job: claimed };
+      }
+      if (this.contextManager.apiUrl) {
+        try {
+          const data = await this.callCoordination("jobs", "POST", {
+            action: "claim",
+            jobId,
+            agentId
+          });
+          if (data?.status !== "CLAIMED" || !data.job) {
+            return data || { status: "NOT_AVAILABLE", message: `Job '${jobId}' could not be claimed.` };
+          }
+          const claimed = this.jobFromRecord(data.job);
+          await this.appendToNotepad(`
+- [JOB CLAIMED] Agent '${agentId}' picked up: ${claimed.title}`);
+          return { status: "CLAIMED", job: claimed };
+        } catch (e) {
+          return { status: "ERROR", message: `Claim failed: ${e.message}` };
+        }
+      }
+      const localJob = this.state.jobs[jobId];
+      if (!localJob || localJob.status !== "todo") {
+        return { status: "NOT_AVAILABLE", message: `Job '${jobId}' is no longer available.` };
+      }
+      localJob.status = "in_progress";
+      localJob.assignedTo = agentId;
+      localJob.updatedAt = Date.now();
+      await this.appendToNotepad(`
+- [JOB CLAIMED] Agent '${agentId}' picked up: ${localJob.title}`);
+      return { status: "CLAIMED", job: localJob };
+    });
+  }
   async cancelJob(jobId, reason) {
     return await this.mutex.runExclusive(async () => {
       if (this.useSupabase && this.supabase && this._projectId) {
@@ -790,6 +860,7 @@ var NerveCenter = class _NerveCenter {
         }
         const { error: updateError } = await this.supabase.from("jobs").update({ status: "done", updated_at: (/* @__PURE__ */ new Date()).toISOString() }).eq("id", jobId);
         if (updateError) return { error: "Failed to complete job" };
+        await this.supabase.from("locks").delete().eq("project_id", this._projectId).eq("agent_id", data.assigned_to);
         await this.appendToNotepad(`
 - [JOB DONE] Agent '${agentId}' finished: ${data.title}
   Outcome: ${outcome}`);
@@ -820,10 +891,54 @@ var NerveCenter = class _NerveCenter {
       }
       job.status = "done";
       job.updatedAt = Date.now();
+      for (const [lockedPath, lock] of Object.entries(this.state.locks)) {
+        if (lock.agentId === job.assignedTo) delete this.state.locks[lockedPath];
+      }
       await this.appendToNotepad(`
 - [JOB DONE] Agent '${agentId}' finished: ${job.title}
   Outcome: ${outcome}`);
       return { status: "COMPLETED" };
+    });
+  }
+  async releaseFileAccess(agentId, filePath) {
+    return await this.mutex.runExclusive(async () => {
+      const normalizedPath = _NerveCenter.normalizeLockPath(filePath);
+      if (this.contextManager.apiUrl) {
+        try {
+          const result = await this.callCoordination("locks", "POST", {
+            action: "unlock",
+            filePath: normalizedPath,
+            agentId
+          });
+          await this.appendToNotepad(`
+- [UNLOCK] ${agentId} released ${normalizedPath}`);
+          return result?.status ? result : { status: "RELEASED", filePath: normalizedPath };
+        } catch (e) {
+          return { status: "ERROR", message: `Failed to release remote lock: ${e.message}` };
+        }
+      }
+      if (this.useSupabase && this.supabase && this._projectId) {
+        const { data, error } = await this.supabase.from("locks").delete().eq("project_id", this._projectId).eq("file_path", normalizedPath).eq("agent_id", agentId).select("file_path");
+        if (error) return { status: "ERROR", message: error.message };
+        if (!data || data.length === 0) {
+          return { status: "NOT_OWNER", message: `No lock on '${normalizedPath}' is owned by '${agentId}'.` };
+        }
+        await this.appendToNotepad(`
+- [UNLOCK] ${agentId} released ${normalizedPath}`);
+        return { status: "RELEASED", filePath: normalizedPath };
+      }
+      const lock = this.state.locks[normalizedPath];
+      if (!lock) return { status: "NOT_FOUND", message: `No active lock for '${normalizedPath}'.` };
+      if (lock.agentId !== agentId) {
+        return {
+          status: "NOT_OWNER",
+          message: `Lock on '${normalizedPath}' belongs to '${lock.agentId}'.`
+        };
+      }
+      delete this.state.locks[normalizedPath];
+      await this.appendToNotepad(`
+- [UNLOCK] ${agentId} released ${normalizedPath}`);
+      return { status: "RELEASED", filePath: normalizedPath };
     });
   }
   async forceUnlock(filePath, reason) {
@@ -849,7 +964,7 @@ var NerveCenter = class _NerveCenter {
   }
   async getCoreContext() {
     const jobs = await this.listJobs();
-    const locks = await this.getLocks();
+    const locks = await this.listLocks();
     const notepad = await this.getNotepad();
     const jobSummary = jobs.filter((j) => j.status !== "done" && j.status !== "cancelled").map((j) => `- [${j.status.toUpperCase()}] ${j.title} (ID: ${j.id}, Priority: ${j.priority}${j.assignedTo ? `, Assigned: ${j.assignedTo}` : ""})`).join("\n");
     const lockSummary = locks.map((l) => `- ${l.filePath} (Locked by: ${l.agentId}, Intent: ${l.intent})`).join("\n");
@@ -929,7 +1044,12 @@ ${notepad}`;
     if (!normalized || normalized === "." || normalized === "/") {
       return { valid: false, reason: "Cannot lock the project root. Lock individual files instead." };
     }
-    const absolutePath = path2.isAbsolute(filePath) ? filePath : path2.join(process.cwd(), filePath);
+    const projectRoot = path2.resolve(process.cwd());
+    const absolutePath = path2.resolve(projectRoot, filePath);
+    const relativePath = path2.relative(projectRoot, absolutePath);
+    if (relativePath.startsWith("..") || path2.isAbsolute(relativePath)) {
+      return { valid: false, reason: "Cannot lock files outside the project root." };
+    }
     try {
       const stat = await fs2.stat(absolutePath);
       if (stat.isDirectory()) {
@@ -1148,12 +1268,31 @@ ${conventions}`;
       couldNotRead = true;
       soul += "\n(Could not read local context files)";
     }
-    const unfilled = couldNotRead || /Describe your project|<!-- Describe|This project uses Axis/i.test(context) || context.trim().length < 450 && /# Project Context/i.test(context);
-    if (unfilled) {
+    const uninit = couldNotRead;
+    const placeholder = !uninit && (/Describe your project|<!-- Describe|This project uses Axis/i.test(context) || context.trim().length < 450 && /# Project Context/i.test(context));
+    if (uninit) {
+      soul += `
+
+### MANDATORY: This project has not been initialized for Axis
+There is no \`.axis/instructions/\` directory yet, so the project soul, the IDE rule files (CLAUDE.md, AGENTS.md, .cursorrules, .windsurfrules), and the agent protocol have not been installed.
+
+**Fastest path \u2014 one command:**
+\`\`\`
+npx @virsanghavi/axis-init
+\`\`\`
+This creates the \`.axis/\` directory, installs the rule files in the repo root, and seeds template soul files. Then call \`update_project_soul\` to fill in the project-specific content.
+
+**Manual path** (if the user doesn't want the init CLI):
+1. Use \`search_codebase\` to explore the repo and infer what this project is about.
+2. Call \`update_project_soul\` with \`context\` (overview, architecture, features) and \`conventions\` (language standards, agent norms).
+3. If the codebase is empty: ask the user what the project is, then call \`update_project_soul\`.
+
+Do NOT proceed with other work until one of these paths runs. Working without a soul means every decision lacks project context.`;
+    } else if (placeholder) {
       soul += `
 
 ### MANDATORY: Project soul is not yet filled
-You MUST fill the project soul before doing any other work. Do not proceed with other tasks until it is filled.
+The \`.axis/\` directory exists but \`context.md\` still has placeholder/template content. Fill it before doing any other work.
 
 **How to fill the project soul:**
 1. Use \`search_codebase\` to explore the repo and infer what this project is about.
@@ -1734,11 +1873,9 @@ async function searchFile(filePath, rootDir, keywords) {
   const lines = content.split("\n");
   let score = coverage * coverage * matchedKeywords.length;
   const relLower = relativePath.toLowerCase();
-  let pathMatches = 0;
   for (const kw of keywords) {
     if (relLower.includes(kw)) {
       score += 3;
-      pathMatches++;
     }
   }
   const matchingLineIndices = [];
@@ -1999,12 +2136,12 @@ if (process.env.SHARED_CONTEXT_API_URL || process.env.AXIS_API_KEY) {
         envLoaded = true;
         break;
       }
-    } catch (e) {
+    } catch (_e) {
     }
   }
   if (!envLoaded) {
     logger.warn("No configuration found from MCP client (mcp.json) or .env.local");
-    logger.warn("MCP server will use default API URL: https://useaxis.dev/api/v1");
+    logger.info("MCP server will run the open-core coordination tools locally");
   }
 }
 logger.info("=== Axis MCP Server Starting ===");
@@ -2016,9 +2153,10 @@ logger.info("Environment check:", {
   hasSUPABASE_SERVICE_ROLE_KEY: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
   PROJECT_NAME: process.env.PROJECT_NAME || "default"
 });
-var apiUrl = process.env.SHARED_CONTEXT_API_URL || process.env.AXIS_API_URL || "https://useaxis.dev/api/v1";
 var apiSecret = process.env.AXIS_API_KEY || process.env.SHARED_CONTEXT_API_SECRET || process.env.AXIS_API_SECRET;
-var useRemoteApiOnly = !!process.env.SHARED_CONTEXT_API_URL || !!process.env.AXIS_API_KEY;
+var configuredApiUrl = process.env.SHARED_CONTEXT_API_URL || process.env.AXIS_API_URL;
+var apiUrl = configuredApiUrl || (apiSecret ? "https://useaxis.dev/api/v1" : void 0);
+var useRemoteApiOnly = !!apiUrl && !!apiSecret;
 if (useRemoteApiOnly) {
   logger.info("Running in REMOTE API mode - Supabase credentials not needed locally.");
   logger.info(`Remote API: ${apiUrl}`);
@@ -2049,7 +2187,6 @@ var nerveCenter = new NerveCenter(manager, {
 });
 logger.info("=== Axis MCP Server Initialized ===");
 var RECHECK_INTERVAL_MS = 30 * 60 * 1e3;
-var GRACE_PERIOD_MS = 5 * 60 * 1e3;
 var subscription = {
   checked: false,
   valid: true,
@@ -2068,12 +2205,22 @@ async function verifySubscription() {
     }
     subscription = {
       checked: true,
-      valid: false,
-      plan: "none",
-      reason: "no_api_key",
+      valid: true,
+      plan: "local",
+      reason: "Local open-core mode",
       checkedAt: Date.now()
     };
-    logger.error("[subscription] No API key configured. Axis requires an API key from https://useaxis.dev/dashboard");
+    logger.info("[subscription] No API key configured \u2014 local open-core coordination enabled");
+    return subscription;
+  }
+  if (!apiUrl) {
+    subscription = {
+      checked: true,
+      valid: false,
+      plan: "unknown",
+      reason: "api_url_missing",
+      checkedAt: Date.now()
+    };
     return subscription;
   }
   const verifyUrl = apiUrl.endsWith("/v1") ? `${apiUrl}/verify` : `${apiUrl}/v1/verify`;
@@ -2219,8 +2366,9 @@ Agents MUST execute the full Axis workflow without being told:
 - IMMEDIATELY call get_project_soul as the first action in every session.
 
 ### Plan Before Write
-Every non-trivial task MUST follow: post_job \u2192 claim_next_job \u2192 propose_file_access \u2192 (edit) \u2192 complete_job.
-Skip ONLY for single-line typo fixes.
+Activate Axis orchestration automatically when ANY condition is true: 2+ files, 2+ independent workstreams, a shared-contract change, refactor/migration/audit, meaningful production risk, or likely duration over 10 minutes.
+Every complex task MUST follow: list_jobs/list_locks \u2192 post_job \u2192 claim_job or claim_next_job \u2192 propose_file_access \u2192 (edit) \u2192 complete_job.
+Skip job creation ONLY for isolated one-line fixes; project-soul loading still applies.
 
 ### Releasing Locks (CRITICAL)
 Every file you lock MUST be unlocked before your session ends. Dangling locks block all other agents.
@@ -2230,7 +2378,8 @@ Every file you lock MUST be unlocked before your session ends. Dangling locks bl
 
 ### Session Cleanup (MANDATORY)
 - complete_job IMMEDIATELY after finishing each task \u2014 this is how locks get released.
-- update_shared_context after meaningful steps.
+- update_shared_context after claims, design decisions, shared-contract changes, blockers, test results, and handoffs.
+- list_jobs and list_locks again after interruptions or long waits before resuming edits.
 - finalize_session when the user's request is fully complete \u2014 do not wait to be told. This clears all remaining locks.
 
 ### Force-Unlock Policy
@@ -2342,17 +2491,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         required: ["filename", "content"]
       }
     },
-    {
-      name: SEARCH_CONTEXT_TOOL,
-      description: "**CODEBASE SEARCH** \u2014 search the entire project by natural language or keywords.\n- Scans all source files on disk. Always returns results if matching code exists \u2014 no setup required.\n- Best for: 'Where is the auth logic?', 'How do I handle billing?', 'Find the database connection code'.\n- Also checks the RAG vector index if available, but the local filesystem search always works.\n- Use this INSTEAD of grep/ripgrep to stay within the Axis workflow. This tool searches file contents directly.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          query: { type: "string", description: "Natural language search query." }
-        },
-        required: ["query"]
-      }
-    },
+    // NOTE: search_codebase is defined further below with the updated
+    // "CODE INTELLIGENCE SEARCH" description. The older entry that used the
+    // SEARCH_CONTEXT_TOOL constant lived here and had the same `name`, which
+    // caused MCP clients to dedupe and lose a tool slot (16 visible instead
+    // of 17). Removed; the dispatch handler at the bottom still references
+    // SEARCH_CONTEXT_TOOL since the constant resolves to the same string.
     // --- Billing & Usage ---
     {
       name: "get_subscription_status",
@@ -2376,11 +2520,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     },
     {
       name: "search_codebase",
-      description: "**CODEBASE SEARCH (use by default, no need to be asked)**: Hybrid semantic + full-text + trigram search over the indexed codebase, reranked, returning ranked symbols with `file:line` plus `related` files that historically change together and `definitions` of what a top hit calls.\n- Reach for this BEFORE creating files or refactoring, and for any 'where is X / how is Y done' discovery. Prefer it over plain grep/text search.\n- Runs an instant local search first, then enriches with the remote hybrid index; works even offline (local fallback).",
+      description: "**CODE INTELLIGENCE SEARCH** \u2014 does what plain grep can't: returns ranked `file:line` hits PLUS `related` files that historically co-change with each hit, PLUS `definitions` of what the top result calls.\n- Use for 'where is X', 'how is Y done', anything before refactoring, and any time you need to know what code is structurally connected to a match (not just textually present).\n- Hybrid: semantic + full-text + trigram, reranked. Falls back to instant local search offline.\n- For pure literal-string lookups (a specific token or filename), grep is fine \u2014 this tool's edge is the related/definitions enrichment.",
       inputSchema: {
         type: "object",
         properties: {
-          query: { type: "string", description: "Natural language or code query (symbol, behavior, or question)." }
+          query: { type: "string", description: "Natural-language question or code query (symbol, behavior, or 'where is X done')." }
         },
         required: ["query"]
       }
@@ -2404,17 +2548,34 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     // --- Decision & Orchestration ---
     {
       name: "propose_file_access",
-      description: "**CRITICAL: REQUEST FILE LOCK** \u2014 call this before EVERY file edit, no exceptions.\n- Checks if another agent currently holds a lock on the same file.\n- Returns `GRANTED` if safe to proceed, `REQUIRES_ORCHESTRATION` if another agent has the file locked, or `REJECTED` if you tried to lock a directory.\n- **File-only locks**: You MUST lock individual files, not directories. Directory locks are rejected because they block all agents from the entire tree, preventing parallel work on different features. Lock each file you edit separately.\n- Paths are normalized relative to the project root, so absolute and relative paths are treated equivalently.\n- Usage: Provide your `agentId` (e.g., 'cursor-agent'), `filePath` (absolute or relative to a specific file), and `intent` (descriptive \u2014 e.g. 'Refactor auth to use JWT', NOT 'editing file').\n- Locks expire after 30 minutes. Use `force_unlock` only as a last resort for crashed agents.\n- **IMPORTANT**: Every lock you acquire MUST be released. Call `complete_job` when done with each task, and `finalize_session` before ending your session. Dangling locks block all other agents.",
+      description: "**CRITICAL: REQUEST FILE LOCK** \u2014 call this before EVERY file edit, no exceptions.\n- Returns `GRANTED` if safe to proceed, `REQUIRES_ORCHESTRATION` if another agent holds the lock, or `REJECTED` if you tried to lock a directory.\n- **Lock individual files, not directories.** Directory locks block parallel work and are rejected.\n- Paths can be absolute or relative \u2014 they're normalized against the project root.\n- Required: `agentId` (e.g. 'cursor-agent'), `filePath`, and `intent` (descriptive \u2014 'Refactor auth to use JWT', NOT 'editing file').\n- Locks expire after 30 minutes. Use `force_unlock` only as a last resort for crashed agents.\n- **Every lock MUST be released.** `complete_job` releases the locks for that job; `finalize_session` releases everything. Dangling locks block all other agents.",
       inputSchema: {
         type: "object",
         properties: {
           agentId: { type: "string" },
           filePath: { type: "string" },
           intent: { type: "string" },
-          userPrompt: { type: "string", description: "The full prompt provided by the user that initiated this action." }
+          userPrompt: { type: "string", description: "Optional. The user prompt that triggered this lock, for audit trails. Server captures it best-effort if omitted." }
         },
-        required: ["agentId", "filePath", "intent", "userPrompt"]
+        required: ["agentId", "filePath", "intent"]
       }
+    },
+    {
+      name: "release_file_access",
+      description: "**RELEASE YOUR LOCK**: Release one file lock as soon as you no longer need it.\n- Use this before a job is complete when another agent can safely continue on the file.\n- Only the owning agent can release the lock; use `force_unlock` only for a crashed agent.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          agentId: { type: "string" },
+          filePath: { type: "string" }
+        },
+        required: ["agentId", "filePath"]
+      }
+    },
+    {
+      name: "list_locks",
+      description: "**INSPECT ACTIVE LOCKS**: Return current file locks, owners, intents, and timestamps.\n- Call before planning overlapping work or when a lock conflict needs coordination.",
+      inputSchema: { type: "object", properties: {}, required: [] }
     },
     {
       name: "update_shared_context",
@@ -2467,6 +2628,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       }
     },
     {
+      name: "list_jobs",
+      description: "**INSPECT THE JOB BOARD**: Return all current jobs with status, priority, owner, dependencies, and timestamps.\n- Use before dividing work across agents or when you need to claim a specific ticket.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          includeCompleted: {
+            type: "boolean",
+            description: "Include done and cancelled jobs. Default: false."
+          }
+        },
+        required: []
+      }
+    },
+    {
       name: "cancel_job",
       description: "**KILL TICKET**: Cancel a job that is no longer needed.\n- Requires `jobId` and a `reason`.",
       inputSchema: {
@@ -2502,6 +2677,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       }
     },
     {
+      name: "claim_job",
+      description: "**CLAIM A SPECIFIC TICKET**: Atomically claim a known job by ID.\n- Prefer this over `claim_next_job` when work has been intentionally assigned or agents have disjoint scopes.\n- Rejects completed, already claimed, or dependency-blocked jobs.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          agentId: { type: "string" },
+          jobId: { type: "string" }
+        },
+        required: ["agentId", "jobId"]
+      }
+    },
+    {
       name: "complete_job",
       description: "**CLOSE TICKET**: Mark a job as done and release file locks.\n- Call this IMMEDIATELY after finishing each job \u2014 do not accumulate completed-but-unclosed jobs.\n- Requires `outcome` (what was done).\n- If you are not the assigned agent, you must provide the `completionKey`.\n- **This is the primary way to release file locks.** Leaving jobs open holds locks and blocks other agents.\n- REMINDER: After completing all jobs, you MUST also call `finalize_session` to clear any remaining locks.",
       inputSchema: {
@@ -2517,23 +2704,40 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     },
     {
       name: "index_file",
-      description: "**UPDATE SEARCH INDEX**: Add a file's content to the RAG vector database.\n- Call this *immediately* after creating a new file or significantly refactoring an existing one.\n- Ensures future `search_codebase` calls return up-to-date results.",
+      description: "**UPDATE SEARCH INDEX**: Add or refresh a single file in the RAG vector database.\n- Call this immediately after creating a new file or significantly refactoring an existing one \u2014 keeps `search_codebase` results fresh.\n- Only `filePath` is required. If you omit `content`, the server reads the file from disk itself \u2014 preferred, since it avoids round-tripping large file bodies through the tool call.\n- Pass `content` explicitly only when indexing material that doesn't live on disk (e.g. in-memory generated source).",
       inputSchema: {
         type: "object",
         properties: {
-          filePath: { type: "string" },
-          content: { type: "string" }
+          filePath: { type: "string", description: "Absolute or project-relative path." },
+          content: { type: "string", description: "Optional. Omit to have the server read filePath from disk." }
         },
-        required: ["filePath", "content"]
+        required: ["filePath"]
       }
     }
   ];
   logger.info(`[ListTools] Returning ${tools.length} tools to MCP client`);
   return { tools };
 });
+var TOOL_LOG_PATH = process.env.AXIS_TOOL_LOG;
+var TOOL_LOG_SESSION = process.env.AXIS_TOOL_LOG_SESSION || `${process.pid}-${Date.now()}`;
+function recordToolCall(name, args) {
+  if (!TOOL_LOG_PATH) return;
+  try {
+    const entry = {
+      ts: (/* @__PURE__ */ new Date()).toISOString(),
+      session: TOOL_LOG_SESSION,
+      tool: name,
+      // Arg keys only, never values (privacy + log size).
+      argKeys: args && typeof args === "object" ? Object.keys(args) : []
+    };
+    fs5.appendFileSync(TOOL_LOG_PATH, JSON.stringify(entry) + "\n");
+  } catch {
+  }
+}
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
   logger.info("Tool call", { name });
+  recordToolCall(name, args);
   if (process.env.AXIS_SKIP_SUBSCRIPTION_CHECK === "1") {
   } else {
     if (isSubscriptionStale()) {
@@ -2601,13 +2805,64 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
   if (name === "index_file") {
     const filePath = String(args?.filePath);
-    const content = String(args?.content);
+    let content;
+    if (args?.content !== void 0 && args?.content !== null) {
+      content = String(args.content);
+    } else {
+      try {
+        const projectRoot = path5.resolve(process.cwd());
+        const rebased = path5.isAbsolute(filePath) ? path5.join(projectRoot, filePath.replace(/^\/+/, "")) : path5.resolve(projectRoot, filePath);
+        const resolved = await fs5.promises.realpath(rebased).catch(() => rebased);
+        const rel = path5.relative(projectRoot, resolved);
+        if (rel.startsWith("..") || path5.isAbsolute(rel)) {
+          return {
+            content: [{ type: "text", text: `index_file: refusing to read ${filePath} \u2014 outside project root` }],
+            isError: true
+          };
+        }
+        const SENSITIVE = [
+          /(^|\/)\.env(\.|$)/,
+          // .env, .env.local, .env.production…
+          /(^|\/)\.git(\/|$)/,
+          /(^|\/)\.ssh(\/|$)/,
+          /(^|\/)\.npmrc$/,
+          /(^|\/)\.pypirc$/,
+          /(^|\/)id_(rsa|ed25519|ecdsa)/,
+          /(^|\/)credentials(\.|$)/,
+          /(^|\/)secrets(\.|$)/
+        ];
+        if (SENSITIVE.some((rx) => rx.test(rel))) {
+          return {
+            content: [{ type: "text", text: `index_file: refusing to index ${rel} \u2014 matches sensitive-file pattern` }],
+            isError: true
+          };
+        }
+        const stat = await fs5.promises.stat(resolved);
+        const MAX_BYTES = 1024 * 1024;
+        if (stat.size > MAX_BYTES) {
+          return {
+            content: [{ type: "text", text: `index_file: ${rel} is ${stat.size} bytes, exceeds ${MAX_BYTES} byte cap \u2014 pass content explicitly if you really want to index this` }],
+            isError: true
+          };
+        }
+        content = await fs5.promises.readFile(resolved, "utf-8");
+      } catch (e) {
+        return {
+          content: [{
+            type: "text",
+            text: `index_file: no content provided and could not read ${filePath} from disk: ${e instanceof Error ? e.message : String(e)}`
+          }],
+          isError: true
+        };
+      }
+    }
+    const metaPath = path5.isAbsolute(filePath) ? path5.basename(filePath) : filePath;
     try {
-      await manager.embedContent([{ content, metadata: { filePath } }], nerveCenter.currentProjectName);
+      await manager.embedContent([{ content, metadata: { filePath: metaPath } }], nerveCenter.currentProjectName);
       return { content: [{ type: "text", text: "Indexed via Remote API." }] };
     } catch (e) {
       if (ragEngine) {
-        const success = await ragEngine.indexContent(filePath, content);
+        const success = await ragEngine.indexContent(metaPath, content);
         return { content: [{ type: "text", text: success ? "Indexed locally." : "Local index failed." }] };
       }
       return { content: [{ type: "text", text: `Indexing failed: ${e}` }], isError: true };
@@ -2707,6 +2962,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const result = await nerveCenter.proposeFileAccess(agentId, filePath, intent, userPrompt);
     return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   }
+  if (name === "release_file_access") {
+    const { agentId, filePath } = args;
+    const result = await nerveCenter.releaseFileAccess(agentId, filePath);
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+  }
+  if (name === "list_locks") {
+    const result = await nerveCenter.listLocks();
+    return { content: [{ type: "text", text: JSON.stringify({ locks: result }, null, 2) }] };
+  }
   if (name === "update_shared_context") {
     const { agentId, text } = args;
     const result = await nerveCenter.updateSharedContext(text, agentId);
@@ -2741,6 +3005,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const result = await nerveCenter.postJob(title, description, priority, dependencies);
     return { content: [{ type: "text", text: JSON.stringify(result) }] };
   }
+  if (name === "list_jobs") {
+    const includeCompleted = Boolean(args?.includeCompleted);
+    const jobs = await nerveCenter.listJobs();
+    const result = includeCompleted ? jobs : jobs.filter((job) => job.status !== "done" && job.status !== "cancelled");
+    return { content: [{ type: "text", text: JSON.stringify({ jobs: result }, null, 2) }] };
+  }
   if (name === "cancel_job") {
     const { jobId, reason } = args;
     const result = await nerveCenter.cancelJob(jobId, reason);
@@ -2754,6 +3024,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (name === "claim_next_job") {
     const { agentId } = args;
     const result = await nerveCenter.claimNextJob(agentId);
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+  }
+  if (name === "claim_job") {
+    const { agentId, jobId } = args;
+    const result = await nerveCenter.claimJob(agentId, jobId);
     return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   }
   if (name === "complete_job") {
@@ -2777,14 +3052,17 @@ async function main() {
   } else {
     logger.info(`[subscription] Subscription verified: ${subscription.plan} (valid until: ${subscription.validUntil || "N/A"})`);
   }
-  setInterval(async () => {
-    try {
-      await verifySubscription();
-      logger.info(`[subscription] Periodic re-check: valid=${subscription.valid}, plan=${subscription.plan}`);
-    } catch (e) {
-      logger.warn(`[subscription] Periodic re-check failed: ${e}`);
-    }
-  }, RECHECK_INTERVAL_MS);
+  if (apiSecret) {
+    const subscriptionTimer = setInterval(async () => {
+      try {
+        await verifySubscription();
+        logger.info(`[subscription] Periodic re-check: valid=${subscription.valid}, plan=${subscription.plan}`);
+      } catch (e) {
+        logger.warn(`[subscription] Periodic re-check failed: ${e}`);
+      }
+    }, RECHECK_INTERVAL_MS);
+    subscriptionTimer.unref();
+  }
   logger.info("MCP server ready - all tools and resources registered");
   const transport = new StdioServerTransport();
   await server.connect(transport);

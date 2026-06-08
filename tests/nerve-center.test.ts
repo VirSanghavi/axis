@@ -1,25 +1,34 @@
-import { describe, expect, test, beforeEach } from "bun:test";
+import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { NerveCenter } from "../src/local/nerve-center.js";
+import { mkdtemp, rm, writeFile } from "fs/promises";
+import { tmpdir } from "os";
+import path from "path";
 
 // Mock ContextManager
 class MockManager {
     logs = [];
     async embedContent(items: any) { this.logs.push(items); }
-    async readFile(f: string) { return "content"; }
+    async readFile(_filename: string) { return "content"; }
 }
 
 describe("NerveCenter", () => {
     let nerveCenter: NerveCenter;
     let manager: MockManager;
+    let testDir: string;
 
     beforeEach(async () => {
-        // Reset state on disk
+        testDir = await mkdtemp(path.join(tmpdir(), "axis-nerve-"));
+        const stateFile = path.join(testDir, "state.json");
         const cleanState = { locks: {}, jobs: {}, liveNotepad: "Fresh Start" };
-        await Bun.write("tests/temp-state.json", JSON.stringify(cleanState));
+        await writeFile(stateFile, JSON.stringify(cleanState));
 
         manager = new MockManager();
-        nerveCenter = new NerveCenter(manager, { stateFilePath: "tests/temp-state.json" });
+        nerveCenter = new NerveCenter(manager, { stateFilePath: stateFile });
         await nerveCenter.init();
+    });
+
+    afterEach(async () => {
+        await rm(testDir, { recursive: true, force: true });
     });
 
     test("should post a job", async () => {
@@ -43,6 +52,20 @@ describe("NerveCenter", () => {
     test("should detect conflict", async () => {
         await nerveCenter.proposeFileAccess("AgentA", "file.ts", "edit", "prompt");
         const res = await nerveCenter.proposeFileAccess("AgentB", "file.ts", "edit", "prompt");
+        expect(res.status).toBe("REQUIRES_ORCHESTRATION");
+    });
+
+    test("should reject locks outside the project root", async () => {
+        const res = await nerveCenter.proposeFileAccess("AgentA", "../outside.ts", "edit", "prompt");
+        expect(res.status).toBe("REJECTED");
+        expect(res.message).toContain("outside the project root");
+    });
+
+    test("should normalize absolute and relative paths to the same lock", async () => {
+        const absolutePath = `${process.cwd()}/same-file.ts`;
+        await nerveCenter.proposeFileAccess("AgentA", absolutePath, "edit", "prompt");
+
+        const res = await nerveCenter.proposeFileAccess("AgentB", "same-file.ts", "edit", "prompt");
         expect(res.status).toBe("REQUIRES_ORCHESTRATION");
     });
 });

@@ -1,6 +1,7 @@
 import { Mutex } from "async-mutex";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import fs from "fs/promises";
+import { existsSync } from "fs";
 import path from "path";
 import { logger } from "../utils/logger.js";
 
@@ -80,6 +81,7 @@ export class NerveCenter {
     private supabase?: SupabaseClient;
     private _projectId?: string; // Renamed backing field
     private projectName: string;
+    private projectNameExplicit: boolean;
     private useSupabase: boolean;
     private _circuitFailures: number = 0;
     private _circuitOpenUntil: number = 0;
@@ -123,6 +125,7 @@ export class NerveCenter {
         // Project name: prioritize explicit option, then env var, then detect from .axis/axis.json, then default
         // But if remote API is configured (customer mode), prefer env var over detected name
         const explicitProjectName = options.projectName || process.env.PROJECT_NAME;
+        this.projectNameExplicit = !!explicitProjectName;
         if (explicitProjectName) {
             this.projectName = explicitProjectName;
         } else {
@@ -152,7 +155,7 @@ export class NerveCenter {
         // 1. Project name is still "default" (wasn't set explicitly)
         // 2. We're in dev mode (not using remote API only)
         // This ensures customer mode uses consistent project names from env vars
-        if (this.projectName === "default" && (this.useSupabase || !this.contextManager.apiUrl)) {
+        if (!this.projectNameExplicit) {
             await this.detectProjectName();
         }
 
@@ -179,20 +182,44 @@ export class NerveCenter {
     }
 
     private async detectProjectName() {
+        const startDir = process.cwd();
+        let projectRoot = startDir;
+        let current = startDir;
+        const filesystemRoot = path.parse(current).root;
+
+        while (current !== filesystemRoot) {
+            if (
+                existsSync(path.join(current, ".axis", "axis.json")) ||
+                existsSync(path.join(current, ".git")) ||
+                existsSync(path.join(current, "package.json"))
+            ) {
+                projectRoot = current;
+                break;
+            }
+            const parent = path.dirname(current);
+            if (parent === current) break;
+            current = parent;
+        }
+
         try {
-            const axisConfigPath = path.join(process.cwd(), ".axis", "axis.json");
+            const axisConfigPath = path.join(projectRoot, ".axis", "axis.json");
             const configData = await fs.readFile(axisConfigPath, "utf-8");
             const config = JSON.parse(configData);
             if (config.project) {
-                this.projectName = config.project;
+                this.projectName = String(config.project);
                 logger.info(`Detected project name from .axis/axis.json: ${this.projectName}`);
-                console.error(`[NerveCenter] Loaded project name '${this.projectName}' from ${axisConfigPath}`);
-            } else {
-                console.error(`[NerveCenter] .axis/axis.json found but no 'project' field.`);
+                return;
             }
-        } catch (e) {
-            console.error(`[NerveCenter] Could not load .axis/axis.json at ${path.join(process.cwd(), ".axis", "axis.json")}: ${e}`);
+        } catch {
+            // Fall through to a deterministic repository-root name.
         }
+
+        const derived = path.basename(projectRoot)
+            .toLowerCase()
+            .replace(/[^a-z0-9._-]+/g, "-")
+            .replace(/^-+|-+$/g, "");
+        this.projectName = derived || "default";
+        logger.info(`Derived project name '${this.projectName}' from ${projectRoot}`);
     }
 
     private async ensureProjectId() {
@@ -370,7 +397,7 @@ export class NerveCenter {
 
     // --- Data Access Layers (Hybrid: Supabase > Local) ---
 
-    private async listJobs(): Promise<Job[]> {
+    async listJobs(): Promise<Job[]> {
         if (this.useSupabase && this.supabase && this._projectId) {
             const { data, error } = await this.supabase
                 .from("jobs")
@@ -398,7 +425,7 @@ export class NerveCenter {
         return Object.values(this.state.jobs);
     }
 
-    private async getLocks(): Promise<FileLock[]> {
+    async listLocks(): Promise<FileLock[]> {
         // Priority: Remote API if available (for customers), then Supabase, then local
         logger.info(`[getLocks] Starting - projectName: ${this.projectName}`);
         logger.info(`[getLocks] Config - apiUrl: ${this.contextManager.apiUrl}, useSupabase: ${this.useSupabase}, hasSupabase: ${!!this.supabase}`);
@@ -548,6 +575,18 @@ export class NerveCenter {
         return await this.mutex.runExclusive(async () => {
             let id = `job-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
             const completionKey = Math.random().toString(36).substring(2, 10).toUpperCase();
+            const now = Date.now();
+            const localJob: Job = {
+                id,
+                title,
+                description,
+                priority,
+                dependencies,
+                status: "todo",
+                createdAt: now,
+                updatedAt: now,
+                completionKey
+            };
 
             if (this.useSupabase && this.supabase && this._projectId) {
                 const { data, error } = await this.supabase
@@ -565,7 +604,10 @@ export class NerveCenter {
                     .single();
 
                 if (data?.id) id = data.id;
-                if (error) logger.error("Failed to post job to Supabase", error);
+                if (error) {
+                    logger.error("Failed to post job to Supabase", error);
+                    return { status: "ERROR", error: "Failed to persist job to Supabase" };
+                }
             } else if (this.contextManager.apiUrl) {
                 try {
                     const data = await this.callCoordination('jobs', 'POST', {
@@ -579,15 +621,11 @@ export class NerveCenter {
                     if (data?.id) id = data.id;
                 } catch (e: any) {
                     logger.error("Failed to post job to API", e);
+                    return { status: "ERROR", error: `Failed to persist job to remote API: ${e.message}` };
                 }
-            }
-
-            if (!this.useSupabase && !this.contextManager.apiUrl) {
-                this.state.jobs[id] = {
-                    id, title, description, priority, dependencies,
-                    status: "todo", createdAt: Date.now(), updatedAt: Date.now(),
-                    completionKey
-                };
+            } else {
+                localJob.id = id;
+                this.state.jobs[id] = localJob;
             }
 
             const depText = dependencies.length ? ` (Depends on: ${dependencies.join(", ")})` : "";
@@ -668,6 +706,78 @@ export class NerveCenter {
         });
     }
 
+    async claimJob(agentId: string, jobId: string) {
+        return await this.mutex.runExclusive(async () => {
+            const jobs = await this.listJobs();
+            const job = jobs.find((candidate) => candidate.id === jobId);
+            if (!job) return { status: "NOT_FOUND", message: `Job '${jobId}' was not found.` };
+            if (job.status !== "todo") {
+                return { status: "NOT_AVAILABLE", message: `Job '${jobId}' is ${job.status}.` };
+            }
+
+            const jobsById = new Map(jobs.map((candidate) => [candidate.id, candidate]));
+            const unmetDependencies = (job.dependencies || []).filter(
+                (dependencyId) => jobsById.get(dependencyId)?.status !== "done"
+            );
+            if (unmetDependencies.length > 0) {
+                return {
+                    status: "BLOCKED_BY_DEPENDENCIES",
+                    message: `Job '${jobId}' is blocked by: ${unmetDependencies.join(", ")}`,
+                    dependencies: unmetDependencies
+                };
+            }
+
+            if (this.useSupabase && this.supabase && this._projectId) {
+                const { data, error } = await this.supabase
+                    .from("jobs")
+                    .update({
+                        status: "in_progress",
+                        assigned_to: agentId,
+                        updated_at: new Date().toISOString()
+                    })
+                    .eq("project_id", this._projectId)
+                    .eq("id", jobId)
+                    .eq("status", "todo")
+                    .select("id,title,description,priority,status,assigned_to,dependencies,completion_key,created_at,updated_at")
+                    .maybeSingle();
+
+                if (error) return { status: "ERROR", message: error.message };
+                if (!data) return { status: "NOT_AVAILABLE", message: `Job '${jobId}' was claimed by another agent.` };
+                const claimed = this.jobFromRecord(data as JobRecord);
+                await this.appendToNotepad(`\n- [JOB CLAIMED] Agent '${agentId}' picked up: ${claimed.title}`);
+                return { status: "CLAIMED", job: claimed };
+            }
+
+            if (this.contextManager.apiUrl) {
+                try {
+                    const data = await this.callCoordination("jobs", "POST", {
+                        action: "claim",
+                        jobId,
+                        agentId
+                    }) as any;
+                    if (data?.status !== "CLAIMED" || !data.job) {
+                        return data || { status: "NOT_AVAILABLE", message: `Job '${jobId}' could not be claimed.` };
+                    }
+                    const claimed = this.jobFromRecord(data.job as JobRecord);
+                    await this.appendToNotepad(`\n- [JOB CLAIMED] Agent '${agentId}' picked up: ${claimed.title}`);
+                    return { status: "CLAIMED", job: claimed };
+                } catch (e: any) {
+                    return { status: "ERROR", message: `Claim failed: ${e.message}` };
+                }
+            }
+
+            const localJob = this.state.jobs[jobId];
+            if (!localJob || localJob.status !== "todo") {
+                return { status: "NOT_AVAILABLE", message: `Job '${jobId}' is no longer available.` };
+            }
+            localJob.status = "in_progress";
+            localJob.assignedTo = agentId;
+            localJob.updatedAt = Date.now();
+            await this.appendToNotepad(`\n- [JOB CLAIMED] Agent '${agentId}' picked up: ${localJob.title}`);
+            return { status: "CLAIMED", job: localJob };
+        });
+    }
+
     async cancelJob(jobId: string, reason: string) {
         return await this.mutex.runExclusive(async () => {
             if (this.useSupabase && this.supabase && this._projectId) {
@@ -719,6 +829,11 @@ export class NerveCenter {
 
                 if (updateError) return { error: "Failed to complete job" };
 
+                await this.supabase
+                    .from("locks")
+                    .delete()
+                    .eq("project_id", this._projectId)
+                    .eq("agent_id", data.assigned_to);
                 await this.appendToNotepad(`\n- [JOB DONE] Agent '${agentId}' finished: ${data.title}\n  Outcome: ${outcome}`);
                 return { status: "COMPLETED" };
             } else if (this.contextManager.apiUrl) {
@@ -749,8 +864,59 @@ export class NerveCenter {
 
             job.status = "done";
             job.updatedAt = Date.now();
+            for (const [lockedPath, lock] of Object.entries(this.state.locks)) {
+                if (lock.agentId === job.assignedTo) delete this.state.locks[lockedPath];
+            }
             await this.appendToNotepad(`\n- [JOB DONE] Agent '${agentId}' finished: ${job.title}\n  Outcome: ${outcome}`);
             return { status: "COMPLETED" };
+        });
+    }
+
+    async releaseFileAccess(agentId: string, filePath: string) {
+        return await this.mutex.runExclusive(async () => {
+            const normalizedPath = NerveCenter.normalizeLockPath(filePath);
+
+            if (this.contextManager.apiUrl) {
+                try {
+                    const result = await this.callCoordination("locks", "POST", {
+                        action: "unlock",
+                        filePath: normalizedPath,
+                        agentId
+                    }) as any;
+                    await this.appendToNotepad(`\n- [UNLOCK] ${agentId} released ${normalizedPath}`);
+                    return result?.status ? result : { status: "RELEASED", filePath: normalizedPath };
+                } catch (e: any) {
+                    return { status: "ERROR", message: `Failed to release remote lock: ${e.message}` };
+                }
+            }
+
+            if (this.useSupabase && this.supabase && this._projectId) {
+                const { data, error } = await this.supabase
+                    .from("locks")
+                    .delete()
+                    .eq("project_id", this._projectId)
+                    .eq("file_path", normalizedPath)
+                    .eq("agent_id", agentId)
+                    .select("file_path");
+                if (error) return { status: "ERROR", message: error.message };
+                if (!data || data.length === 0) {
+                    return { status: "NOT_OWNER", message: `No lock on '${normalizedPath}' is owned by '${agentId}'.` };
+                }
+                await this.appendToNotepad(`\n- [UNLOCK] ${agentId} released ${normalizedPath}`);
+                return { status: "RELEASED", filePath: normalizedPath };
+            }
+
+            const lock = this.state.locks[normalizedPath];
+            if (!lock) return { status: "NOT_FOUND", message: `No active lock for '${normalizedPath}'.` };
+            if (lock.agentId !== agentId) {
+                return {
+                    status: "NOT_OWNER",
+                    message: `Lock on '${normalizedPath}' belongs to '${lock.agentId}'.`
+                };
+            }
+            delete this.state.locks[normalizedPath];
+            await this.appendToNotepad(`\n- [UNLOCK] ${agentId} released ${normalizedPath}`);
+            return { status: "RELEASED", filePath: normalizedPath };
         });
     }
 
@@ -783,7 +949,7 @@ export class NerveCenter {
 
     async getCoreContext() {
         const jobs = await this.listJobs();
-        const locks = await this.getLocks();
+        const locks = await this.listLocks();
         const notepad = await this.getNotepad();
 
         const jobSummary = jobs
@@ -874,8 +1040,14 @@ export class NerveCenter {
             return { valid: false, reason: "Cannot lock the project root. Lock individual files instead." };
         }
 
+        const projectRoot = path.resolve(process.cwd());
+        const absolutePath = path.resolve(projectRoot, filePath);
+        const relativePath = path.relative(projectRoot, absolutePath);
+        if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+            return { valid: false, reason: "Cannot lock files outside the project root." };
+        }
+
         // Try filesystem check first (handles extensionless files like Makefile, Dockerfile, LICENSE)
-        const absolutePath = path.isAbsolute(filePath) ? filePath : path.join(process.cwd(), filePath);
         try {
             const stat = await fs.stat(absolutePath);
             if (stat.isDirectory()) {

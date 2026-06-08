@@ -44,6 +44,11 @@ next-env.d.ts
 
 # backend
 /supabase
+!/supabase/
+/supabase/*
+!/supabase/migrations/
+/supabase/migrations/*
+!/supabase/migrations/0008_oauth_org_binding.sql
 /sandbox_mcp_test
 /sandboxpackages/python-sdk/axis/__pycache__/
 sandbox/
