@@ -2,6 +2,7 @@
   "name": "shared-context-mcp",
   "module": "index.ts",
   "type": "module",
+  "private": true,
   "scripts": {
     "start:local": "bun run src/local/mcp-server.ts",
     "start:server": "bun run src/local/server.ts",

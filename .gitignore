@@ -24,6 +24,13 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
+# Axis runtime state (auto-generated when the server runs; never commit)
+# Keep .axis/axis.json (project config) trackable, ignore generated artifacts.
+.axis-server.log
+**/.axis-server.log
+.axis/instructions/
+**/.axis/instructions/
+
 # local env files
 .env*.local
 .env

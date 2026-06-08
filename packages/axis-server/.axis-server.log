@@ -1,9 +1,0 @@
-{"timestamp":"2026-02-07T22:14:31.585Z","level":"warn","message":"Supabase credentials missing. RAG & Persistence disabled. Running in local/ephemeral mode."}
-{"timestamp":"2026-02-07T22:14:31.586Z","level":"info","message":"NerveCenter: Using Remote API persistence (https://aicontext.vercel.app/api/v1)"}
-{"timestamp":"2026-02-07T22:14:31.586Z","level":"info","message":"Server CWD: /Users/vir/Downloads/Projects/Axis/shared-context/packages/axis-server"}
-{"timestamp":"2026-02-07T22:14:31.587Z","level":"info","message":"Created default context file: context.md"}
-{"timestamp":"2026-02-07T22:14:31.589Z","level":"info","message":"Created default context file: conventions.md"}
-{"timestamp":"2026-02-07T22:14:31.589Z","level":"info","message":"Created default context file: activity.md"}
-[NerveCenter] Could not load .axis/axis.json at /Users/vir/Downloads/Projects/Axis/shared-context/packages/axis-server/.axis/axis.json: Error: ENOENT: no such file or directory, open '/Users/vir/Downloads/Projects/Axis/shared-context/packages/axis-server/.axis/axis.json'
-{"timestamp":"2026-02-07T22:14:31.872Z","level":"warn","message":"Failed to recover notepad from API. Using local."}
-{"timestamp":"2026-02-07T22:14:31.872Z","level":"info","message":"Shared Context MCP Server running on stdio"}
