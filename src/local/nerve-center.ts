@@ -7,6 +7,7 @@ import { logger } from "../utils/logger.js";
 import { deriveProjectName, projectStateFilePath } from "./project-identity.js";
 import { buildIntegrityReport, hashContent, hashFileIfExists } from "./lock-integrity.js";
 import { findReclaimable } from "./job-hygiene.js";
+import { locksEnforced, denyWrites, restoreWrites, withTempWrite } from "./fs-guard.js";
 
 // Interfaces
 interface FileLock {
@@ -70,6 +71,8 @@ interface NerveCenterOptions {
     supabaseUrl?: string | null;
     supabaseServiceRoleKey?: string | null;
     projectName?: string;
+    /** Physically enforce locks by chmod'ing locked files read-only. Defaults to AXIS_ENFORCE_LOCKS. */
+    enforceLocks?: boolean;
 }
 
 /**
@@ -89,6 +92,9 @@ export class NerveCenter {
     private projectName: string;
     private projectNameExplicit: boolean;
     private useSupabase: boolean;
+    private enforceLocks: boolean;
+    /** Files made read-only on disk while locked, keyed by normalized path → {prior mode, owner}. */
+    private enforcedPerms: Map<string, { mode?: number; agentId: string }> = new Map();
     private _circuitFailures: number = 0;
     private _circuitOpenUntil: number = 0;
 
@@ -99,6 +105,7 @@ export class NerveCenter {
     constructor(contextManager: any, options: NerveCenterOptions = {}) {
         this.mutex = new Mutex();
         this.contextManager = contextManager; // this handles apiUrl/apiSecret
+        this.enforceLocks = options.enforceLocks ?? locksEnforced();
         this.projectRoot = path.resolve(options.projectRoot || process.cwd());
         this.stateFilePathExplicit = options.stateFilePath !== undefined;
         this.stateFilePath = options.stateFilePath || projectStateFilePath(this.projectRoot);
@@ -489,7 +496,8 @@ export class NerveCenter {
                         filePath: row.file_path,
                         intent: row.intent,
                         userPrompt: row.user_prompt,
-                        timestamp: Date.parse(row.updated_at || row.timestamp)
+                        timestamp: Date.parse(row.updated_at || row.timestamp),
+                        contentHash: row.content_hash ?? undefined
                     }));
                 } catch (e: any) {
                     logger.error(`[getLocks] Failed to fetch locks from API: ${e.message}`, e);
@@ -537,7 +545,8 @@ export class NerveCenter {
                     filePath: row.file_path,
                     intent: row.intent,
                     userPrompt: row.user_prompt,
-                    timestamp: Date.parse(row.updated_at || row.timestamp)
+                    timestamp: Date.parse(row.updated_at || row.timestamp),
+                    contentHash: row.content_hash ?? undefined
                 }));
             } catch (e: any) {
                 logger.error("Failed to fetch locks from API in fallback", e);
@@ -908,6 +917,7 @@ export class NerveCenter {
                     .delete()
                     .eq("project_id", this._projectId)
                     .eq("agent_id", data.assigned_to);
+                await this.restoreLocksForAgentOnDisk(data.assigned_to || agentId);
                 await this.appendToNotepad(`\n- [JOB DONE] Agent '${agentId}' finished: ${data.title}\n  Outcome: ${outcome}`);
                 return { status: "COMPLETED" };
             } else if (this.contextManager.apiUrl) {
@@ -919,6 +929,7 @@ export class NerveCenter {
                         assigned_to: agentId,
                         completion_key: completionKey
                     });
+                    await this.restoreLocksForAgentOnDisk(agentId);
                     await this.appendToNotepad(`\n- [JOB DONE] Agent '${agentId}' finished: ${jobId}\n  Outcome: ${outcome}`);
                     return { status: "COMPLETED" };
                 } catch (e: any) {
@@ -941,6 +952,7 @@ export class NerveCenter {
             for (const [lockedPath, lock] of Object.entries(this.state.locks)) {
                 if (lock.agentId === job.assignedTo) delete this.state.locks[lockedPath];
             }
+            await this.restoreLocksForAgentOnDisk(job.assignedTo || agentId);
             await this.appendToNotepad(`\n- [JOB DONE] Agent '${agentId}' finished: ${job.title}\n  Outcome: ${outcome}`);
             return { status: "COMPLETED" };
         });
@@ -957,6 +969,7 @@ export class NerveCenter {
                         filePath: normalizedPath,
                         agentId
                     }) as any;
+                    await this.restoreLockOnDisk(normalizedPath);
                     await this.appendToNotepad(`\n- [UNLOCK] ${agentId} released ${normalizedPath}`);
                     return result?.status ? result : { status: "RELEASED", filePath: normalizedPath };
                 } catch (e: any) {
@@ -976,6 +989,7 @@ export class NerveCenter {
                 if (!data || data.length === 0) {
                     return { status: "NOT_OWNER", message: `No lock on '${normalizedPath}' is owned by '${agentId}'.` };
                 }
+                await this.restoreLockOnDisk(normalizedPath);
                 await this.appendToNotepad(`\n- [UNLOCK] ${agentId} released ${normalizedPath}`);
                 return { status: "RELEASED", filePath: normalizedPath };
             }
@@ -989,6 +1003,7 @@ export class NerveCenter {
                 };
             }
             delete this.state.locks[normalizedPath];
+            await this.restoreLockOnDisk(normalizedPath);
             await this.appendToNotepad(`\n- [UNLOCK] ${agentId} released ${normalizedPath}`);
             return { status: "RELEASED", filePath: normalizedPath };
         });
@@ -1014,6 +1029,8 @@ export class NerveCenter {
                 delete this.state.locks[filePath];
                 await this.saveState();
             }
+            // Restore perms whether the path was stored normalized or absolute.
+            await this.restoreLockOnDisk(NerveCenter.normalizeLockPath(filePath));
 
             await this.logLockEvent("FORCE_UNLOCKED", filePath, "admin", undefined, reason);
             await this.appendToNotepad(`\n- [FORCE UNLOCK] ${filePath} unlocked by admin. Reason: ${reason}`);
@@ -1181,6 +1198,36 @@ export class NerveCenter {
             + `The lock auto-expires after ${mins} min; use force_unlock only if '${owner}' has crashed.`;
     }
 
+    // --- Physical lock enforcement (opt-in via AXIS_ENFORCE_LOCKS) ---
+    // Files are always local to the MCP server even in hosted persistence modes,
+    // so chmod-based enforcement is tracked here independently of where lock
+    // metadata is stored.
+
+    /** Make a freshly-locked file read-only on disk so non-Axis writers get EACCES. */
+    private async enforceLockOnDisk(normalizedPath: string, agentId: string, filePath: string): Promise<void> {
+        if (!this.enforceLocks) return;
+        const mode = await denyWrites(path.resolve(process.cwd(), filePath));
+        this.enforcedPerms.set(normalizedPath, { mode, agentId });
+    }
+
+    /** Restore write permission for a single released path. */
+    private async restoreLockOnDisk(normalizedPath: string): Promise<void> {
+        const entry = this.enforcedPerms.get(normalizedPath);
+        if (!entry) return;
+        await restoreWrites(path.resolve(process.cwd(), normalizedPath), entry.mode);
+        this.enforcedPerms.delete(normalizedPath);
+    }
+
+    /** Restore every file an agent had locked (or all, if agentId omitted). */
+    private async restoreLocksForAgentOnDisk(agentId?: string): Promise<void> {
+        for (const [p, entry] of [...this.enforcedPerms]) {
+            if (!agentId || entry.agentId === agentId) {
+                await restoreWrites(path.resolve(process.cwd(), p), entry.mode);
+                this.enforcedPerms.delete(p);
+            }
+        }
+    }
+
     async proposeFileAccess(agentId: string, filePath: string, intent: string, userPrompt: string) {
         return await this.mutex.runExclusive(async () => {
             logger.info(`[proposeFileAccess] Starting - agentId: ${agentId}, filePath: ${filePath}`);
@@ -1203,12 +1250,15 @@ export class NerveCenter {
             // File-only validation also enforced server-side.
             if (this.contextManager.apiUrl) {
                 try {
+                    // Fingerprint the file locally so hosted mode can detect tampering.
+                    const contentHash = await hashFileIfExists(path.resolve(process.cwd(), filePath));
                     const result = await this.callCoordination("locks", "POST", {
                         action: "lock",
                         filePath: normalizedPath,
                         agentId,
                         intent,
-                        userPrompt
+                        userPrompt,
+                        contentHash
                     }) as { status?: string; message?: string; current_lock?: any };
 
                     if (result.status === "DENIED") {
@@ -1232,6 +1282,7 @@ export class NerveCenter {
                     }
 
                     logger.info(`[proposeFileAccess] GRANTED by server`);
+                    await this.enforceLockOnDisk(normalizedPath, agentId, filePath);
                     await this.logLockEvent("GRANTED", normalizedPath, agentId, undefined, intent);
                     await this.appendToNotepad(`\n- [LOCK] ${agentId} locked ${normalizedPath}\n  Intent: ${intent}`);
                     return { status: "GRANTED", message: `Access granted for ${normalizedPath}` };
@@ -1308,6 +1359,7 @@ export class NerveCenter {
                         logger.warn("[NerveCenter] Could not persist lock content_hash (migration 0009 applied?)", hashErr as any);
                     }
 
+                    await this.enforceLockOnDisk(normalizedPath, agentId, filePath);
                     await this.logLockEvent("GRANTED", normalizedPath, agentId, undefined, intent);
                     await this.appendToNotepad(`\n- [LOCK] ${agentId} locked ${normalizedPath}\n  Intent: ${intent}`);
                     return { status: "GRANTED", message: `Access granted for ${normalizedPath}` };
@@ -1332,6 +1384,7 @@ export class NerveCenter {
             const contentHash = await hashFileIfExists(path.resolve(process.cwd(), filePath));
             this.state.locks[normalizedPath] = { agentId, filePath: normalizedPath, intent, userPrompt, timestamp: Date.now(), contentHash };
             await this.saveState();
+            await this.enforceLockOnDisk(normalizedPath, agentId, filePath);
             await this.logLockEvent("GRANTED", normalizedPath, agentId, undefined, intent);
             await this.appendToNotepad(`\n- [LOCK] ${agentId} locked ${normalizedPath}\n  Intent: ${intent}`);
             return { status: "GRANTED", message: `Access granted for ${normalizedPath}` };
@@ -1427,8 +1480,17 @@ export class NerveCenter {
                 };
             }
 
-            await fs.mkdir(path.dirname(absolutePath), { recursive: true });
-            await fs.writeFile(absolutePath, content);
+            const doWrite = async () => {
+                await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+                await fs.writeFile(absolutePath, content);
+            };
+            const enforced = this.enforcedPerms.get(normalizedPath);
+            if (this.enforceLocks && enforced) {
+                // File is read-only on disk; restore perms just for this write.
+                await withTempWrite(absolutePath, enforced.mode, doWrite);
+            } else {
+                await doWrite();
+            }
 
             // Refresh the fingerprint so later verifies/writes compare against
             // what we just wrote.
@@ -1451,6 +1513,9 @@ export class NerveCenter {
 
     async finalizeSession() {
         return await this.mutex.runExclusive(async () => {
+            // Restore write permission on every file this session locked, so no
+            // file is left read-only after the locks are cleared.
+            await this.restoreLocksForAgentOnDisk();
             const content = await this.getNotepad();
             const filename = `session-${new Date().toISOString().replace(/[:.]/g, "-")}.md`;
             const historyPath = path.join(this.projectRoot, "history", filename);

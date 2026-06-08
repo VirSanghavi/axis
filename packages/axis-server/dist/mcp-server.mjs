@@ -272,7 +272,7 @@ var ContextManager = class {
 // ../../src/local/nerve-center.ts
 import { Mutex as Mutex2 } from "async-mutex";
 import { createClient } from "@supabase/supabase-js";
-import fs4 from "fs/promises";
+import fs5 from "fs/promises";
 import { existsSync as existsSync2 } from "fs";
 import path3 from "path";
 
@@ -372,6 +372,38 @@ function findReclaimable(jobs, now, ttlMs = DEFAULT_JOB_STALE_MS) {
   return jobs.filter((j) => isReclaimable(j, now, ttlMs));
 }
 
+// ../../src/local/fs-guard.ts
+import fs4 from "fs/promises";
+var WRITE_BITS = 146;
+function locksEnforced(env = process.env) {
+  const v = (env.AXIS_ENFORCE_LOCKS || "").trim().toLowerCase();
+  return v === "1" || v === "true" || v === "yes" || v === "on";
+}
+async function denyWrites(absolutePath) {
+  try {
+    const st = await fs4.stat(absolutePath);
+    const mode = st.mode & 511;
+    await fs4.chmod(absolutePath, mode & ~WRITE_BITS);
+    return mode;
+  } catch {
+    return void 0;
+  }
+}
+async function restoreWrites(absolutePath, originalMode) {
+  try {
+    await fs4.chmod(absolutePath, (originalMode ?? 420) & 511);
+  } catch {
+  }
+}
+async function withTempWrite(absolutePath, originalMode, fn) {
+  await restoreWrites(absolutePath, originalMode);
+  try {
+    return await fn();
+  } finally {
+    await denyWrites(absolutePath);
+  }
+}
+
 // ../../src/local/nerve-center.ts
 var LOCK_TIMEOUT_DEFAULT = 30 * 60 * 1e3;
 var CIRCUIT_FAILURE_THRESHOLD = 5;
@@ -396,6 +428,9 @@ var NerveCenter = class _NerveCenter {
   projectName;
   projectNameExplicit;
   useSupabase;
+  enforceLocks;
+  /** Files made read-only on disk while locked, keyed by normalized path → {prior mode, owner}. */
+  enforcedPerms = /* @__PURE__ */ new Map();
   _circuitFailures = 0;
   _circuitOpenUntil = 0;
   /**
@@ -405,6 +440,7 @@ var NerveCenter = class _NerveCenter {
   constructor(contextManager, options = {}) {
     this.mutex = new Mutex2();
     this.contextManager = contextManager;
+    this.enforceLocks = options.enforceLocks ?? locksEnforced();
     this.projectRoot = path3.resolve(options.projectRoot || process.cwd());
     this.stateFilePathExplicit = options.stateFilePath !== void 0;
     this.stateFilePath = options.stateFilePath || projectStateFilePath(this.projectRoot);
@@ -517,7 +553,7 @@ var NerveCenter = class _NerveCenter {
     }
     try {
       const axisConfigPath = path3.join(projectRoot, ".axis", "axis.json");
-      const configData = await fs4.readFile(axisConfigPath, "utf-8");
+      const configData = await fs5.readFile(axisConfigPath, "utf-8");
       const config = JSON.parse(configData);
       if (config.project) {
         this.projectName = String(config.project);
@@ -688,7 +724,8 @@ var NerveCenter = class _NerveCenter {
             filePath: row.file_path,
             intent: row.intent,
             userPrompt: row.user_prompt,
-            timestamp: Date.parse(row.updated_at || row.timestamp)
+            timestamp: Date.parse(row.updated_at || row.timestamp),
+            contentHash: row.content_hash ?? void 0
           }));
         } catch (e) {
           logger.error(`[getLocks] Failed to fetch locks from API: ${e.message}`, e);
@@ -723,7 +760,8 @@ var NerveCenter = class _NerveCenter {
           filePath: row.file_path,
           intent: row.intent,
           userPrompt: row.user_prompt,
-          timestamp: Date.parse(row.updated_at || row.timestamp)
+          timestamp: Date.parse(row.updated_at || row.timestamp),
+          contentHash: row.content_hash ?? void 0
         }));
       } catch (e) {
         logger.error("Failed to fetch locks from API in fallback", e);
@@ -769,15 +807,15 @@ var NerveCenter = class _NerveCenter {
   }
   async saveState() {
     try {
-      await fs4.mkdir(path3.dirname(this.stateFilePath), { recursive: true });
-      await fs4.writeFile(this.stateFilePath, JSON.stringify(this.state, null, 2));
+      await fs5.mkdir(path3.dirname(this.stateFilePath), { recursive: true });
+      await fs5.writeFile(this.stateFilePath, JSON.stringify(this.state, null, 2));
     } catch (error) {
       logger.error("Failed to persist state", error);
     }
   }
   async loadState() {
     try {
-      const data = await fs4.readFile(this.stateFilePath, "utf-8");
+      const data = await fs5.readFile(this.stateFilePath, "utf-8");
       const parsed = JSON.parse(data);
       this.state = {
         ..._NerveCenter.createEmptyState(),
@@ -1019,6 +1057,7 @@ var NerveCenter = class _NerveCenter {
         const { error: updateError } = await this.supabase.from("jobs").update({ status: "done", updated_at: (/* @__PURE__ */ new Date()).toISOString() }).eq("id", jobId);
         if (updateError) return { error: "Failed to complete job" };
         await this.supabase.from("locks").delete().eq("project_id", this._projectId).eq("agent_id", data.assigned_to);
+        await this.restoreLocksForAgentOnDisk(data.assigned_to || agentId);
         await this.appendToNotepad(`
 - [JOB DONE] Agent '${agentId}' finished: ${data.title}
   Outcome: ${outcome}`);
@@ -1032,6 +1071,7 @@ var NerveCenter = class _NerveCenter {
             assigned_to: agentId,
             completion_key: completionKey
           });
+          await this.restoreLocksForAgentOnDisk(agentId);
           await this.appendToNotepad(`
 - [JOB DONE] Agent '${agentId}' finished: ${jobId}
   Outcome: ${outcome}`);
@@ -1052,6 +1092,7 @@ var NerveCenter = class _NerveCenter {
       for (const [lockedPath, lock] of Object.entries(this.state.locks)) {
         if (lock.agentId === job.assignedTo) delete this.state.locks[lockedPath];
       }
+      await this.restoreLocksForAgentOnDisk(job.assignedTo || agentId);
       await this.appendToNotepad(`
 - [JOB DONE] Agent '${agentId}' finished: ${job.title}
   Outcome: ${outcome}`);
@@ -1068,6 +1109,7 @@ var NerveCenter = class _NerveCenter {
             filePath: normalizedPath,
             agentId
           });
+          await this.restoreLockOnDisk(normalizedPath);
           await this.appendToNotepad(`
 - [UNLOCK] ${agentId} released ${normalizedPath}`);
           return result?.status ? result : { status: "RELEASED", filePath: normalizedPath };
@@ -1081,6 +1123,7 @@ var NerveCenter = class _NerveCenter {
         if (!data || data.length === 0) {
           return { status: "NOT_OWNER", message: `No lock on '${normalizedPath}' is owned by '${agentId}'.` };
         }
+        await this.restoreLockOnDisk(normalizedPath);
         await this.appendToNotepad(`
 - [UNLOCK] ${agentId} released ${normalizedPath}`);
         return { status: "RELEASED", filePath: normalizedPath };
@@ -1094,6 +1137,7 @@ var NerveCenter = class _NerveCenter {
         };
       }
       delete this.state.locks[normalizedPath];
+      await this.restoreLockOnDisk(normalizedPath);
       await this.appendToNotepad(`
 - [UNLOCK] ${agentId} released ${normalizedPath}`);
       return { status: "RELEASED", filePath: normalizedPath };
@@ -1114,6 +1158,7 @@ var NerveCenter = class _NerveCenter {
         delete this.state.locks[filePath];
         await this.saveState();
       }
+      await this.restoreLockOnDisk(_NerveCenter.normalizeLockPath(filePath));
       await this.logLockEvent("FORCE_UNLOCKED", filePath, "admin", void 0, reason);
       await this.appendToNotepad(`
 - [FORCE UNLOCK] ${filePath} unlocked by admin. Reason: ${reason}`);
@@ -1209,7 +1254,7 @@ ${notepad}`;
       return { valid: false, reason: "Cannot lock files outside the project root." };
     }
     try {
-      const stat = await fs4.stat(absolutePath);
+      const stat = await fs5.stat(absolutePath);
       if (stat.isDirectory()) {
         return {
           valid: false,
@@ -1257,6 +1302,32 @@ ${notepad}`;
     const why = intent ? ` for: "${intent}"` : "";
     return `File '${normalizedPath}' is locked by '${owner}'${why}. Pick a different file or job, or coordinate via update_shared_context. The lock auto-expires after ${mins} min; use force_unlock only if '${owner}' has crashed.`;
   }
+  // --- Physical lock enforcement (opt-in via AXIS_ENFORCE_LOCKS) ---
+  // Files are always local to the MCP server even in hosted persistence modes,
+  // so chmod-based enforcement is tracked here independently of where lock
+  // metadata is stored.
+  /** Make a freshly-locked file read-only on disk so non-Axis writers get EACCES. */
+  async enforceLockOnDisk(normalizedPath, agentId, filePath) {
+    if (!this.enforceLocks) return;
+    const mode = await denyWrites(path3.resolve(process.cwd(), filePath));
+    this.enforcedPerms.set(normalizedPath, { mode, agentId });
+  }
+  /** Restore write permission for a single released path. */
+  async restoreLockOnDisk(normalizedPath) {
+    const entry = this.enforcedPerms.get(normalizedPath);
+    if (!entry) return;
+    await restoreWrites(path3.resolve(process.cwd(), normalizedPath), entry.mode);
+    this.enforcedPerms.delete(normalizedPath);
+  }
+  /** Restore every file an agent had locked (or all, if agentId omitted). */
+  async restoreLocksForAgentOnDisk(agentId) {
+    for (const [p, entry] of [...this.enforcedPerms]) {
+      if (!agentId || entry.agentId === agentId) {
+        await restoreWrites(path3.resolve(process.cwd(), p), entry.mode);
+        this.enforcedPerms.delete(p);
+      }
+    }
+  }
   async proposeFileAccess(agentId, filePath, intent, userPrompt) {
     return await this.mutex.runExclusive(async () => {
       logger.info(`[proposeFileAccess] Starting - agentId: ${agentId}, filePath: ${filePath}`);
@@ -1272,12 +1343,14 @@ ${notepad}`;
       }
       if (this.contextManager.apiUrl) {
         try {
+          const contentHash2 = await hashFileIfExists(path3.resolve(process.cwd(), filePath));
           const result = await this.callCoordination("locks", "POST", {
             action: "lock",
             filePath: normalizedPath,
             agentId,
             intent,
-            userPrompt
+            userPrompt,
+            contentHash: contentHash2
           });
           if (result.status === "DENIED") {
             logger.info(`[proposeFileAccess] DENIED by server: ${result.message}`);
@@ -1296,6 +1369,7 @@ ${notepad}`;
             };
           }
           logger.info(`[proposeFileAccess] GRANTED by server`);
+          await this.enforceLockOnDisk(normalizedPath, agentId, filePath);
           await this.logLockEvent("GRANTED", normalizedPath, agentId, void 0, intent);
           await this.appendToNotepad(`
 - [LOCK] ${agentId} locked ${normalizedPath}
@@ -1356,6 +1430,7 @@ ${notepad}`;
           } catch (hashErr) {
             logger.warn("[NerveCenter] Could not persist lock content_hash (migration 0009 applied?)", hashErr);
           }
+          await this.enforceLockOnDisk(normalizedPath, agentId, filePath);
           await this.logLockEvent("GRANTED", normalizedPath, agentId, void 0, intent);
           await this.appendToNotepad(`
 - [LOCK] ${agentId} locked ${normalizedPath}
@@ -1378,6 +1453,7 @@ ${notepad}`;
       const contentHash = await hashFileIfExists(path3.resolve(process.cwd(), filePath));
       this.state.locks[normalizedPath] = { agentId, filePath: normalizedPath, intent, userPrompt, timestamp: Date.now(), contentHash };
       await this.saveState();
+      await this.enforceLockOnDisk(normalizedPath, agentId, filePath);
       await this.logLockEvent("GRANTED", normalizedPath, agentId, void 0, intent);
       await this.appendToNotepad(`
 - [LOCK] ${agentId} locked ${normalizedPath}
@@ -1460,8 +1536,16 @@ ${notepad}`;
           message: `'${normalizedPath}' changed since you locked it. Re-read and re-lock before writing to avoid clobbering concurrent changes.`
         };
       }
-      await fs4.mkdir(path3.dirname(absolutePath), { recursive: true });
-      await fs4.writeFile(absolutePath, content);
+      const doWrite = async () => {
+        await fs5.mkdir(path3.dirname(absolutePath), { recursive: true });
+        await fs5.writeFile(absolutePath, content);
+      };
+      const enforced = this.enforcedPerms.get(normalizedPath);
+      if (this.enforceLocks && enforced) {
+        await withTempWrite(absolutePath, enforced.mode, doWrite);
+      } else {
+        await doWrite();
+      }
       if (this.state.locks[normalizedPath]) {
         this.state.locks[normalizedPath].contentHash = hashContent(content);
         this.state.locks[normalizedPath].timestamp = Date.now();
@@ -1481,12 +1565,13 @@ ${notepad}`;
   }
   async finalizeSession() {
     return await this.mutex.runExclusive(async () => {
+      await this.restoreLocksForAgentOnDisk();
       const content = await this.getNotepad();
       const filename = `session-${(/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-")}.md`;
       const historyPath = path3.join(this.projectRoot, "history", filename);
       try {
-        await fs4.mkdir(path3.dirname(historyPath), { recursive: true });
-        await fs4.writeFile(historyPath, content);
+        await fs5.mkdir(path3.dirname(historyPath), { recursive: true });
+        await fs5.writeFile(historyPath, content);
       } catch (e) {
         logger.warn("Failed to write local session log", e);
       }
@@ -1776,7 +1861,7 @@ var RagEngine = class {
 };
 
 // ../../src/local/indexer.ts
-import * as fs5 from "fs";
+import * as fs6 from "fs";
 import * as path4 from "path";
 import { createHash as createHash2 } from "crypto";
 var DEFAULT_IGNORE_DIRS = /* @__PURE__ */ new Set([
@@ -1858,7 +1943,7 @@ function loadGitignore(root) {
   const file = path4.join(root, ".gitignore");
   let patterns = [];
   try {
-    patterns = fs5.readFileSync(file, "utf8").split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
+    patterns = fs6.readFileSync(file, "utf8").split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
   } catch {
   }
   const exts = patterns.filter((p) => p.startsWith("*.")).map((p) => p.slice(1));
@@ -1888,7 +1973,7 @@ function walk(root, ignored) {
     const absDir = path4.join(root, relDir);
     let entries;
     try {
-      entries = fs5.readdirSync(absDir, { withFileTypes: true });
+      entries = fs6.readdirSync(absDir, { withFileTypes: true });
     } catch {
       continue;
     }
@@ -1926,9 +2011,9 @@ async function indexCodebase(apiUrl2, apiSecret2, projectName, rootDir, logger2)
   const contentByPath = /* @__PURE__ */ new Map();
   for (const rel of relPaths) {
     try {
-      const stat = fs5.statSync(path4.join(rootDir, rel));
+      const stat = fs6.statSync(path4.join(rootDir, rel));
       if (stat.size > MAX_FILE_BYTES) continue;
-      const content = fs5.readFileSync(path4.join(rootDir, rel), "utf8");
+      const content = fs6.readFileSync(path4.join(rootDir, rel), "utf8");
       if (content.includes("\0")) continue;
       contentByPath.set(rel, content);
       manifest.push({ path: rel, hash: createHash2("sha256").update(content, "utf8").digest("hex") });
@@ -1955,10 +2040,10 @@ async function indexCodebase(apiUrl2, apiSecret2, projectName, rootDir, logger2)
 
 // ../../src/local/mcp-server.ts
 import path6 from "path";
-import fs7 from "fs";
+import fs8 from "fs";
 
 // ../../src/local/local-search.ts
-import fs6 from "fs/promises";
+import fs7 from "fs/promises";
 import fsSync2 from "fs";
 import path5 from "path";
 import { spawnSync } from "child_process";
@@ -2171,7 +2256,7 @@ async function walkDir(dir, maxDepth = 12) {
     if (depth > maxDepth) return;
     let entries;
     try {
-      entries = await fs6.readdir(current, { withFileTypes: true });
+      entries = await fs7.readdir(current, { withFileTypes: true });
     } catch {
       return;
     }
@@ -2188,7 +2273,7 @@ async function walkDir(dir, maxDepth = 12) {
         const ext = path5.extname(entry.name).toLowerCase();
         if (SKIP_EXTENSIONS.has(ext)) continue;
         try {
-          const stat = await fs6.stat(fullPath);
+          const stat = await fs7.stat(fullPath);
           if (stat.size > MAX_FILE_SIZE || stat.size === 0) continue;
         } catch {
           continue;
@@ -2203,7 +2288,7 @@ async function walkDir(dir, maxDepth = 12) {
 async function searchFile(filePath, rootDir, keywords) {
   let content;
   try {
-    content = await fs6.readFile(filePath, "utf-8");
+    content = await fs7.readFile(filePath, "utf-8");
   } catch {
     return null;
   }
@@ -2473,7 +2558,7 @@ if (process.env.SHARED_CONTEXT_API_URL || process.env.AXIS_API_KEY) {
   let envLoaded = false;
   for (const envPath of possiblePaths) {
     try {
-      if (fs7.existsSync(envPath)) {
+      if (fs8.existsSync(envPath)) {
         logger.info(`[Fallback] Loading .env.local from: ${envPath}`);
         dotenv2.config({ path: envPath });
         envLoaded = true;
@@ -2667,13 +2752,13 @@ if (!useRemoteApiOnly && process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.SUP
 }
 async function ensureFileSystem() {
   try {
-    const fs8 = await import("fs/promises");
+    const fs9 = await import("fs/promises");
     const path7 = await import("path");
     const fsSync3 = await import("fs");
     const cwd = process.cwd();
     logger.info(`Server CWD: ${cwd}`);
     const historyDir = path7.join(cwd, "history");
-    await fs8.mkdir(historyDir, { recursive: true }).catch(() => {
+    await fs9.mkdir(historyDir, { recursive: true }).catch(() => {
     });
     const axisDir = path7.join(cwd, ".axis");
     const axisInstructions = path7.join(axisDir, "instructions");
@@ -2681,7 +2766,7 @@ async function ensureFileSystem() {
     if (fsSync3.existsSync(legacyInstructions) && !fsSync3.existsSync(axisDir)) {
       logger.info("Using legacy agent-instructions directory");
     } else {
-      await fs8.mkdir(axisInstructions, { recursive: true }).catch(() => {
+      await fs9.mkdir(axisInstructions, { recursive: true }).catch(() => {
       });
       const defaults = [
         ["context.md", `# Project Context
@@ -2737,9 +2822,9 @@ force_unlock is a LAST RESORT \u2014 only for locks >25 min old from a crashed a
       for (const [file, content] of defaults) {
         const p = path7.join(axisInstructions, file);
         try {
-          await fs8.access(p);
+          await fs9.access(p);
         } catch {
-          await fs8.writeFile(p, content);
+          await fs9.writeFile(p, content);
           logger.info(`Created default context file: ${file}`);
         }
       }
@@ -3119,7 +3204,7 @@ function recordToolCall(name, args) {
       // Arg keys only, never values (privacy + log size).
       argKeys: args && typeof args === "object" ? Object.keys(args) : []
     };
-    fs7.appendFileSync(TOOL_LOG_PATH, JSON.stringify(entry) + "\n");
+    fs8.appendFileSync(TOOL_LOG_PATH, JSON.stringify(entry) + "\n");
   } catch {
   }
 }
@@ -3206,7 +3291,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       try {
         const projectRoot = path6.resolve(process.cwd());
         const rebased = path6.isAbsolute(filePath) ? path6.join(projectRoot, filePath.replace(/^\/+/, "")) : path6.resolve(projectRoot, filePath);
-        const resolved = await fs7.promises.realpath(rebased).catch(() => rebased);
+        const resolved = await fs8.promises.realpath(rebased).catch(() => rebased);
         const rel = path6.relative(projectRoot, resolved);
         if (rel.startsWith("..") || path6.isAbsolute(rel)) {
           return {
@@ -3231,7 +3316,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             isError: true
           };
         }
-        const stat = await fs7.promises.stat(resolved);
+        const stat = await fs8.promises.stat(resolved);
         const MAX_BYTES = 1024 * 1024;
         if (stat.size > MAX_BYTES) {
           return {
@@ -3239,7 +3324,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             isError: true
           };
         }
-        content = await fs7.promises.readFile(resolved, "utf-8");
+        content = await fs8.promises.readFile(resolved, "utf-8");
       } catch (e) {
         return {
           content: [{

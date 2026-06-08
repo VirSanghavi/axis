@@ -125,6 +125,15 @@ The server exposes these tools to agents (23 total in the current source).
 - `update_shared_context` — append to the Live Notepad
 - `finalize_session` — archive the session and clear all remaining locks
 
+> **Physical lock enforcement (opt-in).** Set `AXIS_ENFORCE_LOCKS=1` to make locks
+> mandatory, not advisory: on grant the server `chmod`s the locked file read-only,
+> so *any* process — including an agent that ignores Axis — gets `EACCES` on write.
+> The holder writes through `guarded_write` (which briefly restores perms);
+> `release`/`complete_job`/`finalize_session` restore the original mode. This changes
+> editing ergonomics (you must write through Axis while a file is locked), so it's off
+> by default. It stops cooperating tools and accidental clobbering; a process running as
+> the same user can still `chmod` back, which no userspace server can prevent.
+
 **Intelligence (hosted, paid):**
 
 - `index_codebase` — build the searchable index for a project
