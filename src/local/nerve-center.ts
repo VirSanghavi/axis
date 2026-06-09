@@ -8,7 +8,13 @@ import { deriveProjectName, projectStateFilePath } from "./project-identity.js";
 import { buildIntegrityReport, hashContent, hashFileIfExists } from "./lock-integrity.js";
 import { findReclaimable } from "./job-hygiene.js";
 import { locksEnforced, denyWrites, restoreWrites, withTempWrite } from "./fs-guard.js";
-import { collectSessionTranscript, transcriptTitle } from "./session-transcript.js";
+import {
+    collectSessionTranscript,
+    mergeTranscriptEvents,
+    normalizeTranscriptEvents,
+    transcriptTitle,
+    TranscriptEvent,
+} from "./session-transcript.js";
 
 // Interfaces
 interface FileLock {
@@ -94,10 +100,80 @@ export class NerveCenter {
     private projectNameExplicit: boolean;
     private useSupabase: boolean;
     private enforceLocks: boolean;
+    private protocolEvents: TranscriptEvent[] = [];
     /** Files made read-only on disk while locked, keyed by normalized path → {prior mode, owner}. */
     private enforcedPerms: Map<string, { mode?: number; agentId: string }> = new Map();
     private _circuitFailures: number = 0;
     private _circuitOpenUntil: number = 0;
+
+    async captureToolExecution<T>(
+        toolName: string,
+        args: unknown,
+        agent: string,
+        execute: () => Promise<T>
+    ): Promise<T> {
+        const callId = `axis-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+        const startedAt = Date.now();
+        this.protocolEvents = normalizeTranscriptEvents([
+            ...this.protocolEvents,
+            {
+                id: `${callId}-call`,
+                kind: "tool_call",
+                role: "assistant",
+                timestamp: new Date(startedAt).toISOString(),
+                agent,
+                provider: "mcp",
+                toolName,
+                toolCallId: callId,
+                arguments: args,
+            },
+        ]);
+
+        try {
+            const result = await execute();
+            // finalize_session archives and clears the event buffer itself. Its
+            // call is present in the archived session; its result belongs after it.
+            if (toolName !== "finalize_session") {
+                this.protocolEvents = normalizeTranscriptEvents([
+                    ...this.protocolEvents,
+                    {
+                        id: `${callId}-result`,
+                        kind: "tool_result",
+                        role: "tool",
+                        timestamp: new Date().toISOString(),
+                        agent,
+                        provider: "mcp",
+                        toolName,
+                        toolCallId: callId,
+                        output: result,
+                        isError: !!(result && typeof result === "object" && (result as Record<string, unknown>).isError),
+                        durationMs: Date.now() - startedAt,
+                    },
+                ]);
+            }
+            return result;
+        } catch (error) {
+            if (toolName !== "finalize_session") {
+                this.protocolEvents = normalizeTranscriptEvents([
+                    ...this.protocolEvents,
+                    {
+                        id: `${callId}-error`,
+                        kind: "tool_result",
+                        role: "tool",
+                        timestamp: new Date().toISOString(),
+                        agent,
+                        provider: "mcp",
+                        toolName,
+                        toolCallId: callId,
+                        output: error instanceof Error ? error.message : String(error),
+                        isError: true,
+                        durationMs: Date.now() - startedAt,
+                    },
+                ]);
+            }
+            throw error;
+        }
+    }
 
     /**
      * @param contextManager - Instance of ContextManager for legacy operations
@@ -1522,16 +1598,20 @@ export class NerveCenter {
             // file is left read-only after the locks are cleared.
             await this.restoreLocksForAgentOnDisk();
             const content = await this.getNotepad();
-            const transcript = await collectSessionTranscript();
+            const nativeTranscript = await collectSessionTranscript();
+            const transcriptEvents = mergeTranscriptEvents(nativeTranscript.events, this.protocolEvents);
+            const transcriptSource = nativeTranscript.metadata.source === "unknown"
+                ? "mcp"
+                : `${nativeTranscript.metadata.source}+mcp`;
             const sessionTitle = transcriptTitle(
-                transcript.events,
+                transcriptEvents,
                 `Session ${new Date().toLocaleDateString()}`
             );
             const transcriptMetadata = {
-                source: transcript.metadata.source,
-                provider: transcript.metadata.provider,
-                agent: transcript.metadata.agent,
-                thread_id: transcript.metadata.thread_id,
+                source: transcriptSource,
+                provider: nativeTranscript.metadata.provider || "mcp",
+                agent: nativeTranscript.metadata.agent,
+                thread_id: nativeTranscript.metadata.thread_id,
             };
             const filename = `session-${new Date().toISOString().replace(/[:.]/g, "-")}.md`;
             const historyPath = path.join(this.projectRoot, "history", filename);
@@ -1561,7 +1641,7 @@ export class NerveCenter {
                         summary: content.substring(0, 500) + "...",
                         metadata: {
                             full_content: content,
-                            transcript: transcript.events,
+                            transcript: transcriptEvents,
                             ...transcriptMetadata,
                         },
                         completed_at: new Date().toISOString(),
@@ -1590,7 +1670,7 @@ export class NerveCenter {
                     await this.callCoordination("sessions/finalize", "POST", {
                         content,
                         title: sessionTitle,
-                        transcript: transcript.events,
+                        transcript: transcriptEvents,
                         metadata: transcriptMetadata,
                     });
                 } catch (e: any) {
@@ -1604,14 +1684,15 @@ export class NerveCenter {
             this.state.jobs = Object.fromEntries(
                 Object.entries(this.state.jobs).filter(([_, j]) => j.status !== "done" && j.status !== "cancelled")
             );
+            this.protocolEvents = [];
 
             await this.saveState();
 
             return {
                 status: "SESSION_FINALIZED",
                 archivePath: historyPath,
-                transcriptEvents: transcript.events.length,
-                transcriptSource: transcript.metadata.source,
+                transcriptEvents: transcriptEvents.length,
+                transcriptSource,
             };
         });
     }

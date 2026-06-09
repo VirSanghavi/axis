@@ -24,9 +24,9 @@ export interface TranscriptEvent {
 export interface CollectedTranscript {
     events: TranscriptEvent[];
     metadata: {
-        source: "codex" | "claude" | "unknown";
-        provider: "openai" | "anthropic" | null;
-        agent: "codex" | "claude-code" | null;
+        source: "codex" | "claude" | "generic" | "unknown";
+        provider: string | null;
+        agent: string | null;
         thread_id: string | null;
         transcript_path: string | null;
     };
@@ -80,7 +80,7 @@ function limitValue(value: unknown): unknown {
     }
 }
 
-function compactEvents(events: TranscriptEvent[]): TranscriptEvent[] {
+export function normalizeTranscriptEvents(events: TranscriptEvent[]): TranscriptEvent[] {
     const seen = new Set<string>();
     const compacted: TranscriptEvent[] = [];
     let totalChars = 0;
@@ -172,7 +172,7 @@ export function parseCodexTranscript(raw: string): TranscriptEvent[] {
         }
     }
 
-    return compactEvents(events);
+    return normalizeTranscriptEvents(events);
 }
 
 export function parseClaudeTranscript(raw: string): TranscriptEvent[] {
@@ -254,7 +254,140 @@ export function parseClaudeTranscript(raw: string): TranscriptEvent[] {
         }
     }
 
-    return compactEvents(events);
+    return normalizeTranscriptEvents(events);
+}
+
+function genericMessage(record: Record<string, any>, index: number): TranscriptEvent[] {
+    const message = record.message && typeof record.message === "object" ? record.message : record;
+    const role = message.role;
+    const timestamp = record.timestamp || record.created_at || record.createdAt;
+    const agent = record.agent || record.agentId || record.client || "mcp-client";
+    const provider = record.provider;
+    const events: TranscriptEvent[] = [];
+
+    if (role === "user" || role === "assistant" || role === "system") {
+        const content = textContent(message.content ?? message.text);
+        if (content) {
+            events.push({
+                id: String(record.id || record.uuid || `generic-message-${index}`),
+                kind: role === "system" ? "system" : "message",
+                role,
+                timestamp: typeof timestamp === "string" ? timestamp : undefined,
+                agent: String(agent),
+                provider: typeof provider === "string" ? provider : undefined,
+                content,
+            });
+        }
+    }
+
+    const calls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+    for (const [callIndex, rawCall] of calls.entries()) {
+        const call = rawCall?.function || rawCall || {};
+        const callId = String(rawCall?.id || call.id || `generic-call-${index}-${callIndex}`);
+        events.push({
+            id: `generic-call-${callId}`,
+            kind: "tool_call",
+            role: "assistant",
+            timestamp: typeof timestamp === "string" ? timestamp : undefined,
+            agent: String(agent),
+            provider: typeof provider === "string" ? provider : undefined,
+            toolName: String(call.name || "tool"),
+            toolCallId: callId,
+            arguments: parseJson(call.arguments ?? call.input),
+        });
+    }
+
+    const type = record.type || message.type;
+    if (type === "tool_call" || type === "function_call" || type === "tool_use") {
+        const callId = String(record.call_id || record.tool_call_id || record.id || `generic-call-${index}`);
+        events.push({
+            id: `generic-call-${callId}`,
+            kind: "tool_call",
+            role: "assistant",
+            timestamp: typeof timestamp === "string" ? timestamp : undefined,
+            agent: String(agent),
+            provider: typeof provider === "string" ? provider : undefined,
+            toolName: String(record.toolName || record.tool_name || record.name || "tool"),
+            toolCallId: callId,
+            arguments: parseJson(record.arguments ?? record.input),
+        });
+    } else if (type === "tool_result" || type === "function_call_output" || role === "tool") {
+        const callId = String(record.call_id || record.tool_call_id || record.tool_use_id || record.id || `generic-result-${index}`);
+        const output = record.output ?? record.result ?? message.content ?? record.content;
+        events.push({
+            id: `generic-result-${callId}`,
+            kind: "tool_result",
+            role: "tool",
+            timestamp: typeof timestamp === "string" ? timestamp : undefined,
+            agent: String(agent),
+            provider: typeof provider === "string" ? provider : undefined,
+            toolName: String(record.toolName || record.tool_name || record.name || "tool"),
+            toolCallId: callId,
+            output,
+            isError: record.isError === true || record.is_error === true || isErrorOutput(output),
+        });
+    }
+
+    return events;
+}
+
+export function parseGenericTranscript(raw: string): TranscriptEvent[] {
+    let records: unknown[] = [];
+    try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) records = parsed;
+        else if (parsed && typeof parsed === "object") {
+            const root = parsed as Record<string, unknown>;
+            const nested = root.messages || root.conversation || root.events || root.items;
+            records = Array.isArray(nested) ? nested : [root];
+        }
+    } catch {
+        records = raw.split("\n").flatMap((line) => {
+            if (!line.trim()) return [];
+            try {
+                return [JSON.parse(line)];
+            } catch {
+                return [];
+            }
+        });
+    }
+
+    return normalizeTranscriptEvents(records.flatMap((record, index) =>
+        record && typeof record === "object"
+            ? genericMessage(record as Record<string, any>, index)
+            : []
+    ));
+}
+
+function toolFingerprint(event: TranscriptEvent): string {
+    const toolName = (event.toolName || "tool").split(".").pop()?.replace(/^_+/, "") || "tool";
+    const detail = event.kind === "tool_call" ? event.arguments : event.output;
+    let serialized: string;
+    try {
+        serialized = JSON.stringify(detail);
+    } catch {
+        serialized = String(detail);
+    }
+    return `${event.kind}:${toolName}:${serialized}`;
+}
+
+export function mergeTranscriptEvents(
+    nativeEvents: TranscriptEvent[],
+    protocolEvents: TranscriptEvent[]
+): TranscriptEvent[] {
+    const nativeToolFingerprints = new Set(
+        nativeEvents
+            .filter((event) => event.kind === "tool_call" || event.kind === "tool_result")
+            .map(toolFingerprint)
+    );
+    const uniqueProtocol = protocolEvents.filter((event) =>
+        !nativeToolFingerprints.has(toolFingerprint(event))
+    );
+    return normalizeTranscriptEvents([...nativeEvents, ...uniqueProtocol].sort((a, b) => {
+        const aTime = a.timestamp ? Date.parse(a.timestamp) : Number.MAX_SAFE_INTEGER;
+        const bTime = b.timestamp ? Date.parse(b.timestamp) : Number.MAX_SAFE_INTEGER;
+        return aTime - bTime;
+    }));
 }
 
 async function findFile(root: string, filename: string): Promise<string | null> {
@@ -277,11 +410,14 @@ async function findFile(root: string, filename: string): Promise<string | null> 
 
 async function resolveTranscriptPath(env: NodeJS.ProcessEnv, homeDir: string): Promise<{
     path: string | null;
-    source: "codex" | "claude" | "unknown";
+    source: "codex" | "claude" | "generic" | "unknown";
     threadId: string | null;
 }> {
     if (env.AXIS_TRANSCRIPT_PATH) {
-        const source = env.CODEX_THREAD_ID ? "codex" : env.CLAUDE_SESSION_ID ? "claude" : "unknown";
+        const requestedFormat = env.AXIS_TRANSCRIPT_FORMAT?.trim().toLowerCase();
+        const source = requestedFormat === "codex" || requestedFormat === "claude" || requestedFormat === "generic"
+            ? requestedFormat
+            : env.CODEX_THREAD_ID ? "codex" : env.CLAUDE_SESSION_ID ? "claude" : "generic";
         return { path: env.AXIS_TRANSCRIPT_PATH, source, threadId: env.CODEX_THREAD_ID || env.CLAUDE_SESSION_ID || null };
     }
     if (env.CODEX_THREAD_ID) {
@@ -341,14 +477,20 @@ export async function collectSessionTranscript(
     try {
         const raw = await fs.readFile(resolved.path, "utf8");
         const source = resolved.source === "unknown"
-            ? raw.includes("\"originator\":\"codex") ? "codex" : "claude"
+            ? raw.includes("\"originator\":\"codex") ? "codex"
+                : raw.includes("\"message\":{\"model\":\"claude") ? "claude"
+                    : "generic"
             : resolved.source;
         return {
-            events: source === "codex" ? parseCodexTranscript(raw) : parseClaudeTranscript(raw),
+            events: source === "codex"
+                ? parseCodexTranscript(raw)
+                : source === "claude"
+                    ? parseClaudeTranscript(raw)
+                    : parseGenericTranscript(raw),
             metadata: {
                 source,
-                provider: source === "codex" ? "openai" : "anthropic",
-                agent: source === "codex" ? "codex" : "claude-code",
+                provider: source === "codex" ? "openai" : source === "claude" ? "anthropic" : env.AXIS_TRANSCRIPT_PROVIDER || null,
+                agent: source === "codex" ? "codex" : source === "claude" ? "claude-code" : env.AXIS_AGENT_BASE || "mcp-client",
                 thread_id: resolved.threadId,
                 transcript_path: resolved.path,
             },
@@ -358,8 +500,8 @@ export async function collectSessionTranscript(
             events: [],
             metadata: {
                 source: resolved.source,
-                provider: resolved.source === "codex" ? "openai" : resolved.source === "claude" ? "anthropic" : null,
-                agent: resolved.source === "codex" ? "codex" : resolved.source === "claude" ? "claude-code" : null,
+                provider: resolved.source === "codex" ? "openai" : resolved.source === "claude" ? "anthropic" : env.AXIS_TRANSCRIPT_PROVIDER || null,
+                agent: resolved.source === "codex" ? "codex" : resolved.source === "claude" ? "claude-code" : env.AXIS_AGENT_BASE || null,
                 thread_id: resolved.threadId,
                 transcript_path: resolved.path,
             },

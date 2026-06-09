@@ -34,6 +34,13 @@ function detectHostBase(env: NodeJS.ProcessEnv): string | undefined {
     if (env.CLAUDECODE || env.CLAUDE_CODE_ENTRYPOINT || env.CLAUDE_CODE_SSE_PORT) return "claude-code";
     if (env.CODEX_MANAGED_BY_NPM || env.CODEX_SANDBOX) return "codex";
     if (env.WINDSURF_SESSION_ID || env.WINDSURF_SESSION) return "windsurf";
+    if (env.GITHUB_COPILOT || env.COPILOT_AGENT_SESSION || env.COPILOT_MCP_SESSION) return "github-copilot";
+    if (env.ANTIGRAVITY_AGENT || env.ANTIGRAVITY_SESSION_ID) return "antigravity";
+    if (env.GEMINI_CLI || env.GEMINI_SESSION_ID) return "gemini";
+    if (env.CLINE_TASK_ID) return "cline";
+    if (env.ROO_CODE || env.ROO_TASK_ID) return "roo-code";
+    if (env.CONTINUE_GLOBAL_DIR || env.CONTINUE_SESSION_ID) return "continue";
+    if (env.AIDER_MODEL || env.AIDER_SESSION_ID) return "aider";
     return undefined;
 }
 

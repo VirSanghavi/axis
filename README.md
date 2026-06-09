@@ -125,6 +125,33 @@ The server exposes these tools to agents (23 total in the current source).
 - `update_shared_context` — append to the Live Notepad
 - `finalize_session` — archive the session and clear all remaining locks
 
+### Universal Session History
+
+Axis records every Axis MCP tool call and result at the protocol boundary. This
+works with any MCP client, including Cursor, Windsurf, GitHub Copilot,
+Antigravity, Claude Code, Codex, Gemini CLI, Cline, Roo Code, Continue, Aider,
+and clients Axis has never seen before. These events are always available in the
+archived session even when the host does not expose its private chat transcript.
+
+Full user/assistant chat is added when the host exposes a transcript. Codex and
+Claude Code are detected automatically. Any other client can provide a JSON or
+JSONL export using:
+
+```json
+{
+  "env": {
+    "AXIS_TRANSCRIPT_PATH": "/absolute/path/to/session.jsonl",
+    "AXIS_TRANSCRIPT_FORMAT": "generic",
+    "AXIS_AGENT_BASE": "github-copilot"
+  }
+}
+```
+
+The generic adapter accepts common `role`/`content`, `messages`, `tool_calls`,
+`tool_call`, and `tool_result` shapes. Set `AXIS_TRANSCRIPT_FORMAT` to
+`codex`, `claude`, or `generic`. MCP cannot access chat text a host keeps
+private; in that case Axis still captures the complete Axis tool timeline.
+
 > **Physical lock enforcement (opt-in).** Set `AXIS_ENFORCE_LOCKS=1` to make locks
 > mandatory, not advisory: on grant the server `chmod`s the locked file read-only,
 > so *any* process — including an agent that ignores Axis — gets `EACCES` on write.

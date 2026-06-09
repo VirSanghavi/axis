@@ -446,7 +446,7 @@ function limitValue(value) {
     return limitString(String(value));
   }
 }
-function compactEvents(events) {
+function normalizeTranscriptEvents(events) {
   const seen = /* @__PURE__ */ new Set();
   const compacted = [];
   let totalChars = 0;
@@ -532,7 +532,7 @@ function parseCodexTranscript(raw) {
       });
     }
   }
-  return compactEvents(events);
+  return normalizeTranscriptEvents(events);
 }
 function parseClaudeTranscript(raw) {
   const events = [];
@@ -608,7 +608,124 @@ function parseClaudeTranscript(raw) {
       }
     }
   }
-  return compactEvents(events);
+  return normalizeTranscriptEvents(events);
+}
+function genericMessage(record, index) {
+  const message = record.message && typeof record.message === "object" ? record.message : record;
+  const role = message.role;
+  const timestamp = record.timestamp || record.created_at || record.createdAt;
+  const agent = record.agent || record.agentId || record.client || "mcp-client";
+  const provider = record.provider;
+  const events = [];
+  if (role === "user" || role === "assistant" || role === "system") {
+    const content = textContent(message.content ?? message.text);
+    if (content) {
+      events.push({
+        id: String(record.id || record.uuid || `generic-message-${index}`),
+        kind: role === "system" ? "system" : "message",
+        role,
+        timestamp: typeof timestamp === "string" ? timestamp : void 0,
+        agent: String(agent),
+        provider: typeof provider === "string" ? provider : void 0,
+        content
+      });
+    }
+  }
+  const calls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+  for (const [callIndex, rawCall] of calls.entries()) {
+    const call = rawCall?.function || rawCall || {};
+    const callId = String(rawCall?.id || call.id || `generic-call-${index}-${callIndex}`);
+    events.push({
+      id: `generic-call-${callId}`,
+      kind: "tool_call",
+      role: "assistant",
+      timestamp: typeof timestamp === "string" ? timestamp : void 0,
+      agent: String(agent),
+      provider: typeof provider === "string" ? provider : void 0,
+      toolName: String(call.name || "tool"),
+      toolCallId: callId,
+      arguments: parseJson(call.arguments ?? call.input)
+    });
+  }
+  const type = record.type || message.type;
+  if (type === "tool_call" || type === "function_call" || type === "tool_use") {
+    const callId = String(record.call_id || record.tool_call_id || record.id || `generic-call-${index}`);
+    events.push({
+      id: `generic-call-${callId}`,
+      kind: "tool_call",
+      role: "assistant",
+      timestamp: typeof timestamp === "string" ? timestamp : void 0,
+      agent: String(agent),
+      provider: typeof provider === "string" ? provider : void 0,
+      toolName: String(record.toolName || record.tool_name || record.name || "tool"),
+      toolCallId: callId,
+      arguments: parseJson(record.arguments ?? record.input)
+    });
+  } else if (type === "tool_result" || type === "function_call_output" || role === "tool") {
+    const callId = String(record.call_id || record.tool_call_id || record.tool_use_id || record.id || `generic-result-${index}`);
+    const output = record.output ?? record.result ?? message.content ?? record.content;
+    events.push({
+      id: `generic-result-${callId}`,
+      kind: "tool_result",
+      role: "tool",
+      timestamp: typeof timestamp === "string" ? timestamp : void 0,
+      agent: String(agent),
+      provider: typeof provider === "string" ? provider : void 0,
+      toolName: String(record.toolName || record.tool_name || record.name || "tool"),
+      toolCallId: callId,
+      output,
+      isError: record.isError === true || record.is_error === true || isErrorOutput(output)
+    });
+  }
+  return events;
+}
+function parseGenericTranscript(raw) {
+  let records = [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) records = parsed;
+    else if (parsed && typeof parsed === "object") {
+      const root = parsed;
+      const nested = root.messages || root.conversation || root.events || root.items;
+      records = Array.isArray(nested) ? nested : [root];
+    }
+  } catch {
+    records = raw.split("\n").flatMap((line) => {
+      if (!line.trim()) return [];
+      try {
+        return [JSON.parse(line)];
+      } catch {
+        return [];
+      }
+    });
+  }
+  return normalizeTranscriptEvents(records.flatMap(
+    (record, index) => record && typeof record === "object" ? genericMessage(record, index) : []
+  ));
+}
+function toolFingerprint(event) {
+  const toolName = (event.toolName || "tool").split(".").pop()?.replace(/^_+/, "") || "tool";
+  const detail = event.kind === "tool_call" ? event.arguments : event.output;
+  let serialized;
+  try {
+    serialized = JSON.stringify(detail);
+  } catch {
+    serialized = String(detail);
+  }
+  return `${event.kind}:${toolName}:${serialized}`;
+}
+function mergeTranscriptEvents(nativeEvents, protocolEvents) {
+  const nativeToolFingerprints = new Set(
+    nativeEvents.filter((event) => event.kind === "tool_call" || event.kind === "tool_result").map(toolFingerprint)
+  );
+  const uniqueProtocol = protocolEvents.filter(
+    (event) => !nativeToolFingerprints.has(toolFingerprint(event))
+  );
+  return normalizeTranscriptEvents([...nativeEvents, ...uniqueProtocol].sort((a, b) => {
+    const aTime = a.timestamp ? Date.parse(a.timestamp) : Number.MAX_SAFE_INTEGER;
+    const bTime = b.timestamp ? Date.parse(b.timestamp) : Number.MAX_SAFE_INTEGER;
+    return aTime - bTime;
+  }));
 }
 async function findFile(root, filename) {
   let entries;
@@ -629,7 +746,8 @@ async function findFile(root, filename) {
 }
 async function resolveTranscriptPath(env, homeDir) {
   if (env.AXIS_TRANSCRIPT_PATH) {
-    const source = env.CODEX_THREAD_ID ? "codex" : env.CLAUDE_SESSION_ID ? "claude" : "unknown";
+    const requestedFormat = env.AXIS_TRANSCRIPT_FORMAT?.trim().toLowerCase();
+    const source = requestedFormat === "codex" || requestedFormat === "claude" || requestedFormat === "generic" ? requestedFormat : env.CODEX_THREAD_ID ? "codex" : env.CLAUDE_SESSION_ID ? "claude" : "generic";
     return { path: env.AXIS_TRANSCRIPT_PATH, source, threadId: env.CODEX_THREAD_ID || env.CLAUDE_SESSION_ID || null };
   }
   if (env.CODEX_THREAD_ID) {
@@ -682,13 +800,13 @@ async function collectSessionTranscript(env = process.env, homeDir = os.homedir(
   }
   try {
     const raw = await fs5.readFile(resolved.path, "utf8");
-    const source = resolved.source === "unknown" ? raw.includes('"originator":"codex') ? "codex" : "claude" : resolved.source;
+    const source = resolved.source === "unknown" ? raw.includes('"originator":"codex') ? "codex" : raw.includes('"message":{"model":"claude') ? "claude" : "generic" : resolved.source;
     return {
-      events: source === "codex" ? parseCodexTranscript(raw) : parseClaudeTranscript(raw),
+      events: source === "codex" ? parseCodexTranscript(raw) : source === "claude" ? parseClaudeTranscript(raw) : parseGenericTranscript(raw),
       metadata: {
         source,
-        provider: source === "codex" ? "openai" : "anthropic",
-        agent: source === "codex" ? "codex" : "claude-code",
+        provider: source === "codex" ? "openai" : source === "claude" ? "anthropic" : env.AXIS_TRANSCRIPT_PROVIDER || null,
+        agent: source === "codex" ? "codex" : source === "claude" ? "claude-code" : env.AXIS_AGENT_BASE || "mcp-client",
         thread_id: resolved.threadId,
         transcript_path: resolved.path
       }
@@ -698,8 +816,8 @@ async function collectSessionTranscript(env = process.env, homeDir = os.homedir(
       events: [],
       metadata: {
         source: resolved.source,
-        provider: resolved.source === "codex" ? "openai" : resolved.source === "claude" ? "anthropic" : null,
-        agent: resolved.source === "codex" ? "codex" : resolved.source === "claude" ? "claude-code" : null,
+        provider: resolved.source === "codex" ? "openai" : resolved.source === "claude" ? "anthropic" : env.AXIS_TRANSCRIPT_PROVIDER || null,
+        agent: resolved.source === "codex" ? "codex" : resolved.source === "claude" ? "claude-code" : env.AXIS_AGENT_BASE || null,
         thread_id: resolved.threadId,
         transcript_path: resolved.path
       }
@@ -738,10 +856,71 @@ var NerveCenter = class _NerveCenter {
   projectNameExplicit;
   useSupabase;
   enforceLocks;
+  protocolEvents = [];
   /** Files made read-only on disk while locked, keyed by normalized path → {prior mode, owner}. */
   enforcedPerms = /* @__PURE__ */ new Map();
   _circuitFailures = 0;
   _circuitOpenUntil = 0;
+  async captureToolExecution(toolName, args, agent, execute) {
+    const callId = `axis-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const startedAt = Date.now();
+    this.protocolEvents = normalizeTranscriptEvents([
+      ...this.protocolEvents,
+      {
+        id: `${callId}-call`,
+        kind: "tool_call",
+        role: "assistant",
+        timestamp: new Date(startedAt).toISOString(),
+        agent,
+        provider: "mcp",
+        toolName,
+        toolCallId: callId,
+        arguments: args
+      }
+    ]);
+    try {
+      const result = await execute();
+      if (toolName !== "finalize_session") {
+        this.protocolEvents = normalizeTranscriptEvents([
+          ...this.protocolEvents,
+          {
+            id: `${callId}-result`,
+            kind: "tool_result",
+            role: "tool",
+            timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+            agent,
+            provider: "mcp",
+            toolName,
+            toolCallId: callId,
+            output: result,
+            isError: !!(result && typeof result === "object" && result.isError),
+            durationMs: Date.now() - startedAt
+          }
+        ]);
+      }
+      return result;
+    } catch (error) {
+      if (toolName !== "finalize_session") {
+        this.protocolEvents = normalizeTranscriptEvents([
+          ...this.protocolEvents,
+          {
+            id: `${callId}-error`,
+            kind: "tool_result",
+            role: "tool",
+            timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+            agent,
+            provider: "mcp",
+            toolName,
+            toolCallId: callId,
+            output: error instanceof Error ? error.message : String(error),
+            isError: true,
+            durationMs: Date.now() - startedAt
+          }
+        ]);
+      }
+      throw error;
+    }
+  }
   /**
    * @param contextManager - Instance of ContextManager for legacy operations
    * @param options - Configuration options for state persistence and timeouts
@@ -1880,16 +2059,18 @@ ${notepad}`;
     return await this.mutex.runExclusive(async () => {
       await this.restoreLocksForAgentOnDisk();
       const content = await this.getNotepad();
-      const transcript = await collectSessionTranscript();
+      const nativeTranscript = await collectSessionTranscript();
+      const transcriptEvents = mergeTranscriptEvents(nativeTranscript.events, this.protocolEvents);
+      const transcriptSource = nativeTranscript.metadata.source === "unknown" ? "mcp" : `${nativeTranscript.metadata.source}+mcp`;
       const sessionTitle = transcriptTitle(
-        transcript.events,
+        transcriptEvents,
         `Session ${(/* @__PURE__ */ new Date()).toLocaleDateString()}`
       );
       const transcriptMetadata = {
-        source: transcript.metadata.source,
-        provider: transcript.metadata.provider,
-        agent: transcript.metadata.agent,
-        thread_id: transcript.metadata.thread_id
+        source: transcriptSource,
+        provider: nativeTranscript.metadata.provider || "mcp",
+        agent: nativeTranscript.metadata.agent,
+        thread_id: nativeTranscript.metadata.thread_id
       };
       const filename = `session-${(/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-")}.md`;
       const historyPath = path4.join(this.projectRoot, "history", filename);
@@ -1908,7 +2089,7 @@ ${notepad}`;
           summary: content.substring(0, 500) + "...",
           metadata: {
             full_content: content,
-            transcript: transcript.events,
+            transcript: transcriptEvents,
             ...transcriptMetadata
           },
           completed_at: (/* @__PURE__ */ new Date()).toISOString()
@@ -1921,7 +2102,7 @@ ${notepad}`;
           await this.callCoordination("sessions/finalize", "POST", {
             content,
             title: sessionTitle,
-            transcript: transcript.events,
+            transcript: transcriptEvents,
             metadata: transcriptMetadata
           });
         } catch (e) {
@@ -1933,12 +2114,13 @@ ${notepad}`;
       this.state.jobs = Object.fromEntries(
         Object.entries(this.state.jobs).filter(([_, j]) => j.status !== "done" && j.status !== "cancelled")
       );
+      this.protocolEvents = [];
       await this.saveState();
       return {
         status: "SESSION_FINALIZED",
         archivePath: historyPath,
-        transcriptEvents: transcript.events.length,
-        transcriptSource: transcript.metadata.source
+        transcriptEvents: transcriptEvents.length,
+        transcriptSource
       };
     });
   }
@@ -2056,6 +2238,13 @@ function detectHostBase(env) {
   if (env.CLAUDECODE || env.CLAUDE_CODE_ENTRYPOINT || env.CLAUDE_CODE_SSE_PORT) return "claude-code";
   if (env.CODEX_MANAGED_BY_NPM || env.CODEX_SANDBOX) return "codex";
   if (env.WINDSURF_SESSION_ID || env.WINDSURF_SESSION) return "windsurf";
+  if (env.GITHUB_COPILOT || env.COPILOT_AGENT_SESSION || env.COPILOT_MCP_SESSION) return "github-copilot";
+  if (env.ANTIGRAVITY_AGENT || env.ANTIGRAVITY_SESSION_ID) return "antigravity";
+  if (env.GEMINI_CLI || env.GEMINI_SESSION_ID) return "gemini";
+  if (env.CLINE_TASK_ID) return "cline";
+  if (env.ROO_CODE || env.ROO_TASK_ID) return "roo-code";
+  if (env.CONTINUE_GLOBAL_DIR || env.CONTINUE_SESSION_ID) return "continue";
+  if (env.AIDER_MODEL || env.AIDER_SESSION_ID) return "aider";
   return void 0;
 }
 function normalizeBase(raw) {
@@ -3548,351 +3737,355 @@ function recordToolCall(name, args) {
 }
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
+  let captureAgent = sessionIdentity.id;
   if (args && typeof args.agentId === "string") {
     const resolvedId = sessionIdentity.resolve(args.agentId);
     args.agentId = resolvedId;
+    captureAgent = resolvedId;
     presence.seen(resolvedId, Date.now(), "active", name);
   }
   logger.info("Tool call", { name });
   recordToolCall(name, args);
-  if (process.env.AXIS_SKIP_SUBSCRIPTION_CHECK === "1") {
-  } else {
-    if (isSubscriptionStale()) {
-      await verifySubscription();
-    }
-    if (!subscription.valid) {
-      logger.warn(`[subscription] Blocking tool call "${name}" \u2014 subscription invalid`);
-      return {
-        content: [{ type: "text", text: getSubscriptionBlockMessage() }],
-        isError: true
-      };
-    }
-  }
-  if (name === READ_CONTEXT_TOOL) {
-    const filename = String(args?.filename);
-    try {
-      const data = await manager.readFile(filename);
-      return {
-        content: [{ type: "text", text: data }]
-      };
-    } catch (err) {
-      return {
-        content: [{ type: "text", text: `Error reading file: ${err}` }],
-        isError: true
-      };
-    }
-  }
-  if (name === UPDATE_CONTEXT_TOOL) {
-    const filename = String(args?.filename);
-    const content = String(args?.content);
-    const append = Boolean(args?.append);
-    try {
-      await manager.updateFile(filename, content, append);
-      return {
-        content: [{ type: "text", text: `Updated ${filename}` }]
-      };
-    } catch (err) {
-      return {
-        content: [{ type: "text", text: `Error updating file: ${err}` }],
-        isError: true
-      };
-    }
-  }
-  if (name === "index_codebase") {
-    if (!manager.apiUrl || !manager.apiSecret) {
-      return { content: [{ type: "text", text: "Indexing requires AXIS_API_KEY (and the hosted API). Not configured." }], isError: true };
-    }
-    try {
-      const summary = await indexCodebase(
-        manager.apiUrl,
-        manager.apiSecret,
-        nerveCenter.currentProjectName,
-        process.cwd(),
-        { info: (m) => logger.info(`[index_codebase] ${m}`) }
-      );
-      return {
-        content: [{
-          type: "text",
-          text: `Indexed project "${nerveCenter.currentProjectName}". ${summary.uploaded} file(s) updated (${summary.chunks} chunks), ${summary.unchanged} unchanged, ${summary.pruned} pruned. search_codebase and deep_search are now up to date.`
-        }]
-      };
-    } catch (e) {
-      return { content: [{ type: "text", text: `index_codebase failed: ${e instanceof Error ? e.message : String(e)}` }], isError: true };
-    }
-  }
-  if (name === "index_file") {
-    const filePath = String(args?.filePath);
-    let content;
-    if (args?.content !== void 0 && args?.content !== null) {
-      content = String(args.content);
+  return nerveCenter.captureToolExecution(name, args, captureAgent, async () => {
+    if (process.env.AXIS_SKIP_SUBSCRIPTION_CHECK === "1") {
     } else {
-      try {
-        const projectRoot = path7.resolve(process.cwd());
-        const rebased = path7.isAbsolute(filePath) ? path7.join(projectRoot, filePath.replace(/^\/+/, "")) : path7.resolve(projectRoot, filePath);
-        const resolved = await fs9.promises.realpath(rebased).catch(() => rebased);
-        const rel = path7.relative(projectRoot, resolved);
-        if (rel.startsWith("..") || path7.isAbsolute(rel)) {
-          return {
-            content: [{ type: "text", text: `index_file: refusing to read ${filePath} \u2014 outside project root` }],
-            isError: true
-          };
-        }
-        const SENSITIVE = [
-          /(^|\/)\.env(\.|$)/,
-          // .env, .env.local, .env.production…
-          /(^|\/)\.git(\/|$)/,
-          /(^|\/)\.ssh(\/|$)/,
-          /(^|\/)\.npmrc$/,
-          /(^|\/)\.pypirc$/,
-          /(^|\/)id_(rsa|ed25519|ecdsa)/,
-          /(^|\/)credentials(\.|$)/,
-          /(^|\/)secrets(\.|$)/
-        ];
-        if (SENSITIVE.some((rx) => rx.test(rel))) {
-          return {
-            content: [{ type: "text", text: `index_file: refusing to index ${rel} \u2014 matches sensitive-file pattern` }],
-            isError: true
-          };
-        }
-        const stat = await fs9.promises.stat(resolved);
-        const MAX_BYTES = 1024 * 1024;
-        if (stat.size > MAX_BYTES) {
-          return {
-            content: [{ type: "text", text: `index_file: ${rel} is ${stat.size} bytes, exceeds ${MAX_BYTES} byte cap \u2014 pass content explicitly if you really want to index this` }],
-            isError: true
-          };
-        }
-        content = await fs9.promises.readFile(resolved, "utf-8");
-      } catch (e) {
+      if (isSubscriptionStale()) {
+        await verifySubscription();
+      }
+      if (!subscription.valid) {
+        logger.warn(`[subscription] Blocking tool call "${name}" \u2014 subscription invalid`);
         return {
-          content: [{
-            type: "text",
-            text: `index_file: no content provided and could not read ${filePath} from disk: ${e instanceof Error ? e.message : String(e)}`
-          }],
+          content: [{ type: "text", text: getSubscriptionBlockMessage() }],
           isError: true
         };
       }
     }
-    const metaPath = path7.isAbsolute(filePath) ? path7.basename(filePath) : filePath;
-    try {
-      await manager.embedContent([{ content, metadata: { filePath: metaPath } }], nerveCenter.currentProjectName);
-      return { content: [{ type: "text", text: "Indexed via Remote API." }] };
-    } catch (e) {
-      if (ragEngine) {
-        const success = await ragEngine.indexContent(metaPath, content);
-        return { content: [{ type: "text", text: success ? "Indexed locally." : "Local index failed." }] };
+    if (name === READ_CONTEXT_TOOL) {
+      const filename = String(args?.filename);
+      try {
+        const data = await manager.readFile(filename);
+        return {
+          content: [{ type: "text", text: data }]
+        };
+      } catch (err) {
+        return {
+          content: [{ type: "text", text: `Error reading file: ${err}` }],
+          isError: true
+        };
       }
-      return { content: [{ type: "text", text: `Indexing failed: ${e}` }], isError: true };
     }
-  }
-  if (name === SEARCH_CONTEXT_TOOL) {
-    const query = String(args?.query);
-    logger.info(`[search_codebase] Query: "${query}"`);
-    let localResults = "";
-    try {
-      localResults = await localSearch(query);
-      logger.info(`[search_codebase] Local search completed: ${localResults.length} chars`);
-    } catch (e) {
-      logger.warn(`[search_codebase] Local search error: ${e}`);
-      localResults = "";
+    if (name === UPDATE_CONTEXT_TOOL) {
+      const filename = String(args?.filename);
+      const content = String(args?.content);
+      const append = Boolean(args?.append);
+      try {
+        await manager.updateFile(filename, content, append);
+        return {
+          content: [{ type: "text", text: `Updated ${filename}` }]
+        };
+      } catch (err) {
+        return {
+          content: [{ type: "text", text: `Error updating file: ${err}` }],
+          isError: true
+        };
+      }
     }
-    let ragResults = null;
-    const RAG_TIMEOUT_MS = 3e3;
-    try {
-      const ragPromise = (async () => {
+    if (name === "index_codebase") {
+      if (!manager.apiUrl || !manager.apiSecret) {
+        return { content: [{ type: "text", text: "Indexing requires AXIS_API_KEY (and the hosted API). Not configured." }], isError: true };
+      }
+      try {
+        const summary = await indexCodebase(
+          manager.apiUrl,
+          manager.apiSecret,
+          nerveCenter.currentProjectName,
+          process.cwd(),
+          { info: (m) => logger.info(`[index_codebase] ${m}`) }
+        );
+        return {
+          content: [{
+            type: "text",
+            text: `Indexed project "${nerveCenter.currentProjectName}". ${summary.uploaded} file(s) updated (${summary.chunks} chunks), ${summary.unchanged} unchanged, ${summary.pruned} pruned. search_codebase and deep_search are now up to date.`
+          }]
+        };
+      } catch (e) {
+        return { content: [{ type: "text", text: `index_codebase failed: ${e instanceof Error ? e.message : String(e)}` }], isError: true };
+      }
+    }
+    if (name === "index_file") {
+      const filePath = String(args?.filePath);
+      let content;
+      if (args?.content !== void 0 && args?.content !== null) {
+        content = String(args.content);
+      } else {
         try {
-          const remote = await manager.searchContext(query, nerveCenter.currentProjectName);
-          if (remote && !remote.includes("No results found") && remote.trim().length > 20) {
-            return remote;
+          const projectRoot = path7.resolve(process.cwd());
+          const rebased = path7.isAbsolute(filePath) ? path7.join(projectRoot, filePath.replace(/^\/+/, "")) : path7.resolve(projectRoot, filePath);
+          const resolved = await fs9.promises.realpath(rebased).catch(() => rebased);
+          const rel = path7.relative(projectRoot, resolved);
+          if (rel.startsWith("..") || path7.isAbsolute(rel)) {
+            return {
+              content: [{ type: "text", text: `index_file: refusing to read ${filePath} \u2014 outside project root` }],
+              isError: true
+            };
           }
-        } catch {
+          const SENSITIVE = [
+            /(^|\/)\.env(\.|$)/,
+            // .env, .env.local, .env.production…
+            /(^|\/)\.git(\/|$)/,
+            /(^|\/)\.ssh(\/|$)/,
+            /(^|\/)\.npmrc$/,
+            /(^|\/)\.pypirc$/,
+            /(^|\/)id_(rsa|ed25519|ecdsa)/,
+            /(^|\/)credentials(\.|$)/,
+            /(^|\/)secrets(\.|$)/
+          ];
+          if (SENSITIVE.some((rx) => rx.test(rel))) {
+            return {
+              content: [{ type: "text", text: `index_file: refusing to index ${rel} \u2014 matches sensitive-file pattern` }],
+              isError: true
+            };
+          }
+          const stat = await fs9.promises.stat(resolved);
+          const MAX_BYTES = 1024 * 1024;
+          if (stat.size > MAX_BYTES) {
+            return {
+              content: [{ type: "text", text: `index_file: ${rel} is ${stat.size} bytes, exceeds ${MAX_BYTES} byte cap \u2014 pass content explicitly if you really want to index this` }],
+              isError: true
+            };
+          }
+          content = await fs9.promises.readFile(resolved, "utf-8");
+        } catch (e) {
+          return {
+            content: [{
+              type: "text",
+              text: `index_file: no content provided and could not read ${filePath} from disk: ${e instanceof Error ? e.message : String(e)}`
+            }],
+            isError: true
+          };
         }
+      }
+      const metaPath = path7.isAbsolute(filePath) ? path7.basename(filePath) : filePath;
+      try {
+        await manager.embedContent([{ content, metadata: { filePath: metaPath } }], nerveCenter.currentProjectName);
+        return { content: [{ type: "text", text: "Indexed via Remote API." }] };
+      } catch (e) {
         if (ragEngine) {
+          const success = await ragEngine.indexContent(metaPath, content);
+          return { content: [{ type: "text", text: success ? "Indexed locally." : "Local index failed." }] };
+        }
+        return { content: [{ type: "text", text: `Indexing failed: ${e}` }], isError: true };
+      }
+    }
+    if (name === SEARCH_CONTEXT_TOOL) {
+      const query = String(args?.query);
+      logger.info(`[search_codebase] Query: "${query}"`);
+      let localResults = "";
+      try {
+        localResults = await localSearch(query);
+        logger.info(`[search_codebase] Local search completed: ${localResults.length} chars`);
+      } catch (e) {
+        logger.warn(`[search_codebase] Local search error: ${e}`);
+        localResults = "";
+      }
+      let ragResults = null;
+      const RAG_TIMEOUT_MS = 3e3;
+      try {
+        const ragPromise = (async () => {
           try {
-            const results = await ragEngine.search(query);
-            if (results.length > 0) return results.join("\n---\n");
+            const remote = await manager.searchContext(query, nerveCenter.currentProjectName);
+            if (remote && !remote.includes("No results found") && remote.trim().length > 20) {
+              return remote;
+            }
           } catch {
           }
+          if (ragEngine) {
+            try {
+              const results = await ragEngine.search(query);
+              if (results.length > 0) return results.join("\n---\n");
+            } catch {
+            }
+          }
+          return null;
+        })();
+        ragResults = await Promise.race([
+          ragPromise,
+          new Promise((resolve) => setTimeout(() => resolve(null), RAG_TIMEOUT_MS))
+        ]);
+        if (ragResults) {
+          logger.info(`[search_codebase] RAG returned results (${ragResults.length} chars)`);
         }
-        return null;
-      })();
-      ragResults = await Promise.race([
-        ragPromise,
-        new Promise((resolve) => setTimeout(() => resolve(null), RAG_TIMEOUT_MS))
-      ]);
-      if (ragResults) {
-        logger.info(`[search_codebase] RAG returned results (${ragResults.length} chars)`);
+      } catch {
       }
-    } catch {
-    }
-    const hasLocal = localResults && !localResults.startsWith("No matches found") && !localResults.startsWith("Could not extract");
-    if (!hasLocal && !ragResults) {
-      return { content: [{ type: "text", text: localResults || "No results found for this query." }] };
-    }
-    const parts = [];
-    if (hasLocal) parts.push(localResults);
-    if (ragResults) parts.push("## Indexed Results (RAG)\n\n" + ragResults);
-    return { content: [{ type: "text", text: parts.join("\n\n---\n\n") }] };
-  }
-  if (name === "get_subscription_status") {
-    const email = args?.email ? String(args.email) : void 0;
-    logger.info(`[get_subscription_status] Called with email: ${email || "(using API key identity)"}`);
-    try {
-      const result = await nerveCenter.getSubscriptionStatus(email);
-      logger.info(`[get_subscription_status] Result: ${JSON.stringify(result).substring(0, 200)}`);
-      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
-    } catch (e) {
-      logger.error(`[get_subscription_status] Exception: ${e.message}`, e);
-      return { content: [{ type: "text", text: JSON.stringify({ error: e.message }, null, 2) }], isError: true };
-    }
-  }
-  if (name === "get_usage_stats") {
-    const email = args?.email ? String(args.email) : void 0;
-    logger.info(`[get_usage_stats] Called with email: ${email || "(using API key identity)"}`);
-    try {
-      const result = await nerveCenter.getUsageStats(email);
-      logger.info(`[get_usage_stats] Result: ${JSON.stringify(result).substring(0, 200)}`);
-      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
-    } catch (e) {
-      logger.error(`[get_usage_stats] Exception: ${e.message}`, e);
-      return { content: [{ type: "text", text: JSON.stringify({ error: e.message }, null, 2) }], isError: true };
-    }
-  }
-  if (name === "search_docs") {
-    const query = String(args?.query);
-    try {
-      const formatted = await manager.searchContext(query, nerveCenter.currentProjectName);
-      return { content: [{ type: "text", text: formatted }] };
-    } catch (err) {
-      if (ragEngine) {
-        const results = await ragEngine.search(query);
-        return { content: [{ type: "text", text: results.join("\n---\n") }] };
+      const hasLocal = localResults && !localResults.startsWith("No matches found") && !localResults.startsWith("Could not extract");
+      if (!hasLocal && !ragResults) {
+        return { content: [{ type: "text", text: localResults || "No results found for this query." }] };
       }
-      return {
-        content: [{ type: "text", text: `Search Error: ${err}` }],
-        isError: true
-      };
+      const parts = [];
+      if (hasLocal) parts.push(localResults);
+      if (ragResults) parts.push("## Indexed Results (RAG)\n\n" + ragResults);
+      return { content: [{ type: "text", text: parts.join("\n\n---\n\n") }] };
     }
-  }
-  if (name === "propose_file_access") {
-    const { agentId, filePath, intent, userPrompt } = args;
-    const result = await nerveCenter.proposeFileAccess(agentId, filePath, intent, userPrompt);
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
-  }
-  if (name === "release_file_access") {
-    const { agentId, filePath } = args;
-    const result = await nerveCenter.releaseFileAccess(agentId, filePath);
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
-  }
-  if (name === "list_locks") {
-    const result = await nerveCenter.listLocks();
-    return { content: [{ type: "text", text: JSON.stringify({ locks: result }, null, 2) }] };
-  }
-  if (name === "update_shared_context") {
-    const { agentId, text } = args;
-    const result = await nerveCenter.updateSharedContext(text, agentId);
-    return { content: [{ type: "text", text: result }] };
-  }
-  if (name === "finalize_session") {
-    const result = await nerveCenter.finalizeSession();
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
-  }
-  if (name === "get_project_soul") {
-    const result = await nerveCenter.getProjectSoul();
-    return { content: [{ type: "text", text: result }] };
-  }
-  if (name === "update_project_soul") {
-    const { context, conventions } = args;
-    const updated = [];
-    if (context) {
-      await manager.updateFile("context.md", context, false);
-      updated.push("context.md");
+    if (name === "get_subscription_status") {
+      const email = args?.email ? String(args.email) : void 0;
+      logger.info(`[get_subscription_status] Called with email: ${email || "(using API key identity)"}`);
+      try {
+        const result = await nerveCenter.getSubscriptionStatus(email);
+        logger.info(`[get_subscription_status] Result: ${JSON.stringify(result).substring(0, 200)}`);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      } catch (e) {
+        logger.error(`[get_subscription_status] Exception: ${e.message}`, e);
+        return { content: [{ type: "text", text: JSON.stringify({ error: e.message }, null, 2) }], isError: true };
+      }
     }
-    if (conventions) {
-      await manager.updateFile("conventions.md", conventions, false);
-      updated.push("conventions.md");
+    if (name === "get_usage_stats") {
+      const email = args?.email ? String(args.email) : void 0;
+      logger.info(`[get_usage_stats] Called with email: ${email || "(using API key identity)"}`);
+      try {
+        const result = await nerveCenter.getUsageStats(email);
+        logger.info(`[get_usage_stats] Result: ${JSON.stringify(result).substring(0, 200)}`);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      } catch (e) {
+        logger.error(`[get_usage_stats] Exception: ${e.message}`, e);
+        return { content: [{ type: "text", text: JSON.stringify({ error: e.message }, null, 2) }], isError: true };
+      }
     }
-    if (updated.length === 0) {
-      return { content: [{ type: "text", text: "No changes \u2014 provide `context` and/or `conventions` parameters." }] };
+    if (name === "search_docs") {
+      const query = String(args?.query);
+      try {
+        const formatted = await manager.searchContext(query, nerveCenter.currentProjectName);
+        return { content: [{ type: "text", text: formatted }] };
+      } catch (err) {
+        if (ragEngine) {
+          const results = await ragEngine.search(query);
+          return { content: [{ type: "text", text: results.join("\n---\n") }] };
+        }
+        return {
+          content: [{ type: "text", text: `Search Error: ${err}` }],
+          isError: true
+        };
+      }
     }
-    return { content: [{ type: "text", text: `Project soul updated: ${updated.join(", ")}` }] };
-  }
-  if (name === "switch_project") {
-    const { projectRoot, projectName } = args;
-    const identity = resolveProjectIdentity(projectRoot, process.cwd(), process.env);
-    const result = await nerveCenter.switchProject({
-      root: identity.root,
-      projectName: projectName || identity.projectName
-    });
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
-  }
-  if (name === "post_job") {
-    const { title, description, priority, dependencies } = args;
-    const result = await nerveCenter.postJob(title, description, priority, dependencies);
-    return { content: [{ type: "text", text: JSON.stringify(result) }] };
-  }
-  if (name === "list_jobs") {
-    const includeCompleted = Boolean(args?.includeCompleted);
-    const jobs = await nerveCenter.listJobs();
-    const result = includeCompleted ? jobs : jobs.filter((job) => job.status !== "done" && job.status !== "cancelled");
-    return { content: [{ type: "text", text: JSON.stringify({ jobs: result }, null, 2) }] };
-  }
-  if (name === "cancel_job") {
-    const { jobId, reason } = args;
-    const result = await nerveCenter.cancelJob(jobId, reason);
-    return { content: [{ type: "text", text: JSON.stringify(result) }] };
-  }
-  if (name === "force_unlock") {
-    const { filePath, reason } = args;
-    const result = await nerveCenter.forceUnlock(filePath, reason);
-    return { content: [{ type: "text", text: JSON.stringify(result) }] };
-  }
-  if (name === "claim_next_job") {
-    const { agentId } = args;
-    const result = await nerveCenter.claimNextJob(agentId);
-    if (result && result.status === "NO_JOBS_AVAILABLE") {
-      presence.seen(agentId, Date.now(), "idle", "waiting for work");
+    if (name === "propose_file_access") {
+      const { agentId, filePath, intent, userPrompt } = args;
+      const result = await nerveCenter.proposeFileAccess(agentId, filePath, intent, userPrompt);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    }
+    if (name === "release_file_access") {
+      const { agentId, filePath } = args;
+      const result = await nerveCenter.releaseFileAccess(agentId, filePath);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    }
+    if (name === "list_locks") {
+      const result = await nerveCenter.listLocks();
+      return { content: [{ type: "text", text: JSON.stringify({ locks: result }, null, 2) }] };
+    }
+    if (name === "update_shared_context") {
+      const { agentId, text } = args;
+      const result = await nerveCenter.updateSharedContext(text, agentId);
+      return { content: [{ type: "text", text: result }] };
+    }
+    if (name === "finalize_session") {
+      const result = await nerveCenter.finalizeSession();
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    }
+    if (name === "get_project_soul") {
+      const result = await nerveCenter.getProjectSoul();
+      return { content: [{ type: "text", text: result }] };
+    }
+    if (name === "update_project_soul") {
+      const { context, conventions } = args;
+      const updated = [];
+      if (context) {
+        await manager.updateFile("context.md", context, false);
+        updated.push("context.md");
+      }
+      if (conventions) {
+        await manager.updateFile("conventions.md", conventions, false);
+        updated.push("conventions.md");
+      }
+      if (updated.length === 0) {
+        return { content: [{ type: "text", text: "No changes \u2014 provide `context` and/or `conventions` parameters." }] };
+      }
+      return { content: [{ type: "text", text: `Project soul updated: ${updated.join(", ")}` }] };
+    }
+    if (name === "switch_project") {
+      const { projectRoot, projectName } = args;
+      const identity = resolveProjectIdentity(projectRoot, process.cwd(), process.env);
+      const result = await nerveCenter.switchProject({
+        root: identity.root,
+        projectName: projectName || identity.projectName
+      });
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    }
+    if (name === "post_job") {
+      const { title, description, priority, dependencies } = args;
+      const result = await nerveCenter.postJob(title, description, priority, dependencies);
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    }
+    if (name === "list_jobs") {
+      const includeCompleted = Boolean(args?.includeCompleted);
+      const jobs = await nerveCenter.listJobs();
+      const result = includeCompleted ? jobs : jobs.filter((job) => job.status !== "done" && job.status !== "cancelled");
+      return { content: [{ type: "text", text: JSON.stringify({ jobs: result }, null, 2) }] };
+    }
+    if (name === "cancel_job") {
+      const { jobId, reason } = args;
+      const result = await nerveCenter.cancelJob(jobId, reason);
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    }
+    if (name === "force_unlock") {
+      const { filePath, reason } = args;
+      const result = await nerveCenter.forceUnlock(filePath, reason);
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    }
+    if (name === "claim_next_job") {
+      const { agentId } = args;
+      const result = await nerveCenter.claimNextJob(agentId);
+      if (result && result.status === "NO_JOBS_AVAILABLE") {
+        presence.seen(agentId, Date.now(), "idle", "waiting for work");
+        const roster = presence.list(Date.now());
+        return { content: [{ type: "text", text: JSON.stringify({
+          status: "WAITING",
+          message: "No jobs on the board yet. You're registered as idle \u2014 the orchestrator can see you (list_agents) and you'll pick up work as soon as it's posted. Call claim_next_job again shortly.",
+          agentsOnline: roster.length,
+          idle: roster.filter((a) => a.status === "idle").length,
+          roster
+        }, null, 2) }] };
+      }
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    }
+    if (name === "claim_job") {
+      const { agentId, jobId } = args;
+      const result = await nerveCenter.claimJob(agentId, jobId);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    }
+    if (name === "complete_job") {
+      const { agentId, jobId, outcome, completionKey } = args;
+      const result = await nerveCenter.completeJob(agentId, jobId, outcome, completionKey);
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    }
+    if (name === "verify_file_lock") {
+      const { agentId, filePath } = args;
+      const result = await nerveCenter.verifyFileAccess(agentId, filePath);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    }
+    if (name === "guarded_write") {
+      const { agentId, filePath, content } = args;
+      const result = await nerveCenter.guardedWrite(agentId, filePath, content);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    }
+    if (name === "list_agents") {
       const roster = presence.list(Date.now());
       return { content: [{ type: "text", text: JSON.stringify({
-        status: "WAITING",
-        message: "No jobs on the board yet. You're registered as idle \u2014 the orchestrator can see you (list_agents) and you'll pick up work as soon as it's posted. Call claim_next_job again shortly.",
         agentsOnline: roster.length,
+        active: roster.filter((a) => a.status === "active").length,
         idle: roster.filter((a) => a.status === "idle").length,
-        roster
+        agents: roster
       }, null, 2) }] };
     }
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
-  }
-  if (name === "claim_job") {
-    const { agentId, jobId } = args;
-    const result = await nerveCenter.claimJob(agentId, jobId);
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
-  }
-  if (name === "complete_job") {
-    const { agentId, jobId, outcome, completionKey } = args;
-    const result = await nerveCenter.completeJob(agentId, jobId, outcome, completionKey);
-    return { content: [{ type: "text", text: JSON.stringify(result) }] };
-  }
-  if (name === "verify_file_lock") {
-    const { agentId, filePath } = args;
-    const result = await nerveCenter.verifyFileAccess(agentId, filePath);
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
-  }
-  if (name === "guarded_write") {
-    const { agentId, filePath, content } = args;
-    const result = await nerveCenter.guardedWrite(agentId, filePath, content);
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
-  }
-  if (name === "list_agents") {
-    const roster = presence.list(Date.now());
-    return { content: [{ type: "text", text: JSON.stringify({
-      agentsOnline: roster.length,
-      active: roster.filter((a) => a.status === "active").length,
-      idle: roster.filter((a) => a.status === "idle").length,
-      agents: roster
-    }, null, 2) }] };
-  }
-  throw new Error(`Tool not found: ${name}`);
+    throw new Error(`Tool not found: ${name}`);
+  });
 });
 async function main() {
   await ensureFileSystem();

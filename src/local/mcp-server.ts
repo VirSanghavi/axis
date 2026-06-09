@@ -784,6 +784,7 @@ function recordToolCall(name: string, args: unknown): void {
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
+  let captureAgent = sessionIdentity.id;
 
   // Normalize the caller's agentId onto this session's unique identity so
   // locks/jobs/notepad attribution can never collide across concurrent
@@ -791,6 +792,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (args && typeof (args as Record<string, unknown>).agentId === "string") {
     const resolvedId = sessionIdentity.resolve((args as Record<string, unknown>).agentId as string);
     (args as Record<string, unknown>).agentId = resolvedId;
+    captureAgent = resolvedId;
     // Record presence so the orchestrator can see active/idle agents.
     presence.seen(resolvedId, Date.now(), "active", name);
   }
@@ -798,6 +800,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   logger.info("Tool call", { name });
   recordToolCall(name, args);
 
+  return nerveCenter.captureToolExecution(name, args, captureAgent, async () => {
   // ── Subscription gate (runs before ANY tool logic) ──
   // AXIS_SKIP_SUBSCRIPTION_CHECK=1 skips gate (for local/testing only)
   if (process.env.AXIS_SKIP_SUBSCRIPTION_CHECK === "1") {
@@ -1202,6 +1205,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   throw new Error(`Tool not found: ${name}`);
+  });
 });
 
 async function main() {

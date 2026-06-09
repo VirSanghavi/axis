@@ -44,6 +44,9 @@ describe("resolveAgentId", () => {
         expect(resolveAgentId(undefined, { CLAUDECODE: "1" }, "t")).toBe("claude-code-t");
         expect(resolveAgentId("", { CURSOR_TRACE_ID: "x" }, "t")).toBe("cursor-t");
         expect(resolveAgentId(undefined, { CODEX_MANAGED_BY_NPM: "1" }, "t")).toBe("codex-t");
+        expect(resolveAgentId(undefined, { COPILOT_AGENT_SESSION: "x" }, "t")).toBe("github-copilot-t");
+        expect(resolveAgentId(undefined, { ANTIGRAVITY_SESSION_ID: "x" }, "t")).toBe("antigravity-t");
+        expect(resolveAgentId(undefined, { GEMINI_CLI: "1" }, "t")).toBe("gemini-t");
     });
 
     test("honors AXIS_AGENT_BASE when no id and no host markers", () => {

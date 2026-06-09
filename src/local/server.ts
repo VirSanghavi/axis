@@ -327,7 +327,11 @@ app.get("/sse", async (req, res) => {
 
     server.setRequestHandler(CallToolRequestSchema, async (req) => {
         const { name, arguments: args } = req.params;
-        try {
+        const captureAgent = args && typeof (args as Record<string, unknown>).agentId === "string"
+            ? String((args as Record<string, unknown>).agentId)
+            : `mcp-sse-${transport.sessionId || "client"}`;
+        return nerveCenter.captureToolExecution(name, args, captureAgent, async () => {
+          try {
             // Nerve Center Tools
             if (name === "propose_file_access") {
                 const { agentId, filePath, intent, userPrompt } = args as any;
@@ -427,9 +431,10 @@ app.get("/sse", async (req, res) => {
             if (name === "search_context") return { content: [{ type: "text", text: await manager.searchContext(String(args?.query)) }] };
 
             throw new Error("Unknown tool");
-        } catch (e) {
-            return { content: [{ type: "text", text: `Error: ${e}` }], isError: true };
-        }
+          } catch (e) {
+              return { content: [{ type: "text", text: `Error: ${e}` }], isError: true };
+          }
+        });
     });
 
     // 5. Start the transport
