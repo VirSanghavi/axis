@@ -30,6 +30,8 @@ yarn-error.log*
 **/.axis-server.log
 .axis/instructions/
 **/.axis/instructions/
+# Session archives, nerve-center state, and tool logs are runtime artifacts.
+history/
 
 # local env files
 .env*.local
