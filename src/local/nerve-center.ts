@@ -8,6 +8,7 @@ import { deriveProjectName, projectStateFilePath } from "./project-identity.js";
 import { buildIntegrityReport, hashContent, hashFileIfExists } from "./lock-integrity.js";
 import { findReclaimable } from "./job-hygiene.js";
 import { locksEnforced, denyWrites, restoreWrites, withTempWrite } from "./fs-guard.js";
+import { collectSessionTranscript, transcriptTitle } from "./session-transcript.js";
 
 // Interfaces
 interface FileLock {
@@ -336,7 +337,11 @@ export class NerveCenter {
             : `${this.contextManager.apiUrl}/v1/${endpoint}`;
 
         logger.info(`[callCoordination] Full URL: ${method} ${url}`);
-        logger.info(`[callCoordination] Request body: ${body ? JSON.stringify({ ...body, projectName: this.projectName }) : 'none'}`);
+        logger.info(`[callCoordination] Request body: ${body ? JSON.stringify({
+            keys: Object.keys(body),
+            projectName: this.projectName,
+            transcriptEvents: Array.isArray(body.transcript) ? body.transcript.length : 0,
+        }) : 'none'}`);
 
         const maxRetries = 3;
         const baseDelay = 1000;
@@ -1517,6 +1522,17 @@ export class NerveCenter {
             // file is left read-only after the locks are cleared.
             await this.restoreLocksForAgentOnDisk();
             const content = await this.getNotepad();
+            const transcript = await collectSessionTranscript();
+            const sessionTitle = transcriptTitle(
+                transcript.events,
+                `Session ${new Date().toLocaleDateString()}`
+            );
+            const transcriptMetadata = {
+                source: transcript.metadata.source,
+                provider: transcript.metadata.provider,
+                agent: transcript.metadata.agent,
+                thread_id: transcript.metadata.thread_id,
+            };
             const filename = `session-${new Date().toISOString().replace(/[:.]/g, "-")}.md`;
             const historyPath = path.join(this.projectRoot, "history", filename);
 
@@ -1529,14 +1545,26 @@ export class NerveCenter {
 
             // Clear State
             if (this.useSupabase && this.supabase && this._projectId) {
+                const { data: projectOwner } = await this.supabase
+                    .from("projects")
+                    .select("owner_id")
+                    .eq("id", this._projectId)
+                    .single();
+
                 // Archive to sessions table first
                 await this.supabase
                     .from("sessions")
                     .insert({
                         project_id: this._projectId,
-                        title: `Session ${new Date().toLocaleDateString()}`,
+                        user_id: projectOwner?.owner_id,
+                        title: sessionTitle,
                         summary: content.substring(0, 500) + "...",
-                        metadata: { full_content: content }
+                        metadata: {
+                            full_content: content,
+                            transcript: transcript.events,
+                            ...transcriptMetadata,
+                        },
+                        completed_at: new Date().toISOString(),
                     });
 
                 // Clear live notepad
@@ -1559,7 +1587,12 @@ export class NerveCenter {
                     .eq("project_id", this._projectId);
             } else if (this.contextManager.apiUrl) {
                 try {
-                    await this.callCoordination("sessions/finalize", "POST", { content });
+                    await this.callCoordination("sessions/finalize", "POST", {
+                        content,
+                        title: sessionTitle,
+                        transcript: transcript.events,
+                        metadata: transcriptMetadata,
+                    });
                 } catch (e: any) {
                     logger.error("Failed to finalize session via API", e);
                 }
@@ -1576,7 +1609,9 @@ export class NerveCenter {
 
             return {
                 status: "SESSION_FINALIZED",
-                archivePath: historyPath
+                archivePath: historyPath,
+                transcriptEvents: transcript.events.length,
+                transcriptSource: transcript.metadata.source,
             };
         });
     }

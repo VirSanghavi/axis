@@ -272,9 +272,9 @@ var ContextManager = class {
 // ../../src/local/nerve-center.ts
 import { Mutex as Mutex2 } from "async-mutex";
 import { createClient } from "@supabase/supabase-js";
-import fs5 from "fs/promises";
+import fs6 from "fs/promises";
 import { existsSync as existsSync2 } from "fs";
-import path3 from "path";
+import path4 from "path";
 
 // ../../src/local/project-identity.ts
 import fs2 from "fs";
@@ -404,6 +404,315 @@ async function withTempWrite(absolutePath, originalMode, fn) {
   }
 }
 
+// ../../src/local/session-transcript.ts
+import fs5 from "fs/promises";
+import path3 from "path";
+import os from "os";
+var MAX_EVENTS = 2e3;
+var MAX_EVENT_CHARS = 15e4;
+var MAX_TOTAL_CHARS = 3e6;
+function textContent(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.filter((item) => !!item && typeof item === "object").filter((item) => item.type === "input_text" || item.type === "output_text" || item.type === "text").map((item) => typeof item.text === "string" ? item.text : "").filter(Boolean).join("\n");
+}
+function parseJson(value) {
+  if (typeof value !== "string") return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+function isErrorOutput(output) {
+  const text = typeof output === "string" ? output : JSON.stringify(output);
+  return /tool call error|process exited with code [1-9]|"is_error"\s*:\s*true|error:/i.test(text || "");
+}
+function limitString(value) {
+  if (/encrypted_content|base_instructions/i.test(value)) {
+    return "[Axis redacted a tool output containing raw hidden agent instructions or reasoning.]";
+  }
+  if (value.length <= MAX_EVENT_CHARS) return value;
+  return `${value.slice(0, MAX_EVENT_CHARS)}
+... truncated by Axis`;
+}
+function limitValue(value) {
+  if (typeof value === "string") return limitString(value);
+  try {
+    const serialized = JSON.stringify(value);
+    const limited = limitString(serialized);
+    return limited === serialized ? value : limited;
+  } catch {
+    return limitString(String(value));
+  }
+}
+function compactEvents(events) {
+  const seen = /* @__PURE__ */ new Set();
+  const compacted = [];
+  let totalChars = 0;
+  for (const event of events) {
+    if (compacted.length >= MAX_EVENTS) break;
+    const normalized = {
+      ...event,
+      content: event.content ? limitString(event.content) : void 0,
+      arguments: event.arguments === void 0 ? void 0 : limitValue(event.arguments),
+      output: event.output === void 0 ? void 0 : limitValue(event.output)
+    };
+    const signature = JSON.stringify([
+      normalized.kind,
+      normalized.role,
+      normalized.timestamp,
+      normalized.toolCallId,
+      normalized.toolName,
+      normalized.content,
+      normalized.arguments,
+      normalized.output
+    ]);
+    if (seen.has(signature)) continue;
+    if (totalChars + signature.length > MAX_TOTAL_CHARS) break;
+    seen.add(signature);
+    totalChars += signature.length;
+    compacted.push(normalized);
+  }
+  return compacted;
+}
+function parseCodexTranscript(raw) {
+  const events = [];
+  const toolNames = /* @__PURE__ */ new Map();
+  for (const [index, line] of raw.split("\n").entries()) {
+    if (!line.trim()) continue;
+    let record;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (record.type !== "response_item" || !record.payload) continue;
+    const payload = record.payload;
+    const base = {
+      timestamp: typeof record.timestamp === "string" ? record.timestamp : void 0,
+      agent: "codex",
+      provider: "openai"
+    };
+    if (payload.type === "message" && (payload.role === "user" || payload.role === "assistant")) {
+      const content = textContent(payload.content);
+      if (!content || payload.role === "user" && /^<(environment_context|turn_aborted)>/.test(content.trim())) continue;
+      events.push({
+        id: `codex-message-${index}`,
+        kind: "message",
+        role: payload.role,
+        content,
+        ...base
+      });
+    } else if (payload.type === "function_call") {
+      const callId = String(payload.call_id || `call-${index}`);
+      const toolName = [payload.namespace, payload.name].filter(Boolean).join(".") || "tool";
+      toolNames.set(callId, toolName);
+      events.push({
+        id: `codex-call-${callId}`,
+        kind: "tool_call",
+        role: "assistant",
+        toolName,
+        toolCallId: callId,
+        arguments: parseJson(payload.arguments),
+        ...base
+      });
+    } else if (payload.type === "function_call_output") {
+      const callId = String(payload.call_id || `call-${index}`);
+      const output = payload.output;
+      events.push({
+        id: `codex-result-${callId}`,
+        kind: "tool_result",
+        role: "tool",
+        toolName: toolNames.get(callId) || "tool",
+        toolCallId: callId,
+        output,
+        isError: isErrorOutput(output),
+        ...base
+      });
+    }
+  }
+  return compactEvents(events);
+}
+function parseClaudeTranscript(raw) {
+  const events = [];
+  const toolNames = /* @__PURE__ */ new Map();
+  for (const [index, line] of raw.split("\n").entries()) {
+    if (!line.trim()) continue;
+    let record;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (record.type !== "user" && record.type !== "assistant") continue;
+    const message = record.message;
+    if (!message || message.role !== "user" && message.role !== "assistant") continue;
+    const content = message.content;
+    const base = {
+      timestamp: typeof record.timestamp === "string" ? record.timestamp : void 0,
+      agent: "claude-code",
+      provider: "anthropic"
+    };
+    if (typeof content === "string") {
+      if (content) {
+        events.push({
+          id: `claude-message-${index}`,
+          kind: "message",
+          role: message.role,
+          content,
+          ...base
+        });
+      }
+      continue;
+    }
+    if (!Array.isArray(content)) continue;
+    const text = textContent(content);
+    if (text) {
+      events.push({
+        id: `claude-message-${index}`,
+        kind: "message",
+        role: message.role,
+        content: text,
+        ...base
+      });
+    }
+    for (const [contentIndex, item] of content.entries()) {
+      if (!item || typeof item !== "object") continue;
+      if (item.type === "tool_use") {
+        const callId = String(item.id || `call-${index}-${contentIndex}`);
+        const toolName = String(item.name || "tool");
+        toolNames.set(callId, toolName);
+        events.push({
+          id: `claude-call-${callId}`,
+          kind: "tool_call",
+          role: "assistant",
+          toolName,
+          toolCallId: callId,
+          arguments: item.input,
+          ...base
+        });
+      } else if (item.type === "tool_result") {
+        const callId = String(item.tool_use_id || `call-${index}-${contentIndex}`);
+        const output = textContent(item.content) || item.content;
+        events.push({
+          id: `claude-result-${callId}`,
+          kind: "tool_result",
+          role: "tool",
+          toolName: toolNames.get(callId) || "tool",
+          toolCallId: callId,
+          output,
+          isError: item.is_error === true || isErrorOutput(output),
+          ...base
+        });
+      }
+    }
+  }
+  return compactEvents(events);
+}
+async function findFile(root, filename) {
+  let entries;
+  try {
+    entries = await fs5.readdir(root, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  for (const entry of entries) {
+    const candidate = path3.join(root, entry.name);
+    if (entry.isFile() && entry.name === filename) return candidate;
+    if (entry.isDirectory()) {
+      const nested = await findFile(candidate, filename);
+      if (nested) return nested;
+    }
+  }
+  return null;
+}
+async function resolveTranscriptPath(env, homeDir) {
+  if (env.AXIS_TRANSCRIPT_PATH) {
+    const source = env.CODEX_THREAD_ID ? "codex" : env.CLAUDE_SESSION_ID ? "claude" : "unknown";
+    return { path: env.AXIS_TRANSCRIPT_PATH, source, threadId: env.CODEX_THREAD_ID || env.CLAUDE_SESSION_ID || null };
+  }
+  if (env.CODEX_THREAD_ID) {
+    const filenameSuffix = `${env.CODEX_THREAD_ID}.jsonl`;
+    const sessionsRoot = path3.join(homeDir, ".codex", "sessions");
+    const match = await findFile(sessionsRoot, filenameSuffix);
+    if (match) return { path: match, source: "codex", threadId: env.CODEX_THREAD_ID };
+    const entries = await collectFiles(sessionsRoot);
+    const rollout = entries.find((entry) => entry.endsWith(filenameSuffix));
+    if (rollout) return { path: rollout, source: "codex", threadId: env.CODEX_THREAD_ID };
+  }
+  if (env.CODEX_TUI_SESSION_LOG_PATH) {
+    return { path: env.CODEX_TUI_SESSION_LOG_PATH, source: "codex", threadId: env.CODEX_THREAD_ID || null };
+  }
+  const claudeSessionId = env.CLAUDE_SESSION_ID || env.CLAUDE_CODE_SESSION_ID;
+  if (claudeSessionId) {
+    const match = await findFile(path3.join(homeDir, ".claude", "projects"), `${claudeSessionId}.jsonl`);
+    if (match) return { path: match, source: "claude", threadId: claudeSessionId };
+  }
+  return { path: null, source: "unknown", threadId: null };
+}
+async function collectFiles(root) {
+  const files = [];
+  let entries;
+  try {
+    entries = await fs5.readdir(root, { withFileTypes: true });
+  } catch {
+    return files;
+  }
+  for (const entry of entries) {
+    const candidate = path3.join(root, entry.name);
+    if (entry.isDirectory()) files.push(...await collectFiles(candidate));
+    else files.push(candidate);
+  }
+  return files;
+}
+async function collectSessionTranscript(env = process.env, homeDir = os.homedir()) {
+  const resolved = await resolveTranscriptPath(env, homeDir);
+  if (!resolved.path) {
+    return {
+      events: [],
+      metadata: {
+        source: "unknown",
+        provider: null,
+        agent: null,
+        thread_id: resolved.threadId,
+        transcript_path: null
+      }
+    };
+  }
+  try {
+    const raw = await fs5.readFile(resolved.path, "utf8");
+    const source = resolved.source === "unknown" ? raw.includes('"originator":"codex') ? "codex" : "claude" : resolved.source;
+    return {
+      events: source === "codex" ? parseCodexTranscript(raw) : parseClaudeTranscript(raw),
+      metadata: {
+        source,
+        provider: source === "codex" ? "openai" : "anthropic",
+        agent: source === "codex" ? "codex" : "claude-code",
+        thread_id: resolved.threadId,
+        transcript_path: resolved.path
+      }
+    };
+  } catch {
+    return {
+      events: [],
+      metadata: {
+        source: resolved.source,
+        provider: resolved.source === "codex" ? "openai" : resolved.source === "claude" ? "anthropic" : null,
+        agent: resolved.source === "codex" ? "codex" : resolved.source === "claude" ? "claude-code" : null,
+        thread_id: resolved.threadId,
+        transcript_path: resolved.path
+      }
+    };
+  }
+}
+function transcriptTitle(events, fallback) {
+  const firstUserMessage = events.find((event) => event.kind === "message" && event.role === "user")?.content;
+  if (!firstUserMessage) return fallback;
+  const firstLine = firstUserMessage.replace(/\s+/g, " ").trim();
+  return firstLine.length > 100 ? `${firstLine.slice(0, 97)}...` : firstLine;
+}
+
 // ../../src/local/nerve-center.ts
 var LOCK_TIMEOUT_DEFAULT = 30 * 60 * 1e3;
 var CIRCUIT_FAILURE_THRESHOLD = 5;
@@ -441,7 +750,7 @@ var NerveCenter = class _NerveCenter {
     this.mutex = new Mutex2();
     this.contextManager = contextManager;
     this.enforceLocks = options.enforceLocks ?? locksEnforced();
-    this.projectRoot = path3.resolve(options.projectRoot || process.cwd());
+    this.projectRoot = path4.resolve(options.projectRoot || process.cwd());
     this.stateFilePathExplicit = options.stateFilePath !== void 0;
     this.stateFilePath = options.stateFilePath || projectStateFilePath(this.projectRoot);
     this.lockTimeout = options.lockTimeout || LOCK_TIMEOUT_DEFAULT;
@@ -493,7 +802,7 @@ var NerveCenter = class _NerveCenter {
   async switchProject(identity) {
     return await this.mutex.runExclusive(async () => {
       await this.saveState();
-      this.projectRoot = path3.resolve(identity.root);
+      this.projectRoot = path4.resolve(identity.root);
       process.chdir(this.projectRoot);
       if (!this.stateFilePathExplicit) {
         this.stateFilePath = projectStateFilePath(this.projectRoot);
@@ -541,19 +850,19 @@ var NerveCenter = class _NerveCenter {
   async detectProjectName(startDir = this.projectRoot) {
     let projectRoot = startDir;
     let current = startDir;
-    const filesystemRoot = path3.parse(current).root;
+    const filesystemRoot = path4.parse(current).root;
     while (current !== filesystemRoot) {
-      if (existsSync2(path3.join(current, ".axis", "axis.json")) || existsSync2(path3.join(current, ".git")) || existsSync2(path3.join(current, "package.json"))) {
+      if (existsSync2(path4.join(current, ".axis", "axis.json")) || existsSync2(path4.join(current, ".git")) || existsSync2(path4.join(current, "package.json"))) {
         projectRoot = current;
         break;
       }
-      const parent = path3.dirname(current);
+      const parent = path4.dirname(current);
       if (parent === current) break;
       current = parent;
     }
     try {
-      const axisConfigPath = path3.join(projectRoot, ".axis", "axis.json");
-      const configData = await fs5.readFile(axisConfigPath, "utf-8");
+      const axisConfigPath = path4.join(projectRoot, ".axis", "axis.json");
+      const configData = await fs6.readFile(axisConfigPath, "utf-8");
       const config = JSON.parse(configData);
       if (config.project) {
         this.projectName = String(config.project);
@@ -562,7 +871,7 @@ var NerveCenter = class _NerveCenter {
       }
     } catch {
     }
-    const derived = path3.basename(projectRoot).toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+    const derived = path4.basename(projectRoot).toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
     this.projectName = derived || "default";
     logger.info(`Derived project name '${this.projectName}' from ${projectRoot}`);
   }
@@ -600,7 +909,11 @@ var NerveCenter = class _NerveCenter {
     }
     const url = this.contextManager.apiUrl.endsWith("/v1") ? `${this.contextManager.apiUrl}/${endpoint}` : `${this.contextManager.apiUrl}/v1/${endpoint}`;
     logger.info(`[callCoordination] Full URL: ${method} ${url}`);
-    logger.info(`[callCoordination] Request body: ${body ? JSON.stringify({ ...body, projectName: this.projectName }) : "none"}`);
+    logger.info(`[callCoordination] Request body: ${body ? JSON.stringify({
+      keys: Object.keys(body),
+      projectName: this.projectName,
+      transcriptEvents: Array.isArray(body.transcript) ? body.transcript.length : 0
+    }) : "none"}`);
     const maxRetries = 3;
     const baseDelay = 1e3;
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -807,15 +1120,15 @@ var NerveCenter = class _NerveCenter {
   }
   async saveState() {
     try {
-      await fs5.mkdir(path3.dirname(this.stateFilePath), { recursive: true });
-      await fs5.writeFile(this.stateFilePath, JSON.stringify(this.state, null, 2));
+      await fs6.mkdir(path4.dirname(this.stateFilePath), { recursive: true });
+      await fs6.writeFile(this.stateFilePath, JSON.stringify(this.state, null, 2));
     } catch (error) {
       logger.error("Failed to persist state", error);
     }
   }
   async loadState() {
     try {
-      const data = await fs5.readFile(this.stateFilePath, "utf-8");
+      const data = await fs6.readFile(this.stateFilePath, "utf-8");
       const parsed = JSON.parse(data);
       this.state = {
         ..._NerveCenter.createEmptyState(),
@@ -1247,14 +1560,14 @@ ${notepad}`;
     if (!normalized || normalized === "." || normalized === "/") {
       return { valid: false, reason: "Cannot lock the project root. Lock individual files instead." };
     }
-    const projectRoot = path3.resolve(process.cwd());
-    const absolutePath = path3.resolve(projectRoot, filePath);
-    const relativePath = path3.relative(projectRoot, absolutePath);
-    if (relativePath.startsWith("..") || path3.isAbsolute(relativePath)) {
+    const projectRoot = path4.resolve(process.cwd());
+    const absolutePath = path4.resolve(projectRoot, filePath);
+    const relativePath = path4.relative(projectRoot, absolutePath);
+    if (relativePath.startsWith("..") || path4.isAbsolute(relativePath)) {
       return { valid: false, reason: "Cannot lock files outside the project root." };
     }
     try {
-      const stat = await fs5.stat(absolutePath);
+      const stat = await fs6.stat(absolutePath);
       if (stat.isDirectory()) {
         return {
           valid: false,
@@ -1309,21 +1622,21 @@ ${notepad}`;
   /** Make a freshly-locked file read-only on disk so non-Axis writers get EACCES. */
   async enforceLockOnDisk(normalizedPath, agentId, filePath) {
     if (!this.enforceLocks) return;
-    const mode = await denyWrites(path3.resolve(process.cwd(), filePath));
+    const mode = await denyWrites(path4.resolve(process.cwd(), filePath));
     this.enforcedPerms.set(normalizedPath, { mode, agentId });
   }
   /** Restore write permission for a single released path. */
   async restoreLockOnDisk(normalizedPath) {
     const entry = this.enforcedPerms.get(normalizedPath);
     if (!entry) return;
-    await restoreWrites(path3.resolve(process.cwd(), normalizedPath), entry.mode);
+    await restoreWrites(path4.resolve(process.cwd(), normalizedPath), entry.mode);
     this.enforcedPerms.delete(normalizedPath);
   }
   /** Restore every file an agent had locked (or all, if agentId omitted). */
   async restoreLocksForAgentOnDisk(agentId) {
     for (const [p, entry] of [...this.enforcedPerms]) {
       if (!agentId || entry.agentId === agentId) {
-        await restoreWrites(path3.resolve(process.cwd(), p), entry.mode);
+        await restoreWrites(path4.resolve(process.cwd(), p), entry.mode);
         this.enforcedPerms.delete(p);
       }
     }
@@ -1343,7 +1656,7 @@ ${notepad}`;
       }
       if (this.contextManager.apiUrl) {
         try {
-          const contentHash2 = await hashFileIfExists(path3.resolve(process.cwd(), filePath));
+          const contentHash2 = await hashFileIfExists(path4.resolve(process.cwd(), filePath));
           const result = await this.callCoordination("locks", "POST", {
             action: "lock",
             filePath: normalizedPath,
@@ -1423,7 +1736,7 @@ ${notepad}`;
             };
           }
           try {
-            const contentHash2 = await hashFileIfExists(path3.resolve(process.cwd(), filePath));
+            const contentHash2 = await hashFileIfExists(path4.resolve(process.cwd(), filePath));
             if (contentHash2) {
               await this.supabase.from("locks").update({ content_hash: contentHash2 }).eq("project_id", this._projectId).eq("file_path", normalizedPath).eq("agent_id", agentId);
             }
@@ -1450,7 +1763,7 @@ ${notepad}`;
           currentLock: conflict
         };
       }
-      const contentHash = await hashFileIfExists(path3.resolve(process.cwd(), filePath));
+      const contentHash = await hashFileIfExists(path4.resolve(process.cwd(), filePath));
       this.state.locks[normalizedPath] = { agentId, filePath: normalizedPath, intent, userPrompt, timestamp: Date.now(), contentHash };
       await this.saveState();
       await this.enforceLockOnDisk(normalizedPath, agentId, filePath);
@@ -1480,7 +1793,7 @@ ${notepad}`;
           message: `No active lock for '${normalizedPath}'. Acquire one with propose_file_access first.`
         };
       }
-      const currentHash = await hashFileIfExists(path3.resolve(process.cwd(), filePath));
+      const currentHash = await hashFileIfExists(path4.resolve(process.cwd(), filePath));
       const report = buildIntegrityReport(lock.contentHash, currentHash, lock.contentHash !== void 0);
       const heldByOther = lock.agentId !== agentId;
       if (report.tampered) {
@@ -1528,7 +1841,7 @@ ${notepad}`;
       if (lock.agentId !== agentId) {
         return { status: "DENIED", message: this.orchestrationMessage(normalizedPath, lock.agentId, lock.intent) };
       }
-      const absolutePath = path3.resolve(process.cwd(), filePath);
+      const absolutePath = path4.resolve(process.cwd(), filePath);
       const currentHash = await hashFileIfExists(absolutePath);
       if (lock.contentHash !== void 0 && currentHash !== void 0 && currentHash !== lock.contentHash) {
         return {
@@ -1537,8 +1850,8 @@ ${notepad}`;
         };
       }
       const doWrite = async () => {
-        await fs5.mkdir(path3.dirname(absolutePath), { recursive: true });
-        await fs5.writeFile(absolutePath, content);
+        await fs6.mkdir(path4.dirname(absolutePath), { recursive: true });
+        await fs6.writeFile(absolutePath, content);
       };
       const enforced = this.enforcedPerms.get(normalizedPath);
       if (this.enforceLocks && enforced) {
@@ -1567,27 +1880,50 @@ ${notepad}`;
     return await this.mutex.runExclusive(async () => {
       await this.restoreLocksForAgentOnDisk();
       const content = await this.getNotepad();
+      const transcript = await collectSessionTranscript();
+      const sessionTitle = transcriptTitle(
+        transcript.events,
+        `Session ${(/* @__PURE__ */ new Date()).toLocaleDateString()}`
+      );
+      const transcriptMetadata = {
+        source: transcript.metadata.source,
+        provider: transcript.metadata.provider,
+        agent: transcript.metadata.agent,
+        thread_id: transcript.metadata.thread_id
+      };
       const filename = `session-${(/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-")}.md`;
-      const historyPath = path3.join(this.projectRoot, "history", filename);
+      const historyPath = path4.join(this.projectRoot, "history", filename);
       try {
-        await fs5.mkdir(path3.dirname(historyPath), { recursive: true });
-        await fs5.writeFile(historyPath, content);
+        await fs6.mkdir(path4.dirname(historyPath), { recursive: true });
+        await fs6.writeFile(historyPath, content);
       } catch (e) {
         logger.warn("Failed to write local session log", e);
       }
       if (this.useSupabase && this.supabase && this._projectId) {
+        const { data: projectOwner } = await this.supabase.from("projects").select("owner_id").eq("id", this._projectId).single();
         await this.supabase.from("sessions").insert({
           project_id: this._projectId,
-          title: `Session ${(/* @__PURE__ */ new Date()).toLocaleDateString()}`,
+          user_id: projectOwner?.owner_id,
+          title: sessionTitle,
           summary: content.substring(0, 500) + "...",
-          metadata: { full_content: content }
+          metadata: {
+            full_content: content,
+            transcript: transcript.events,
+            ...transcriptMetadata
+          },
+          completed_at: (/* @__PURE__ */ new Date()).toISOString()
         });
         await this.supabase.from("projects").update({ live_notepad: "Session Start: " + (/* @__PURE__ */ new Date()).toISOString() + "\n" }).eq("id", this._projectId);
         await this.supabase.from("jobs").delete().eq("project_id", this._projectId).in("status", ["done", "cancelled"]);
         await this.supabase.from("locks").delete().eq("project_id", this._projectId);
       } else if (this.contextManager.apiUrl) {
         try {
-          await this.callCoordination("sessions/finalize", "POST", { content });
+          await this.callCoordination("sessions/finalize", "POST", {
+            content,
+            title: sessionTitle,
+            transcript: transcript.events,
+            metadata: transcriptMetadata
+          });
         } catch (e) {
           logger.error("Failed to finalize session via API", e);
         }
@@ -1600,7 +1936,9 @@ ${notepad}`;
       await this.saveState();
       return {
         status: "SESSION_FINALIZED",
-        archivePath: historyPath
+        archivePath: historyPath,
+        transcriptEvents: transcript.events.length,
+        transcriptSource: transcript.metadata.source
       };
     });
   }
@@ -1861,8 +2199,8 @@ var RagEngine = class {
 };
 
 // ../../src/local/indexer.ts
-import * as fs6 from "fs";
-import * as path4 from "path";
+import * as fs7 from "fs";
+import * as path5 from "path";
 import { createHash as createHash2 } from "crypto";
 var DEFAULT_IGNORE_DIRS = /* @__PURE__ */ new Set([
   ".git",
@@ -1940,17 +2278,17 @@ var SKIP_FILES = /* @__PURE__ */ new Set([
 var MAX_FILE_BYTES = 256 * 1024;
 var UPLOAD_BATCH = 40;
 function loadGitignore(root) {
-  const file = path4.join(root, ".gitignore");
+  const file = path5.join(root, ".gitignore");
   let patterns = [];
   try {
-    patterns = fs6.readFileSync(file, "utf8").split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
+    patterns = fs7.readFileSync(file, "utf8").split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
   } catch {
   }
   const exts = patterns.filter((p) => p.startsWith("*.")).map((p) => p.slice(1));
   const names = new Set(patterns.filter((p) => !p.includes("/") && !p.startsWith("*")).map((p) => p.replace(/\/$/, "")));
   const prefixes = patterns.filter((p) => p.includes("/")).map((p) => p.replace(/^\//, "").replace(/\/$/, ""));
   return (rel) => {
-    const base = path4.basename(rel);
+    const base = path5.basename(rel);
     if (names.has(base)) return true;
     if (exts.some((e) => rel.endsWith(e))) return true;
     if (prefixes.some((p) => rel === p || rel.startsWith(p + "/"))) return true;
@@ -1959,7 +2297,7 @@ function loadGitignore(root) {
 }
 function isBinaryPath(rel) {
   const lower = rel.toLowerCase();
-  if (SKIP_FILES.has(path4.basename(rel))) return true;
+  if (SKIP_FILES.has(path5.basename(rel))) return true;
   const ext = lower.includes(".") ? lower.slice(lower.lastIndexOf(".") + 1) : "";
   if (BINARY_EXT.has(ext)) return true;
   if (lower.endsWith(".min.js") || lower.endsWith(".min.css")) return true;
@@ -1970,10 +2308,10 @@ function walk(root, ignored) {
   const stack = ["."];
   while (stack.length) {
     const relDir = stack.pop();
-    const absDir = path4.join(root, relDir);
+    const absDir = path5.join(root, relDir);
     let entries;
     try {
-      entries = fs6.readdirSync(absDir, { withFileTypes: true });
+      entries = fs7.readdirSync(absDir, { withFileTypes: true });
     } catch {
       continue;
     }
@@ -2011,9 +2349,9 @@ async function indexCodebase(apiUrl2, apiSecret2, projectName, rootDir, logger2)
   const contentByPath = /* @__PURE__ */ new Map();
   for (const rel of relPaths) {
     try {
-      const stat = fs6.statSync(path4.join(rootDir, rel));
+      const stat = fs7.statSync(path5.join(rootDir, rel));
       if (stat.size > MAX_FILE_BYTES) continue;
-      const content = fs6.readFileSync(path4.join(rootDir, rel), "utf8");
+      const content = fs7.readFileSync(path5.join(rootDir, rel), "utf8");
       if (content.includes("\0")) continue;
       contentByPath.set(rel, content);
       manifest.push({ path: rel, hash: createHash2("sha256").update(content, "utf8").digest("hex") });
@@ -2039,13 +2377,13 @@ async function indexCodebase(apiUrl2, apiSecret2, projectName, rootDir, logger2)
 }
 
 // ../../src/local/mcp-server.ts
-import path6 from "path";
-import fs8 from "fs";
+import path7 from "path";
+import fs9 from "fs";
 
 // ../../src/local/local-search.ts
-import fs7 from "fs/promises";
+import fs8 from "fs/promises";
 import fsSync2 from "fs";
-import path5 from "path";
+import path6 from "path";
 import { spawnSync } from "child_process";
 var SKIP_DIRS = /* @__PURE__ */ new Set([
   "node_modules",
@@ -2234,17 +2572,17 @@ var PROJECT_ROOT_MARKERS = [
   "AGENTS.md"
 ];
 function detectProjectRoot(startDir) {
-  let current = path5.resolve(startDir);
-  const root = path5.parse(current).root;
+  let current = path6.resolve(startDir);
+  const root = path6.parse(current).root;
   while (current !== root) {
     for (const marker of PROJECT_ROOT_MARKERS) {
       try {
-        fsSync2.accessSync(path5.join(current, marker));
+        fsSync2.accessSync(path6.join(current, marker));
         return current;
       } catch {
       }
     }
-    const parent = path5.dirname(current);
+    const parent = path6.dirname(current);
     if (parent === current) break;
     current = parent;
   }
@@ -2256,7 +2594,7 @@ async function walkDir(dir, maxDepth = 12) {
     if (depth > maxDepth) return;
     let entries;
     try {
-      entries = await fs7.readdir(current, { withFileTypes: true });
+      entries = await fs8.readdir(current, { withFileTypes: true });
     } catch {
       return;
     }
@@ -2264,16 +2602,16 @@ async function walkDir(dir, maxDepth = 12) {
       if (entry.name.startsWith(".") && entry.name !== ".env.example") {
         if (SKIP_DIRS.has(entry.name) || entry.isDirectory()) continue;
       }
-      const fullPath = path5.join(current, entry.name);
+      const fullPath = path6.join(current, entry.name);
       if (entry.isDirectory()) {
         if (SKIP_DIRS.has(entry.name)) continue;
         await recurse(fullPath, depth + 1);
       } else if (entry.isFile()) {
         if (SKIP_FILENAMES.has(entry.name)) continue;
-        const ext = path5.extname(entry.name).toLowerCase();
+        const ext = path6.extname(entry.name).toLowerCase();
         if (SKIP_EXTENSIONS.has(ext)) continue;
         try {
-          const stat = await fs7.stat(fullPath);
+          const stat = await fs8.stat(fullPath);
           if (stat.size > MAX_FILE_SIZE || stat.size === 0) continue;
         } catch {
           continue;
@@ -2288,12 +2626,12 @@ async function walkDir(dir, maxDepth = 12) {
 async function searchFile(filePath, rootDir, keywords) {
   let content;
   try {
-    content = await fs7.readFile(filePath, "utf-8");
+    content = await fs8.readFile(filePath, "utf-8");
   } catch {
     return null;
   }
   const contentLower = content.toLowerCase();
-  const relativePath = path5.relative(rootDir, filePath);
+  const relativePath = path6.relative(rootDir, filePath);
   const matchedKeywords = keywords.filter((kw) => contentLower.includes(kw));
   if (matchedKeywords.length === 0) return null;
   const coverage = matchedKeywords.length / keywords.length;
@@ -2383,7 +2721,7 @@ function runRipgrep(pattern, cwd) {
     const match = line.match(/^(.+?):(\d+):(.+)$/);
     if (match) {
       const [, file, lineNum, content] = match;
-      const relPath = path5.relative(cwd, file);
+      const relPath = path6.relative(cwd, file);
       hits.push({
         file: relPath,
         line: parseInt(lineNum, 10),
@@ -2549,16 +2887,16 @@ if (process.env.SHARED_CONTEXT_API_URL || process.env.AXIS_API_KEY) {
 } else {
   const cwd = process.cwd();
   const possiblePaths = [
-    path6.join(cwd, ".env.local"),
-    path6.join(cwd, "..", ".env.local"),
-    path6.join(cwd, "..", "..", ".env.local"),
-    path6.join(cwd, "shared-context", ".env.local"),
-    path6.join(cwd, "..", "shared-context", ".env.local")
+    path7.join(cwd, ".env.local"),
+    path7.join(cwd, "..", ".env.local"),
+    path7.join(cwd, "..", "..", ".env.local"),
+    path7.join(cwd, "shared-context", ".env.local"),
+    path7.join(cwd, "..", "shared-context", ".env.local")
   ];
   let envLoaded = false;
   for (const envPath of possiblePaths) {
     try {
-      if (fs8.existsSync(envPath)) {
+      if (fs9.existsSync(envPath)) {
         logger.info(`[Fallback] Loading .env.local from: ${envPath}`);
         dotenv2.config({ path: envPath });
         envLoaded = true;
@@ -2752,21 +3090,21 @@ if (!useRemoteApiOnly && process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.SUP
 }
 async function ensureFileSystem() {
   try {
-    const fs9 = await import("fs/promises");
-    const path7 = await import("path");
+    const fs10 = await import("fs/promises");
+    const path8 = await import("path");
     const fsSync3 = await import("fs");
     const cwd = process.cwd();
     logger.info(`Server CWD: ${cwd}`);
-    const historyDir = path7.join(cwd, "history");
-    await fs9.mkdir(historyDir, { recursive: true }).catch(() => {
+    const historyDir = path8.join(cwd, "history");
+    await fs10.mkdir(historyDir, { recursive: true }).catch(() => {
     });
-    const axisDir = path7.join(cwd, ".axis");
-    const axisInstructions = path7.join(axisDir, "instructions");
-    const legacyInstructions = path7.join(cwd, "agent-instructions");
+    const axisDir = path8.join(cwd, ".axis");
+    const axisInstructions = path8.join(axisDir, "instructions");
+    const legacyInstructions = path8.join(cwd, "agent-instructions");
     if (fsSync3.existsSync(legacyInstructions) && !fsSync3.existsSync(axisDir)) {
       logger.info("Using legacy agent-instructions directory");
     } else {
-      await fs9.mkdir(axisInstructions, { recursive: true }).catch(() => {
+      await fs10.mkdir(axisInstructions, { recursive: true }).catch(() => {
       });
       const defaults = [
         ["context.md", `# Project Context
@@ -2820,11 +3158,11 @@ force_unlock is a LAST RESORT \u2014 only for locks >25 min old from a crashed a
         ["activity.md", "# Activity Log\n\n"]
       ];
       for (const [file, content] of defaults) {
-        const p = path7.join(axisInstructions, file);
+        const p = path8.join(axisInstructions, file);
         try {
-          await fs9.access(p);
+          await fs10.access(p);
         } catch {
-          await fs9.writeFile(p, content);
+          await fs10.writeFile(p, content);
           logger.info(`Created default context file: ${file}`);
         }
       }
@@ -3204,7 +3542,7 @@ function recordToolCall(name, args) {
       // Arg keys only, never values (privacy + log size).
       argKeys: args && typeof args === "object" ? Object.keys(args) : []
     };
-    fs8.appendFileSync(TOOL_LOG_PATH, JSON.stringify(entry) + "\n");
+    fs9.appendFileSync(TOOL_LOG_PATH, JSON.stringify(entry) + "\n");
   } catch {
   }
 }
@@ -3289,11 +3627,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       content = String(args.content);
     } else {
       try {
-        const projectRoot = path6.resolve(process.cwd());
-        const rebased = path6.isAbsolute(filePath) ? path6.join(projectRoot, filePath.replace(/^\/+/, "")) : path6.resolve(projectRoot, filePath);
-        const resolved = await fs8.promises.realpath(rebased).catch(() => rebased);
-        const rel = path6.relative(projectRoot, resolved);
-        if (rel.startsWith("..") || path6.isAbsolute(rel)) {
+        const projectRoot = path7.resolve(process.cwd());
+        const rebased = path7.isAbsolute(filePath) ? path7.join(projectRoot, filePath.replace(/^\/+/, "")) : path7.resolve(projectRoot, filePath);
+        const resolved = await fs9.promises.realpath(rebased).catch(() => rebased);
+        const rel = path7.relative(projectRoot, resolved);
+        if (rel.startsWith("..") || path7.isAbsolute(rel)) {
           return {
             content: [{ type: "text", text: `index_file: refusing to read ${filePath} \u2014 outside project root` }],
             isError: true
@@ -3316,7 +3654,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             isError: true
           };
         }
-        const stat = await fs8.promises.stat(resolved);
+        const stat = await fs9.promises.stat(resolved);
         const MAX_BYTES = 1024 * 1024;
         if (stat.size > MAX_BYTES) {
           return {
@@ -3324,7 +3662,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             isError: true
           };
         }
-        content = await fs8.promises.readFile(resolved, "utf-8");
+        content = await fs9.promises.readFile(resolved, "utf-8");
       } catch (e) {
         return {
           content: [{
@@ -3335,7 +3673,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
     }
-    const metaPath = path6.isAbsolute(filePath) ? path6.basename(filePath) : filePath;
+    const metaPath = path7.isAbsolute(filePath) ? path7.basename(filePath) : filePath;
     try {
       await manager.embedContent([{ content, metadata: { filePath: metaPath } }], nerveCenter.currentProjectName);
       return { content: [{ type: "text", text: "Indexed via Remote API." }] };
