@@ -12,7 +12,7 @@
   ],
   "scripts": {
     "start": "node dist/cli.js",
-    "build": "tsup bin/cli.ts --format cjs --out-dir dist --clean --shims && tsup ../../src/local/mcp-server.ts --format esm --out-dir dist",
+    "build": "tsup bin/index.ts bin/cli.ts --format cjs --out-dir dist --clean --shims && tsup ../../src/local/mcp-server.ts --format esm --out-dir dist",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {

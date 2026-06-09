@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { execFileSync } from "child_process";
-import { readFileSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import path from "path";
 import axisServerPackage from "../packages/axis-server/package.json";
 import rootPackage from "../package.json";
@@ -13,6 +13,13 @@ describe("@virsanghavi/axis-server package contents", () => {
         expect(axisServerPackage.files).not.toContain(".axis");
         expect(axisServerPackage.files).not.toContain(".axis-server.log");
         expect(axisServerPackage.files).not.toContain("bin");
+    });
+
+    test("published main entrypoint exists after build", () => {
+        expect(axisServerPackage.main).toBe("dist/index.js");
+        expect(
+            existsSync(path.join(repoRoot, "packages/axis-server", axisServerPackage.main))
+        ).toBe(true);
     });
 });
 
