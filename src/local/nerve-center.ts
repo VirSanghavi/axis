@@ -258,6 +258,16 @@ export class NerveCenter {
         await this.syncRemoteProjectState();
     }
 
+    /** The workspace this session is currently scoped to (see workspace-watch.ts). */
+    get activeProjectRoot(): string {
+        return this.projectRoot;
+    }
+
+    /** Current notepad content, for ambient team-update deltas (see team-updates.ts). */
+    get notepadSnapshot(): string {
+        return this.state.liveNotepad;
+    }
+
     async switchProject(identity: { root: string; projectName?: string }) {
         return await this.mutex.runExclusive(async () => {
             await this.saveState();
@@ -1307,6 +1317,44 @@ export class NerveCenter {
                 this.enforcedPerms.delete(p);
             }
         }
+    }
+
+    /**
+     * Batch lock acquisition: one round-trip for a multi-file edit (field
+     * report: the coordination-to-code ratio was too high when every file
+     * cost a separate call). All-or-nothing — if any file is denied, locks
+     * granted earlier in the batch are released so a partial set never
+     * blocks another agent.
+     *
+     * Each underlying acquisition stays atomic; this wrapper must not take
+     * the mutex itself (proposeFileAccess/releaseFileAccess already do).
+     */
+    async proposeFilesAccess(agentId: string, filePaths: string[], intent: string, userPrompt: string) {
+        const results: Array<{ filePath: string; status: string; message?: string }> = [];
+        const granted: string[] = [];
+        for (const filePath of filePaths) {
+            const result = await this.proposeFileAccess(agentId, filePath, intent, userPrompt) as { status: string; message?: string };
+            results.push({ filePath, status: result.status, message: result.message });
+            if (result.status === "GRANTED") {
+                granted.push(filePath);
+                continue;
+            }
+            for (const lockedPath of granted) {
+                await this.releaseFileAccess(agentId, lockedPath);
+            }
+            return {
+                status: result.status,
+                message: `Batch lock failed on '${filePath}' — ${result.message ?? "denied"}. `
+                    + `All-or-nothing: ${granted.length} lock(s) acquired earlier in this batch were released.`,
+                failedOn: filePath,
+                results
+            };
+        }
+        return {
+            status: "GRANTED",
+            message: `Access granted for ${filePaths.length} file(s).`,
+            results
+        };
     }
 
     async proposeFileAccess(agentId: string, filePath: string, intent: string, userPrompt: string) {

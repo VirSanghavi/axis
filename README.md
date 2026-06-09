@@ -68,9 +68,12 @@ PROJECT_NAME=default
     across repository switches. Set `AXIS_PROJECT_NAME` only when a project
     name must intentionally remain fixed across workspace changes.
 
-If you switch repositories inside the same MCP session, call `switch_project`
-with the new workspace root instead of reconnecting. It reloads the active
-project state in-process.
+Workspace switching is **automatic**: every tool call re-resolves the
+workspace from the runtime hints and from any absolute file path in the
+call's arguments. When either points at a different repository, the server
+rebinds itself in-process and notes the switch in the tool response — no
+restart, no stale "default" board. `switch_project` remains available for
+explicit switches.
 
 4.  **CLI Usage**:
     ```bash
@@ -114,7 +117,7 @@ The server exposes these tools to agents (23 total in the current source).
 - `claim_next_job` — atomically claim the next available job
 - `complete_job` — report a job outcome and release its file locks
 - `cancel_job` — withdraw a posted job
-- `propose_file_access` — pessimistically lock files before editing
+- `propose_file_access` — pessimistically lock files before editing; pass `filePaths` to lock a multi-file batch in one call (all-or-nothing)
 - `list_locks` — inspect active file ownership and intent
 - `verify_file_lock` — confirm a locked file wasn't changed under you before overwriting (tamper check)
 - `guarded_write` — enforced write: the server writes only if you hold the lock and the file is unchanged (rejects clobbers)
@@ -122,7 +125,7 @@ The server exposes these tools to agents (23 total in the current source).
 - `list_agents` — see which agents are active or idle on the project (visible before jobs are posted)
 - `switch_project` — rebind a live MCP session to another workspace without reconnecting
 - `force_unlock` — admin override for stale locks from crashed agents
-- `update_shared_context` — append to the Live Notepad
+- `update_shared_context` — append to the Live Notepad. Coordination tool responses also carry an ambient "team activity" trailer: whatever *other* agents logged since your last call, so nobody has to remember to re-read the notepad. `agentId` is optional on every tool — it defaults to the session's unique identity.
 - `finalize_session` — archive the session and clear all remaining locks
 
 ### Universal Session History

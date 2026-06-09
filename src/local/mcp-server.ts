@@ -18,6 +18,8 @@ import path from "path";
 import fs from "fs";
 import { localSearch } from "./local-search.js";
 import { resolveProjectIdentity } from "./project-identity.js";
+import { detectWorkspaceSwitch, describeSwitch } from "./workspace-watch.js";
+import { TeamUpdateTracker, formatTeamUpdates } from "./team-updates.js";
 
 // MCP servers receive configuration via environment variables passed by the MCP client (Cursor)
 // These come from the mcp.json config file, not from .env.local
@@ -121,6 +123,18 @@ const sessionIdentity = createSessionIdentity(process.env);
 // Tracks which agents are online/idle so workers started before jobs are posted
 // are visible to the orchestrator (see claim_next_job / list_agents).
 const presence = new PresenceRoster();
+
+// Per-agent notepad cursors: coordination calls return what OTHER agents did
+// since this agent's last call, as an ambient trailer (see team-updates.ts).
+const teamUpdates = new TeamUpdateTracker();
+
+// Tools whose responses carry the team-activity trailer. Read-mostly tools
+// (search, context reads) stay clean; coordination touchpoints get awareness.
+const TEAM_AWARE_TOOLS = new Set([
+  "post_job", "claim_job", "claim_next_job", "complete_job", "cancel_job", "list_jobs",
+  "propose_file_access", "release_file_access", "verify_file_lock", "guarded_write",
+  "list_locks", "update_shared_context",
+]);
 
 logger.info("=== Axis MCP Server Initialized ===");
 logger.info(`Session agent identity: ${sessionIdentity.id} (${sessionIdentity.source})`);
@@ -543,16 +557,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       // --- Decision & Orchestration ---
       {
         name: "propose_file_access",
-        description: "**CRITICAL: REQUEST FILE LOCK** — call this before EVERY file edit, no exceptions.\n- Returns `GRANTED` if safe to proceed, `REQUIRES_ORCHESTRATION` if another agent holds the lock, or `REJECTED` if you tried to lock a directory.\n- **Lock individual files, not directories.** Directory locks block parallel work and are rejected.\n- Paths can be absolute or relative — they're normalized against the project root.\n- Required: `agentId` (e.g. 'cursor-agent'), `filePath`, and `intent` (descriptive — 'Refactor auth to use JWT', NOT 'editing file').\n- Locks expire after 30 minutes. Use `force_unlock` only as a last resort for crashed agents.\n- **Every lock MUST be released.** `complete_job` releases the locks for that job; `finalize_session` releases everything. Dangling locks block all other agents.",
+        description: "**CRITICAL: REQUEST FILE LOCK** — call this before EVERY file edit, no exceptions.\n- Returns `GRANTED` if safe to proceed, `REQUIRES_ORCHESTRATION` if another agent holds the lock, or `REJECTED` if you tried to lock a directory.\n- **Lock individual files, not directories.** Directory locks block parallel work and are rejected.\n- Paths can be absolute or relative — they're normalized against the project root.\n- Required: `intent` (descriptive — 'Refactor auth to use JWT', NOT 'editing file') plus `filePath` or `filePaths`. `agentId` is optional (defaults to your session identity).\n- Editing several files? Pass `filePaths` to lock them in ONE call — all-or-nothing, so a partial batch never blocks others.\n- Locks expire after 30 minutes. Use `force_unlock` only as a last resort for crashed agents.\n- **Every lock MUST be released.** `complete_job` releases the locks for that job; `finalize_session` releases everything. Dangling locks block all other agents.",
         inputSchema: {
           type: "object",
           properties: {
-            agentId: { type: "string" },
-            filePath: { type: "string" },
+            agentId: { type: "string", description: "Optional — defaults to this session's unique identity." },
+            filePath: { type: "string", description: "One file to lock. Use `filePaths` instead for a multi-file batch." },
+            filePaths: { type: "array", items: { type: "string" }, description: "Lock several files in one call (all-or-nothing: on any denial, locks granted earlier in the batch are released)." },
             intent: { type: "string" },
             userPrompt: { type: "string", description: "Optional. The user prompt that triggered this lock, for audit trails. Server captures it best-effort if omitted." }
           },
-          required: ["agentId", "filePath", "intent"]
+          required: ["intent"]
         }
       },
       {
@@ -561,10 +576,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         inputSchema: {
           type: "object",
           properties: {
-            agentId: { type: "string" },
+            agentId: { type: "string", description: "Optional — defaults to this session's unique identity." },
             filePath: { type: "string" }
           },
-          required: ["agentId", "filePath"]
+          required: ["filePath"]
         }
       },
       {
@@ -578,10 +593,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         inputSchema: {
           type: "object",
           properties: {
-            agentId: { type: "string" },
+            agentId: { type: "string", description: "Optional — defaults to this session's unique identity." },
             filePath: { type: "string" }
           },
-          required: ["agentId", "filePath"]
+          required: ["filePath"]
         }
       },
       {
@@ -595,11 +610,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         inputSchema: {
           type: "object",
           properties: {
-            agentId: { type: "string" },
+            agentId: { type: "string", description: "Optional — defaults to this session's unique identity." },
             filePath: { type: "string" },
             content: { type: "string", description: "Full new file contents." }
           },
-          required: ["agentId", "filePath", "content"]
+          required: ["filePath", "content"]
         }
       },
       {
@@ -608,10 +623,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         inputSchema: {
           type: "object",
           properties: {
-            agentId: { type: "string" },
+            agentId: { type: "string", description: "Optional — defaults to this session's unique identity." },
             text: { type: "string" }
           },
-          required: ["agentId", "text"]
+          required: ["text"]
         }
       },
       // --- Permanent Memory ---
@@ -708,9 +723,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         inputSchema: {
           type: "object",
           properties: {
-            agentId: { type: "string" }
+            agentId: { type: "string", description: "Optional — defaults to this session's unique identity." }
           },
-          required: ["agentId"]
+          required: []
         }
       },
       {
@@ -719,10 +734,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         inputSchema: {
           type: "object",
           properties: {
-            agentId: { type: "string" },
+            agentId: { type: "string", description: "Optional — defaults to this session's unique identity." },
             jobId: { type: "string" }
           },
-          required: ["agentId", "jobId"]
+          required: ["jobId"]
         }
       },
       {
@@ -731,12 +746,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         inputSchema: {
           type: "object",
           properties: {
-            agentId: { type: "string" },
+            agentId: { type: "string", description: "Optional — defaults to this session's unique identity." },
             jobId: { type: "string" },
             outcome: { type: "string" },
             completionKey: { type: "string", description: "Optional key to authorize completion if not the assigned agent." }
           },
-          required: ["agentId", "jobId", "outcome"]
+          required: ["jobId", "outcome"]
         }
       },
       {
@@ -788,9 +803,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   // Normalize the caller's agentId onto this session's unique identity so
   // locks/jobs/notepad attribution can never collide across concurrent
-  // sessions that send the same generic id (e.g. "claude-code").
-  if (args && typeof (args as Record<string, unknown>).agentId === "string") {
-    const resolvedId = sessionIdentity.resolve((args as Record<string, unknown>).agentId as string);
+  // sessions that send the same generic id (e.g. "claude-code"). A missing
+  // agentId is not an error — it defaults to the session identity, since an
+  // explicit id would be normalized onto it anyway.
+  if (args && typeof args === "object") {
+    const provided = (args as Record<string, unknown>).agentId;
+    const resolvedId = sessionIdentity.resolve(
+      typeof provided === "string" && provided.trim() ? provided : sessionIdentity.id
+    );
     (args as Record<string, unknown>).agentId = resolvedId;
     captureAgent = resolvedId;
     // Record presence so the orchestrator can see active/idle agents.
@@ -800,7 +820,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   logger.info("Tool call", { name });
   recordToolCall(name, args);
 
-  return nerveCenter.captureToolExecution(name, args, captureAgent, async () => {
+  // ── Dynamic workspace switching ──
+  // Re-resolve the workspace on every call; if the client moved to another
+  // repository (runtime hints changed, or an absolute path argument lives in
+  // a disjoint project root), rebind in-process instead of serving the stale
+  // project until a restart. Explicit switch_project calls always win.
+  let workspaceNote: string | undefined;
+  if (name !== "switch_project") {
+    try {
+      const detected = detectWorkspaceSwitch(nerveCenter.activeProjectRoot, args, process.env);
+      if (detected) {
+        await nerveCenter.switchProject({ root: detected.root, projectName: detected.projectName });
+        teamUpdates.reset(); // cursors refer to the old project's notepad
+        workspaceNote = describeSwitch(detected);
+        logger.info("Auto workspace switch", detected);
+      }
+    } catch (e) {
+      // Detection must never break a tool call.
+      logger.warn(`Workspace auto-switch check failed: ${e}`);
+    }
+  }
+
+  const result = await nerveCenter.captureToolExecution(name, args, captureAgent, async () => {
   // ── Subscription gate (runs before ANY tool logic) ──
   // AXIS_SKIP_SUBSCRIPTION_CHECK=1 skips gate (for local/testing only)
   if (process.env.AXIS_SKIP_SUBSCRIPTION_CHECK === "1") {
@@ -1081,8 +1122,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === "propose_file_access") {
-    const { agentId, filePath, intent, userPrompt } = args as any;
-    const result = await nerveCenter.proposeFileAccess(agentId, filePath, intent, userPrompt);
+    const { agentId, filePath, filePaths, intent, userPrompt } = args as any;
+    const batch: string[] = Array.isArray(filePaths)
+      ? filePaths.filter((p: unknown): p is string => typeof p === "string")
+      : [];
+    if (batch.length === 0 && typeof filePath !== "string") {
+      return {
+        content: [{ type: "text", text: JSON.stringify({ status: "REJECTED", message: "Provide `filePath` (one file) or `filePaths` (a batch of files)." }) }],
+        isError: true
+      };
+    }
+    const result = batch.length > 0
+      ? await nerveCenter.proposeFilesAccess(agentId, batch, intent, userPrompt)
+      : await nerveCenter.proposeFileAccess(agentId, filePath, intent, userPrompt);
     return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   }
   if (name === "release_file_access") {
@@ -1206,6 +1258,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   throw new Error(`Tool not found: ${name}`);
   });
+
+  // Surface the auto-switch to the agent so it knows its coordination scope moved.
+  if (workspaceNote && result && Array.isArray((result as { content?: unknown[] }).content)) {
+    (result as { content: unknown[] }).content.push({ type: "text", text: workspaceNote });
+  }
+
+  // Ambient team context: piggyback what other agents did since this agent's
+  // last coordination call. Explicit lifecycle boundaries reset the cursors.
+  if (name === "switch_project" || name === "finalize_session") {
+    teamUpdates.reset();
+  } else if (TEAM_AWARE_TOOLS.has(name) && result && Array.isArray((result as { content?: unknown[] }).content)) {
+    try {
+      const delta = teamUpdates.drain(captureAgent, nerveCenter.notepadSnapshot);
+      if (delta) {
+        (result as { content: unknown[] }).content.push({ type: "text", text: formatTeamUpdates(delta) });
+      }
+    } catch (e) {
+      // Awareness must never break a tool call.
+      logger.warn(`Team-update drain failed: ${e}`);
+    }
+  }
+  return result;
 });
 
 async function main() {
