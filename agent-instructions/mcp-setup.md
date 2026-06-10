@@ -94,60 +94,135 @@ prompt when reaching for search.
 
 ### Configuration
 
-There are two ways to connect, easiest first. **Both are zero-install and
-nothing to update over time** — new tools land server-side.
+Every client connects to the same hosted URL — **zero-install, nothing to
+update over time**; new tools land server-side.
 
-#### Option A — One-click OAuth (recommended, no API key)
+Two auth modes, same URL for every client:
 
-Connect by URL and log in through the browser — the same flow as Supabase's MCP.
-You never paste or manage a key.
+- **OAuth (recommended):** add the server with no key; your client opens the
+  browser to log in. Axis is a full OAuth 2.1 authorization server (PKCE,
+  dynamic client registration, rotating refresh tokens) — clients discover it
+  automatically from `/api/mcp`.
+- **API key:** pass `Authorization: Bearer sk_sc_your_key` as a header. The
+  dashboard's **"Copy connect command"** button emits the right snippet
+  pre-filled with your key.
+
+#### Claude Code
 
 ```bash
-# 1. Add the server (no secret in the command)
+# OAuth (recommended)
 claude mcp add --scope project --transport http axis https://useaxis.dev/api/mcp
+claude /mcp     # select "axis" → Authenticate → log in in the browser
 
-# 2. Authenticate — run in a real terminal (not the IDE extension)
-claude /mcp        # select "axis" → Authenticate → log in in the browser
-```
-
-This works in any MCP client that supports remote-server OAuth (Claude Code,
-Cursor, etc.). Under the hood Axis is a full OAuth 2.1 authorization server
-(PKCE, dynamic client registration, rotating refresh tokens); your client
-discovers it automatically from `/api/mcp` and stores the resulting token for
-you. For stdio-only clients (incl. Codex), bridge with `mcp-remote` and it will
-run the same OAuth flow:
-
-```toml
-# ~/.codex/config.toml — Codex via the mcp-remote bridge (OAuth, no key)
-[mcp_servers.axis]
-command = "npx"
-args = ["-y", "mcp-remote", "https://useaxis.dev/api/mcp"]
-```
-
-#### Option B — Hosted with an API key (no OAuth client needed)
-
-If your client doesn't do OAuth, point it at the same URL and pass your key as a
-Bearer header. The dashboard has a **"Copy connect command"** button that emits
-this one-liner pre-filled with your key:
-
-```bash
+# or with an API key
 claude mcp add --transport http axis https://useaxis.dev/api/mcp \
   --header "Authorization: Bearer sk_sc_your_key"
 ```
 
+#### Cursor
+
+`.cursor/mcp.json` (project) or `~/.cursor/mcp.json` (global). Omit `headers`
+to use OAuth — Cursor shows a **Needs login** prompt on the server entry:
+
 ```jsonc
-// or as MCP config (native remote MCP)
-{ "mcpServers": { "axis": {
-  "url": "https://useaxis.dev/api/mcp",
-  "headers": { "Authorization": "Bearer sk_sc_your_key" }
-} } }
+{
+  "mcpServers": {
+    "axis": {
+      "url": "https://useaxis.dev/api/mcp",
+      "headers": { "Authorization": "Bearer sk_sc_your_key" }   // omit for OAuth
+    }
+  }
+}
 ```
 
+#### Windsurf
+
+`~/.codeium/windsurf/mcp_config.json` (or Settings → Cascade → MCP):
+
+```jsonc
+{
+  "mcpServers": {
+    "axis": {
+      "serverUrl": "https://useaxis.dev/api/mcp",
+      "headers": { "Authorization": "Bearer sk_sc_your_key" }
+    }
+  }
+}
+```
+
+#### VS Code (GitHub Copilot agent mode)
+
+`.vscode/mcp.json` — VS Code runs the OAuth flow itself when no header is set:
+
+```jsonc
+{
+  "servers": {
+    "axis": {
+      "type": "http",
+      "url": "https://useaxis.dev/api/mcp"
+    }
+  }
+}
+```
+
+#### Gemini CLI
+
+`~/.gemini/settings.json` (or `.gemini/settings.json` in the repo):
+
+```jsonc
+{
+  "mcpServers": {
+    "axis": {
+      "httpUrl": "https://useaxis.dev/api/mcp",
+      "headers": { "Authorization": "Bearer sk_sc_your_key" }
+    }
+  }
+}
+```
+
+#### Antigravity
+
+Agent panel → **⋯ → Manage MCP servers → View raw config**, then the same
+shape as Windsurf:
+
+```jsonc
+{
+  "mcpServers": {
+    "axis": {
+      "serverUrl": "https://useaxis.dev/api/mcp",
+      "headers": { "Authorization": "Bearer sk_sc_your_key" }
+    }
+  }
+}
+```
+
+#### Codex CLI
+
+Codex is stdio-first — bridge with `mcp-remote` in `~/.codex/config.toml`.
+Without the `--header` args it runs the browser OAuth flow:
+
 ```toml
-# Codex via mcp-remote bridge with a key
 [mcp_servers.axis]
 command = "npx"
-args = ["-y", "mcp-remote", "https://useaxis.dev/api/mcp", "--header", "Authorization: Bearer sk_sc_your_key"]
+args = ["-y", "mcp-remote", "https://useaxis.dev/api/mcp"]
+# API key instead of OAuth:
+# args = ["-y", "mcp-remote", "https://useaxis.dev/api/mcp", "--header", "Authorization: Bearer sk_sc_your_key"]
+```
+
+#### Anything else (Cline, Zed, JetBrains, …)
+
+Any stdio-only MCP client connects through the same `mcp-remote` bridge —
+use the client's "command + args" MCP config with:
+
+```jsonc
+{
+  "mcpServers": {
+    "axis": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://useaxis.dev/api/mcp"]
+    }
+  }
+}
 ```
 
 **Project auto-detection:** the project name is derived from your **repo root**
