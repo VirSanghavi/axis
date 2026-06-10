@@ -121,7 +121,11 @@ claude mcp add --transport http axis https://useaxis.dev/api/mcp \
 
 #### Cursor
 
-`.cursor/mcp.json` (project) or `~/.cursor/mcp.json` (global). Omit `headers`
+One-click install (opens Cursor, adds the server, OAuth on first use):
+
+[**Add Axis to Cursor**](cursor://anysphere.cursor-deeplink/mcp/install?name=axis&config=eyJ1cmwiOiJodHRwczovL3VzZWF4aXMuZGV2L2FwaS9tY3AifQ==)
+
+Or `.cursor/mcp.json` (project) / `~/.cursor/mcp.json` (global). Omit `headers`
 to use OAuth — Cursor shows a **Needs login** prompt on the server entry:
 
 ```jsonc
@@ -137,7 +141,8 @@ to use OAuth — Cursor shows a **Needs login** prompt on the server entry:
 
 #### Windsurf
 
-`~/.codeium/windsurf/mcp_config.json` (or Settings → Cascade → MCP):
+No CLI — config file only. `~/.codeium/windsurf/mcp_config.json` (or
+Settings → Cascade → MCP):
 
 ```jsonc
 {
@@ -152,7 +157,11 @@ to use OAuth — Cursor shows a **Needs login** prompt on the server entry:
 
 #### VS Code (GitHub Copilot agent mode)
 
-`.vscode/mcp.json` — VS Code runs the OAuth flow itself when no header is set:
+```bash
+code --add-mcp '{"name":"axis","type":"http","url":"https://useaxis.dev/api/mcp"}'
+```
+
+Or `.vscode/mcp.json` — VS Code runs the OAuth flow itself when no header is set:
 
 ```jsonc
 {
@@ -167,7 +176,16 @@ to use OAuth — Cursor shows a **Needs login** prompt on the server entry:
 
 #### Gemini CLI
 
-`~/.gemini/settings.json` (or `.gemini/settings.json` in the repo):
+```bash
+# OAuth (browser login on first use)
+gemini mcp add --transport http axis https://useaxis.dev/api/mcp
+
+# or with an API key
+gemini mcp add --transport http axis https://useaxis.dev/api/mcp \
+  --header "Authorization: Bearer sk_sc_your_key"
+```
+
+Or `~/.gemini/settings.json` (or `.gemini/settings.json` in the repo):
 
 ```jsonc
 {
@@ -182,8 +200,8 @@ to use OAuth — Cursor shows a **Needs login** prompt on the server entry:
 
 #### Antigravity
 
-Agent panel → **⋯ → Manage MCP servers → View raw config**, then the same
-shape as Windsurf:
+No CLI — agent panel → **⋯ → Manage MCP servers → View raw config**, then the
+same shape as Windsurf:
 
 ```jsonc
 {
@@ -198,15 +216,20 @@ shape as Windsurf:
 
 #### Codex CLI
 
-Codex is stdio-first — bridge with `mcp-remote` in `~/.codex/config.toml`.
-Without the `--header` args it runs the browser OAuth flow:
+```bash
+# OAuth
+codex mcp add axis --url https://useaxis.dev/api/mcp
+codex mcp login axis        # opens the browser
 
-```toml
-[mcp_servers.axis]
-command = "npx"
-args = ["-y", "mcp-remote", "https://useaxis.dev/api/mcp"]
-# API key instead of OAuth:
-# args = ["-y", "mcp-remote", "https://useaxis.dev/api/mcp", "--header", "Authorization: Bearer sk_sc_your_key"]
+# or with an API key (read from an env var, never stored in config)
+export AXIS_API_KEY=sk_sc_your_key
+codex mcp add axis --url https://useaxis.dev/api/mcp --bearer-token-env-var AXIS_API_KEY
+```
+
+Older Codex versions without `--url` support can bridge with `mcp-remote`:
+
+```bash
+codex mcp add axis -- npx -y mcp-remote https://useaxis.dev/api/mcp
 ```
 
 #### Anything else (Cline, Zed, JetBrains, …)
