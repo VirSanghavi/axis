@@ -34,16 +34,22 @@ export class TeamUpdateTracker {
         // Shrinking notepad means a finalize/switch reset — nothing to replay.
         if (notepad.length <= last) return null;
 
-        const foreign = notepad
-            .slice(last)
-            .split("\n")
-            .filter((line) => {
-                const trimmed = line.trim();
-                // Session ids carry a unique suffix, so containment is a safe
-                // self-authorship test across every entry format the nerve
-                // center writes ("Agent 'x'", "- [x]", "[UNLOCK] x released").
-                return trimmed.length > 0 && !trimmed.includes(agentId);
-            });
+        // Filter whole ENTRIES, not lines: notepad entries start with "- ["
+        // and may carry indented continuation lines ("  Intent: ...",
+        // "  Outcome: ..."). Per-line filtering leaked those continuations
+        // back to their own author (observed live: an agent's lock trailer
+        // echoed its own intent). Authorship is decided at the entry head —
+        // session ids carry a unique suffix, so containment is a safe test
+        // across every entry format the nerve center writes.
+        const foreign: string[] = [];
+        let skippingOwnEntry = false;
+        for (const line of notepad.slice(last).split("\n")) {
+            const trimmed = line.trim();
+            if (trimmed.length === 0) continue;
+            const isEntryHead = !line.startsWith(" ") && !line.startsWith("\t");
+            if (isEntryHead) skippingOwnEntry = trimmed.includes(agentId);
+            if (!skippingOwnEntry) foreign.push(line);
+        }
         if (foreign.length === 0) return null;
         return clipTail(foreign.join("\n"));
     }

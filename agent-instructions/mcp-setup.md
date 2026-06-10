@@ -94,8 +94,8 @@ prompt when reaching for search.
 
 ### Configuration
 
-There are three ways to connect, easiest first. **All of them are zero-install
-and nothing to update over time** except the legacy npm option.
+There are two ways to connect, easiest first. **Both are zero-install and
+nothing to update over time** — new tools land server-side.
 
 #### Option A — One-click OAuth (recommended, no API key)
 
@@ -150,42 +150,15 @@ command = "npx"
 args = ["-y", "mcp-remote", "https://useaxis.dev/api/mcp", "--header", "Authorization: Bearer sk_sc_your_key"]
 ```
 
-#### Option C — Local npm server (legacy)
-
-Runs the server on your machine via stdio. **You only need your Axis API key** —
-the API URL defaults to the hosted backend (`https://useaxis.dev/api/v1`), the
-project name is auto-derived from the working directory, and no Supabase/OpenAI
-keys are needed locally (all of that lives server-side). Note this path requires
-`npm` updates to get new tools, and `deep_search` is hosted-only.
-
-```jsonc
-// .cursor/mcp.json, ~/.claude.json / .mcp.json, or windsurf mcp_config.json
-{
-  "mcpServers": {
-    "axis": {
-      "command": "npx",
-      "args": ["-y", "@virsanghavi/axis-server"],
-      "env": { "AXIS_API_KEY": "sk_sc_your_key" }
-    }
-  }
-}
-```
-
-```toml
-# ~/.codex/config.toml
-[mcp_servers.axis]
-command = "npx"
-args = ["-y", "@virsanghavi/axis-server"]
-env = { AXIS_API_KEY = "sk_sc_your_key" }
-```
-
 **Project auto-detection:** the project name is derived from your **repo root**
 (nearest `.git`/`package.json` walking up), so every repo maps to its own Axis
-project automatically and launching from a subdirectory still resolves to the
-same project. Override only if you want to — set `PROJECT_NAME`, or commit a
-`.axis/axis.json` with `{ "project": "name" }`.
+project automatically. Override only if you want to — commit a
+`.axis/axis.json` with `{ "project": "name" }` so every teammate's agents
+coordinate on the same project.
 
-### Running the Server (local dev)
+### Running the Server (contributors only)
+
+Only needed when developing Axis itself — users never run a local server:
 
 ```bash
 cd shared-context
@@ -194,35 +167,18 @@ AXIS_API_KEY=sk_sc_your_key npx tsx src/local/mcp-server.ts
 
 ### Indexing your codebase
 
-`search_codebase`/`deep_search` only return what's been indexed. Populate the
-index once (and refresh after big changes) with the CLI — it walks the repo,
-respects `.gitignore`, and is **incremental + content-hashed**, so re-runs only
-upload changed files:
-
-```bash
-AXIS_API_KEY=sk_sc_your_key npx @virsanghavi/axis-server index
-# optional: index a specific path / project
-AXIS_API_KEY=sk_sc_your_key npx @virsanghavi/axis-server index ./packages/api --project my-api
-```
-
-Agents keep it fresh in-session by calling the `index_codebase` tool after they
-write files. Great as a pre-commit/CI step too — it's cheap when nothing changed.
+`search_codebase`/`deep_search` only return what's been indexed. Ask any
+connected agent to call the `index_codebase` tool once (and again after big
+changes) — it walks the repo, respects `.gitignore`, and is **incremental +
+content-hashed**, so re-runs only upload changed files. Agents keep the index
+fresh in-session by calling `index_file` after they write files.
 
 ## Tools Reference
 
-Axis exposes two MCP surfaces. **They are not the same tool set** — pick the
-one that matches how your agent connects, and don't be surprised when your
-client shows a different number than the other side of this doc claims.
-
-| Surface | Endpoint | Tool count | Recommended for |
-|---------|----------|------------|-----------------|
-| **Hosted** | `https://useaxis.dev/api/mcp` (HTTP MCP, OAuth or API key) | **17** | Paying companies / teams. Includes `deep_search`, `claim_job`, `list_jobs`, `list_locks`, `release_file_access`, `get_shared_context`. |
-| **Local npx wrapper** | `npx @virsanghavi/axis-server` (stdio) | **18** | Solo dev / offline / legacy. Includes `get_project_soul`, `update_project_soul`, `read_context`, `update_context`, `search_docs`, `index_file`, `force_unlock`. |
-
-The two surfaces share 11 tools (the orchestration + billing core). The rest
-differ. If your `/mcp` client shows ~16, you're on the local wrapper (and
-possibly on `< 1.12.0` which had a duplicate `search_codebase` registration
-that clients dedupe down to 17 instead of 18 — `npm i -g @virsanghavi/axis-server@latest` to fix).
+All agents connect to the hosted surface at `https://useaxis.dev/api/mcp`
+(HTTP MCP, OAuth or API key) — **17 tools** including `deep_search`,
+`claim_job`, `list_jobs`, `list_locks`, `release_file_access`, and
+`get_shared_context`.
 
 Every tool is scoped to your account (and active **org**) by your OAuth token
 or API key. Most hosted tools accept an optional `projectName` (defaults to

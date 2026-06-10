@@ -48,18 +48,16 @@ PROJECT_NAME=default
     bun start:local
     ```
   This stdio server exposes the full Nerve Center toolset (job board, locks, notepad).
-    
-    *Address for MCP Clients*: Since it runs on stdio, configure your agent (e.g., in `claude_desktop_config.json` or Cursor settings) to launch the published wrapper — no local checkout required:
-    ```json
-    {
-      "mcpServers": {
-        "axis": {
-          "command": "npx",
-          "args": ["-y", "@virsanghavi/axis-server"]
-        }
-      }
-    }
+    Running from a checkout is for **contributing to Axis itself** — users connect
+    to the hosted server instead (next paragraph).
+
+    *Address for MCP Clients*: point your agent at the hosted MCP server — no
+    install, no updates to manage:
     ```
+    https://useaxis.dev/api/mcp
+    ```
+    Authenticate via OAuth or a Bearer API key; see
+    [agent-instructions/mcp-setup.md](agent-instructions/mcp-setup.md).
 
     Axis derives project identity from the active repository. Supported agent
     hosts can provide `AXIS_WORKSPACE_ROOT`, `SUPERSET_WORKSPACE_PATH`, or
@@ -90,19 +88,18 @@ The key to Axis is the **Parallel Sprints**. You no longer have to manage a sing
 3.  **Horizontal Scaling**: You open Cursor, Claude Code, and Antigravity. They all instantly "claim" the next available job on the board.
 4.  **Synchronized Execution**: While agents work in parallel, they stay in sync via the **Live Notepad**, ensuring that if one agent changes an API signature, the others adjust their code in real-time.
 
-### Local Integration (MCP)
-Configure your IDE (Claude Desktop, Cursor, etc.) to launch the published wrapper over stdio:
+### Connecting Agents (MCP)
+Point your IDE (Claude Desktop, Cursor, etc.) at the hosted MCP server:
 ```json
 {
   "mcpServers": {
     "axis": {
-      "command": "npx",
-      "args": ["-y", "@virsanghavi/axis-server"]
+      "url": "https://useaxis.dev/api/mcp"
     }
   }
 }
 ```
-For the **hosted** backend (recommended for teams), point at `https://useaxis.dev/api/mcp` with a Bearer key instead — see [agent-instructions/mcp-setup.md](agent-instructions/mcp-setup.md).
+Authenticate via OAuth (no key to manage) or a Bearer API key — see [agent-instructions/mcp-setup.md](agent-instructions/mcp-setup.md). New tools land server-side, so there is nothing to update on your machine.
 
 ### MCP Tooling
 The server exposes these tools to agents (23 total in the current source).

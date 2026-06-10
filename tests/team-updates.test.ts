@@ -32,6 +32,21 @@ describe("TeamUpdateTracker.drain", () => {
         expect(t.drain(A, notepad)).toBeNull();
     });
 
+    test("continuation lines of own entries never leak (the live lock-intent echo)", () => {
+        const t = new TeamUpdateTracker();
+        let notepad = "Session Start\n";
+        t.drain(A, notepad);
+
+        notepad += `- [LOCK] ${A} locked README.md\n  Intent: remove npm path from docs\n`;
+        expect(t.drain(A, notepad)).toBeNull();
+
+        // A foreign multi-line entry keeps its continuation lines intact.
+        notepad += `- [LOCK] ${B} locked src/api.ts\n  Intent: refactor auth flow\n`;
+        const delta = t.drain(A, notepad);
+        expect(delta).toContain("refactor auth flow");
+        expect(delta).not.toContain("remove npm path");
+    });
+
     test("mixed entries are filtered to foreign lines only", () => {
         const t = new TeamUpdateTracker();
         let notepad = "Session Start\n";
