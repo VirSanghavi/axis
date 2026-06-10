@@ -925,7 +925,12 @@ export class NerveCenter {
             if (this.contextManager.apiUrl) {
                 try {
                     const data = await this.callCoordination("jobs", "POST", {
-                        action: "claim",
+                        // The hosted API treats "claim" as claim-NEXT and silently
+                        // ignores jobId — a specific claim must be "claim_by_id"
+                        // (claim_specific_job RPC). Sending "claim" here was the
+                        // live mis-claim bug: agents asked for one job and were
+                        // handed the head of the queue.
+                        action: "claim_by_id",
                         jobId,
                         agentId
                     }) as any;
@@ -936,6 +941,16 @@ export class NerveCenter {
                     await this.appendToNotepad(`\n- [JOB CLAIMED] Agent '${agentId}' picked up: ${claimed.title}`);
                     return { status: "CLAIMED", job: claimed };
                 } catch (e: any) {
+                    // The API maps NOT_FOUND→404 and BLOCKED_BY_DEPENDENCIES→409,
+                    // which callCoordination surfaces as thrown errors. Recover the
+                    // structured body so callers see a status, not a raw HTTP error.
+                    const jsonMatch = typeof e.message === "string" ? e.message.match(/\{.*\}/s) : null;
+                    if (jsonMatch) {
+                        try {
+                            const parsed = JSON.parse(jsonMatch[0]);
+                            if (parsed.status) return parsed;
+                        } catch { /* fall through to the generic error */ }
+                    }
                     return { status: "ERROR", message: `Claim failed: ${e.message}` };
                 }
             }
@@ -1110,9 +1125,22 @@ export class NerveCenter {
                     .eq("file_path", filePath);
             } else if (this.contextManager.apiUrl) {
                 try {
-                    await this.callCoordination("locks", "POST", { action: "unlock", filePath, reason });
+                    // Deliberate admin override — distinct from a scoped "unlock"
+                    // so the server can tell an owner-release (agent_id-scoped
+                    // delete) from a force-unlock and audit them differently.
+                    await this.callCoordination("locks", "POST", { action: "force_unlock", filePath, reason });
                 } catch (e: any) {
-                    logger.error("Failed to force unlock via API", e);
+                    // Older deployed servers only know "unlock" — fall back so
+                    // force-unlock keeps working across the deploy boundary.
+                    if (typeof e.message === "string" && e.message.includes("Invalid action")) {
+                        try {
+                            await this.callCoordination("locks", "POST", { action: "unlock", filePath, reason });
+                        } catch (legacyError: any) {
+                            logger.error("Failed to force unlock via API (legacy path)", legacyError);
+                        }
+                    } else {
+                        logger.error("Failed to force unlock via API", e);
+                    }
                 }
             }
 
@@ -1407,6 +1435,18 @@ export class NerveCenter {
                             status: "REJECTED",
                             message: result.message
                                 || `Lock rejected for '${normalizedPath}'. Lock an individual file (not a directory) inside the project root.`
+                        };
+                    }
+
+                    // Defense-in-depth: a GRANTED echo must be attributed to *us*.
+                    // A mismatch means the server granted a different agent (or
+                    // mangled attribution) — do not proceed to write on it.
+                    const echoedAgent = (result as { agent_id?: string }).agent_id;
+                    if (echoedAgent && echoedAgent !== agentId) {
+                        logger.error(`[proposeFileAccess] Grant attribution mismatch: server echoed '${echoedAgent}', expected '${agentId}'`);
+                        return {
+                            status: "REQUIRES_ORCHESTRATION",
+                            message: `Lock grant attribution mismatch for '${normalizedPath}': server attributed the grant to '${echoedAgent}'. Re-sync (list_locks) and retry.`
                         };
                     }
 
