@@ -30,6 +30,20 @@ describe("resolveAgentId", () => {
         expect(resolveAgentId("cursor-agent", {}, "abc")).toBe("cursor-agent-abc");
     });
 
+    test("is idempotent: an already-resolved id is not re-suffixed", () => {
+        // Regression: an agent that echoes back the resolved id it saw at claim
+        // time (e.g. from job.assigned_to or the notepad) must resolve to the
+        // SAME id, or completeJob's `assignedTo === agentId` owner check fails
+        // and locks it out of completing its own job.
+        expect(resolveAgentId("claude-code-abc", {}, "abc")).toBe("claude-code-abc");
+        expect(resolveAgentId("cursor-agent-sess1", {}, "sess1")).toBe("cursor-agent-sess1");
+        // The bare token alone (defensive) also passes through.
+        expect(resolveAgentId("abc", {}, "abc")).toBe("abc");
+        // A foreign session's id (different token) is still treated as a label
+        // and pinned to THIS session's token, preserving cross-session uniqueness.
+        expect(resolveAgentId("claude-code-other", {}, "abc")).toBe("claude-code-other-abc");
+    });
+
     test("two sessions with the same requested id get distinct ids", () => {
         // This is the core fix: shared 'claude-code' no longer collides, so
         // findExactConflict correctly treats the other session's lock as foreign.
@@ -79,6 +93,16 @@ describe("createSessionIdentity", () => {
         expect(first).toBe(session.id);
         expect(first).toBe("claude-code-fixed");
         expect(session.source).toBe("derived");
+    });
+
+    test("resolve() round-trips its own output (claim -> complete echo)", () => {
+        // End-to-end of the lockout bug: the id stored at claim time and the id
+        // produced when the agent echoes it back at complete time must match.
+        const session = createSessionIdentity({ CLAUDECODE: "1" });
+        const claimId = session.resolve();          // stored as job.assignedTo
+        const completeId = session.resolve(claimId); // agent echoes it back
+        expect(completeId).toBe(claimId);
+        expect(session.resolve(session.id)).toBe(session.id);
     });
 
     test("explicit override reports source and ignores incoming ids", () => {
