@@ -978,6 +978,14 @@ var NerveCenter = class _NerveCenter {
     }
     await this.syncRemoteProjectState();
   }
+  /** The workspace this session is currently scoped to (see workspace-watch.ts). */
+  get activeProjectRoot() {
+    return this.projectRoot;
+  }
+  /** Current notepad content, for ambient team-update deltas (see team-updates.ts). */
+  get notepadSnapshot() {
+    return this.state.liveNotepad;
+  }
   async switchProject(identity) {
     return await this.mutex.runExclusive(async () => {
       await this.saveState();
@@ -1488,7 +1496,12 @@ var NerveCenter = class _NerveCenter {
       if (this.contextManager.apiUrl) {
         try {
           const data = await this.callCoordination("jobs", "POST", {
-            action: "claim",
+            // The hosted API treats "claim" as claim-NEXT and silently
+            // ignores jobId — a specific claim must be "claim_by_id"
+            // (claim_specific_job RPC). Sending "claim" here was the
+            // live mis-claim bug: agents asked for one job and were
+            // handed the head of the queue.
+            action: "claim_by_id",
             jobId,
             agentId
           });
@@ -1500,6 +1513,14 @@ var NerveCenter = class _NerveCenter {
 - [JOB CLAIMED] Agent '${agentId}' picked up: ${claimed.title}`);
           return { status: "CLAIMED", job: claimed };
         } catch (e) {
+          const jsonMatch = typeof e.message === "string" ? e.message.match(/\{.*\}/s) : null;
+          if (jsonMatch) {
+            try {
+              const parsed = JSON.parse(jsonMatch[0]);
+              if (parsed.status) return parsed;
+            } catch {
+            }
+          }
           return { status: "ERROR", message: `Claim failed: ${e.message}` };
         }
       }
@@ -1641,9 +1662,17 @@ var NerveCenter = class _NerveCenter {
         await this.supabase.from("locks").delete().eq("project_id", this._projectId).eq("file_path", filePath);
       } else if (this.contextManager.apiUrl) {
         try {
-          await this.callCoordination("locks", "POST", { action: "unlock", filePath, reason });
+          await this.callCoordination("locks", "POST", { action: "force_unlock", filePath, reason });
         } catch (e) {
-          logger.error("Failed to force unlock via API", e);
+          if (typeof e.message === "string" && e.message.includes("Invalid action")) {
+            try {
+              await this.callCoordination("locks", "POST", { action: "unlock", filePath, reason });
+            } catch (legacyError) {
+              logger.error("Failed to force unlock via API (legacy path)", legacyError);
+            }
+          } else {
+            logger.error("Failed to force unlock via API", e);
+          }
         }
       }
       if (this.state.locks[filePath]) {
@@ -1820,6 +1849,42 @@ ${notepad}`;
       }
     }
   }
+  /**
+   * Batch lock acquisition: one round-trip for a multi-file edit (field
+   * report: the coordination-to-code ratio was too high when every file
+   * cost a separate call). All-or-nothing — if any file is denied, locks
+   * granted earlier in the batch are released so a partial set never
+   * blocks another agent.
+   *
+   * Each underlying acquisition stays atomic; this wrapper must not take
+   * the mutex itself (proposeFileAccess/releaseFileAccess already do).
+   */
+  async proposeFilesAccess(agentId, filePaths, intent, userPrompt) {
+    const results = [];
+    const granted = [];
+    for (const filePath of filePaths) {
+      const result = await this.proposeFileAccess(agentId, filePath, intent, userPrompt);
+      results.push({ filePath, status: result.status, message: result.message });
+      if (result.status === "GRANTED") {
+        granted.push(filePath);
+        continue;
+      }
+      for (const lockedPath of granted) {
+        await this.releaseFileAccess(agentId, lockedPath);
+      }
+      return {
+        status: result.status,
+        message: `Batch lock failed on '${filePath}' \u2014 ${result.message ?? "denied"}. All-or-nothing: ${granted.length} lock(s) acquired earlier in this batch were released.`,
+        failedOn: filePath,
+        results
+      };
+    }
+    return {
+      status: "GRANTED",
+      message: `Access granted for ${filePaths.length} file(s).`,
+      results
+    };
+  }
   async proposeFileAccess(agentId, filePath, intent, userPrompt) {
     return await this.mutex.runExclusive(async () => {
       logger.info(`[proposeFileAccess] Starting - agentId: ${agentId}, filePath: ${filePath}`);
@@ -1858,6 +1923,14 @@ ${notepad}`;
             return {
               status: "REJECTED",
               message: result.message || `Lock rejected for '${normalizedPath}'. Lock an individual file (not a directory) inside the project root.`
+            };
+          }
+          const echoedAgent = result.agent_id;
+          if (echoedAgent && echoedAgent !== agentId) {
+            logger.error(`[proposeFileAccess] Grant attribution mismatch: server echoed '${echoedAgent}', expected '${agentId}'`);
+            return {
+              status: "REQUIRES_ORCHESTRATION",
+              message: `Lock grant attribution mismatch for '${normalizedPath}': server attributed the grant to '${echoedAgent}'. Re-sync (list_locks) and retry.`
             };
           }
           logger.info(`[proposeFileAccess] GRANTED by server`);
@@ -2262,6 +2335,9 @@ function resolveAgentId(requestedId, env, token) {
   const explicit = env.AXIS_AGENT_ID?.trim();
   if (explicit) return explicit;
   const requestedBase = normalizeBase(requestedId);
+  if (requestedBase === token || requestedBase.endsWith(`-${token}`)) {
+    return requestedBase;
+  }
   const base = requestedBase !== "agent" ? requestedBase : detectHostBase(env) || normalizeBase(env.AXIS_AGENT_BASE);
   return `${base}-${token}`;
 }
@@ -2566,8 +2642,8 @@ async function indexCodebase(apiUrl2, apiSecret2, projectName, rootDir, logger2)
 }
 
 // ../../src/local/mcp-server.ts
-import path7 from "path";
-import fs9 from "fs";
+import path8 from "path";
+import fs10 from "fs";
 
 // ../../src/local/local-search.ts
 import fs8 from "fs/promises";
@@ -3070,22 +3146,137 @@ async function localSearch(query, rootDir) {
 Try different terms or check if the code exists in this project.`;
 }
 
+// ../../src/local/workspace-watch.ts
+import fs9 from "fs";
+import path7 from "path";
+var PATH_ARG_KEYS = ["filePath", "filePaths"];
+function existingDirectory2(candidate) {
+  if (!candidate) return void 0;
+  const resolved = path7.resolve(candidate);
+  try {
+    return fs9.statSync(resolved).isDirectory() ? resolved : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function pathArguments(args) {
+  if (!args || typeof args !== "object") return [];
+  const record = args;
+  const out = [];
+  for (const key of PATH_ARG_KEYS) {
+    const value = record[key];
+    if (typeof value === "string") out.push(value);
+    if (Array.isArray(value)) {
+      for (const item of value) if (typeof item === "string") out.push(item);
+    }
+  }
+  return out.filter((p) => path7.isAbsolute(p));
+}
+function disjointRoots(a, b) {
+  const ra = path7.resolve(a);
+  const rb = path7.resolve(b);
+  return ra !== rb && !ra.startsWith(rb + path7.sep) && !rb.startsWith(ra + path7.sep);
+}
+function detectWorkspaceSwitch(currentRoot, args, env = process.env) {
+  const active = path7.resolve(currentRoot);
+  const hint = env.AXIS_WORKSPACE_ROOT || env.SUPERSET_WORKSPACE_PATH || env.SUPERSET_ROOT_PATH;
+  const hintDir = existingDirectory2(hint);
+  if (hintDir) {
+    const hintRoot = path7.resolve(findProjectRoot(hintDir));
+    if (hintRoot !== active) {
+      return {
+        root: hintRoot,
+        projectName: deriveProjectName(hintRoot),
+        reason: "runtime-hint",
+        trigger: hint
+      };
+    }
+    return null;
+  }
+  for (const candidate of pathArguments(args)) {
+    const dir = existingDirectory2(candidate) ?? existingDirectory2(path7.dirname(candidate));
+    if (!dir) continue;
+    const candidateRoot = path7.resolve(findProjectRoot(dir));
+    if (disjointRoots(candidateRoot, active)) {
+      return {
+        root: candidateRoot,
+        projectName: deriveProjectName(candidateRoot),
+        reason: "file-path",
+        trigger: candidate
+      };
+    }
+  }
+  return null;
+}
+function describeSwitch(s) {
+  return [
+    `\u26A0 Workspace switched automatically: now scoped to project "${s.projectName}" at ${s.root}.`,
+    `Trigger: ${s.reason} (${s.trigger}).`,
+    `Locks, jobs, and the notepad now refer to this project.`
+  ].join(" ");
+}
+
+// ../../src/local/team-updates.ts
+var MAX_TRAILER_CHARS = 1500;
+var TeamUpdateTracker = class {
+  /** agentId → notepad length already delivered to that agent. */
+  cursors = /* @__PURE__ */ new Map();
+  /**
+   * Return notepad content appended by other agents since `agentId`'s last
+   * drain, or null when there is nothing new for them.
+   *
+   * The first call only establishes the cursor and returns null — a freshly
+   * joined agent should not be greeted with the whole session history.
+   */
+  drain(agentId, notepad) {
+    const last = this.cursors.get(agentId);
+    this.cursors.set(agentId, notepad.length);
+    if (last === void 0) return null;
+    if (notepad.length <= last) return null;
+    const foreign = [];
+    let skippingOwnEntry = false;
+    for (const line of notepad.slice(last).split("\n")) {
+      const trimmed = line.trim();
+      if (trimmed.length === 0) continue;
+      const isEntryHead = !line.startsWith(" ") && !line.startsWith("	");
+      if (isEntryHead) skippingOwnEntry = trimmed.includes(agentId);
+      if (!skippingOwnEntry) foreign.push(line);
+    }
+    if (foreign.length === 0) return null;
+    return clipTail(foreign.join("\n"));
+  }
+  /** Forget all cursors (project switch / session finalize). */
+  reset() {
+    this.cursors.clear();
+  }
+};
+function clipTail(text) {
+  if (text.length <= MAX_TRAILER_CHARS) return text;
+  const tail = text.slice(-MAX_TRAILER_CHARS);
+  const firstNewline = tail.indexOf("\n");
+  return "\u2026 (earlier updates truncated)\n" + (firstNewline >= 0 ? tail.slice(firstNewline + 1) : tail);
+}
+function formatTeamUpdates(delta) {
+  return `\u{1F4E2} Team activity since your last call:
+${delta}`;
+}
+
 // ../../src/local/mcp-server.ts
 if (process.env.SHARED_CONTEXT_API_URL || process.env.AXIS_API_KEY) {
   logger.info("Using configuration from MCP client (mcp.json)");
 } else {
   const cwd = process.cwd();
   const possiblePaths = [
-    path7.join(cwd, ".env.local"),
-    path7.join(cwd, "..", ".env.local"),
-    path7.join(cwd, "..", "..", ".env.local"),
-    path7.join(cwd, "shared-context", ".env.local"),
-    path7.join(cwd, "..", "shared-context", ".env.local")
+    path8.join(cwd, ".env.local"),
+    path8.join(cwd, "..", ".env.local"),
+    path8.join(cwd, "..", "..", ".env.local"),
+    path8.join(cwd, "shared-context", ".env.local"),
+    path8.join(cwd, "..", "shared-context", ".env.local")
   ];
   let envLoaded = false;
   for (const envPath of possiblePaths) {
     try {
-      if (fs9.existsSync(envPath)) {
+      if (fs10.existsSync(envPath)) {
         logger.info(`[Fallback] Loading .env.local from: ${envPath}`);
         dotenv2.config({ path: envPath });
         envLoaded = true;
@@ -3143,6 +3334,21 @@ var nerveCenter = new NerveCenter(manager, {
 });
 var sessionIdentity = createSessionIdentity(process.env);
 var presence = new PresenceRoster();
+var teamUpdates = new TeamUpdateTracker();
+var TEAM_AWARE_TOOLS = /* @__PURE__ */ new Set([
+  "post_job",
+  "claim_job",
+  "claim_next_job",
+  "complete_job",
+  "cancel_job",
+  "list_jobs",
+  "propose_file_access",
+  "release_file_access",
+  "verify_file_lock",
+  "guarded_write",
+  "list_locks",
+  "update_shared_context"
+]);
 logger.info("=== Axis MCP Server Initialized ===");
 logger.info(`Session agent identity: ${sessionIdentity.id} (${sessionIdentity.source})`);
 var RECHECK_INTERVAL_MS = 30 * 60 * 1e3;
@@ -3279,21 +3485,21 @@ if (!useRemoteApiOnly && process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.SUP
 }
 async function ensureFileSystem() {
   try {
-    const fs10 = await import("fs/promises");
-    const path8 = await import("path");
+    const fs11 = await import("fs/promises");
+    const path9 = await import("path");
     const fsSync3 = await import("fs");
     const cwd = process.cwd();
     logger.info(`Server CWD: ${cwd}`);
-    const historyDir = path8.join(cwd, "history");
-    await fs10.mkdir(historyDir, { recursive: true }).catch(() => {
+    const historyDir = path9.join(cwd, "history");
+    await fs11.mkdir(historyDir, { recursive: true }).catch(() => {
     });
-    const axisDir = path8.join(cwd, ".axis");
-    const axisInstructions = path8.join(axisDir, "instructions");
-    const legacyInstructions = path8.join(cwd, "agent-instructions");
+    const axisDir = path9.join(cwd, ".axis");
+    const axisInstructions = path9.join(axisDir, "instructions");
+    const legacyInstructions = path9.join(cwd, "agent-instructions");
     if (fsSync3.existsSync(legacyInstructions) && !fsSync3.existsSync(axisDir)) {
       logger.info("Using legacy agent-instructions directory");
     } else {
-      await fs10.mkdir(axisInstructions, { recursive: true }).catch(() => {
+      await fs11.mkdir(axisInstructions, { recursive: true }).catch(() => {
       });
       const defaults = [
         ["context.md", `# Project Context
@@ -3347,11 +3553,11 @@ force_unlock is a LAST RESORT \u2014 only for locks >25 min old from a crashed a
         ["activity.md", "# Activity Log\n\n"]
       ];
       for (const [file, content] of defaults) {
-        const p = path8.join(axisInstructions, file);
+        const p = path9.join(axisInstructions, file);
         try {
-          await fs10.access(p);
+          await fs11.access(p);
         } catch {
-          await fs10.writeFile(p, content);
+          await fs11.writeFile(p, content);
           logger.info(`Created default context file: ${file}`);
         }
       }
@@ -3507,16 +3713,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     // --- Decision & Orchestration ---
     {
       name: "propose_file_access",
-      description: "**CRITICAL: REQUEST FILE LOCK** \u2014 call this before EVERY file edit, no exceptions.\n- Returns `GRANTED` if safe to proceed, `REQUIRES_ORCHESTRATION` if another agent holds the lock, or `REJECTED` if you tried to lock a directory.\n- **Lock individual files, not directories.** Directory locks block parallel work and are rejected.\n- Paths can be absolute or relative \u2014 they're normalized against the project root.\n- Required: `agentId` (e.g. 'cursor-agent'), `filePath`, and `intent` (descriptive \u2014 'Refactor auth to use JWT', NOT 'editing file').\n- Locks expire after 30 minutes. Use `force_unlock` only as a last resort for crashed agents.\n- **Every lock MUST be released.** `complete_job` releases the locks for that job; `finalize_session` releases everything. Dangling locks block all other agents.",
+      description: "**CRITICAL: REQUEST FILE LOCK** \u2014 call this before EVERY file edit, no exceptions.\n- Returns `GRANTED` if safe to proceed, `REQUIRES_ORCHESTRATION` if another agent holds the lock, or `REJECTED` if you tried to lock a directory.\n- **Lock individual files, not directories.** Directory locks block parallel work and are rejected.\n- Paths can be absolute or relative \u2014 they're normalized against the project root.\n- Required: `intent` (descriptive \u2014 'Refactor auth to use JWT', NOT 'editing file') plus `filePath` or `filePaths`. `agentId` is optional (defaults to your session identity).\n- Editing several files? Pass `filePaths` to lock them in ONE call \u2014 all-or-nothing, so a partial batch never blocks others.\n- Locks expire after 30 minutes. Use `force_unlock` only as a last resort for crashed agents.\n- **Every lock MUST be released.** `complete_job` releases the locks for that job; `finalize_session` releases everything. Dangling locks block all other agents.",
       inputSchema: {
         type: "object",
         properties: {
-          agentId: { type: "string" },
-          filePath: { type: "string" },
+          agentId: { type: "string", description: "Optional \u2014 defaults to this session's unique identity." },
+          filePath: { type: "string", description: "One file to lock. Use `filePaths` instead for a multi-file batch." },
+          filePaths: { type: "array", items: { type: "string" }, description: "Lock several files in one call (all-or-nothing: on any denial, locks granted earlier in the batch are released)." },
           intent: { type: "string" },
           userPrompt: { type: "string", description: "Optional. The user prompt that triggered this lock, for audit trails. Server captures it best-effort if omitted." }
         },
-        required: ["agentId", "filePath", "intent"]
+        required: ["intent"]
       }
     },
     {
@@ -3525,10 +3732,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       inputSchema: {
         type: "object",
         properties: {
-          agentId: { type: "string" },
+          agentId: { type: "string", description: "Optional \u2014 defaults to this session's unique identity." },
           filePath: { type: "string" }
         },
-        required: ["agentId", "filePath"]
+        required: ["filePath"]
       }
     },
     {
@@ -3542,10 +3749,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       inputSchema: {
         type: "object",
         properties: {
-          agentId: { type: "string" },
+          agentId: { type: "string", description: "Optional \u2014 defaults to this session's unique identity." },
           filePath: { type: "string" }
         },
-        required: ["agentId", "filePath"]
+        required: ["filePath"]
       }
     },
     {
@@ -3559,11 +3766,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       inputSchema: {
         type: "object",
         properties: {
-          agentId: { type: "string" },
+          agentId: { type: "string", description: "Optional \u2014 defaults to this session's unique identity." },
           filePath: { type: "string" },
           content: { type: "string", description: "Full new file contents." }
         },
-        required: ["agentId", "filePath", "content"]
+        required: ["filePath", "content"]
       }
     },
     {
@@ -3572,10 +3779,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       inputSchema: {
         type: "object",
         properties: {
-          agentId: { type: "string" },
+          agentId: { type: "string", description: "Optional \u2014 defaults to this session's unique identity." },
           text: { type: "string" }
         },
-        required: ["agentId", "text"]
+        required: ["text"]
       }
     },
     // --- Permanent Memory ---
@@ -3672,9 +3879,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       inputSchema: {
         type: "object",
         properties: {
-          agentId: { type: "string" }
+          agentId: { type: "string", description: "Optional \u2014 defaults to this session's unique identity." }
         },
-        required: ["agentId"]
+        required: []
       }
     },
     {
@@ -3683,10 +3890,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       inputSchema: {
         type: "object",
         properties: {
-          agentId: { type: "string" },
+          agentId: { type: "string", description: "Optional \u2014 defaults to this session's unique identity." },
           jobId: { type: "string" }
         },
-        required: ["agentId", "jobId"]
+        required: ["jobId"]
       }
     },
     {
@@ -3695,12 +3902,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       inputSchema: {
         type: "object",
         properties: {
-          agentId: { type: "string" },
+          agentId: { type: "string", description: "Optional \u2014 defaults to this session's unique identity." },
           jobId: { type: "string" },
           outcome: { type: "string" },
           completionKey: { type: "string", description: "Optional key to authorize completion if not the assigned agent." }
         },
-        required: ["agentId", "jobId", "outcome"]
+        required: ["jobId", "outcome"]
       }
     },
     {
@@ -3731,22 +3938,39 @@ function recordToolCall(name, args) {
       // Arg keys only, never values (privacy + log size).
       argKeys: args && typeof args === "object" ? Object.keys(args) : []
     };
-    fs9.appendFileSync(TOOL_LOG_PATH, JSON.stringify(entry) + "\n");
+    fs10.appendFileSync(TOOL_LOG_PATH, JSON.stringify(entry) + "\n");
   } catch {
   }
 }
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
   let captureAgent = sessionIdentity.id;
-  if (args && typeof args.agentId === "string") {
-    const resolvedId = sessionIdentity.resolve(args.agentId);
+  if (args && typeof args === "object") {
+    const provided = args.agentId;
+    const resolvedId = sessionIdentity.resolve(
+      typeof provided === "string" && provided.trim() ? provided : sessionIdentity.id
+    );
     args.agentId = resolvedId;
     captureAgent = resolvedId;
     presence.seen(resolvedId, Date.now(), "active", name);
   }
   logger.info("Tool call", { name });
   recordToolCall(name, args);
-  return nerveCenter.captureToolExecution(name, args, captureAgent, async () => {
+  let workspaceNote;
+  if (name !== "switch_project") {
+    try {
+      const detected = detectWorkspaceSwitch(nerveCenter.activeProjectRoot, args, process.env);
+      if (detected) {
+        await nerveCenter.switchProject({ root: detected.root, projectName: detected.projectName });
+        teamUpdates.reset();
+        workspaceNote = describeSwitch(detected);
+        logger.info("Auto workspace switch", detected);
+      }
+    } catch (e) {
+      logger.warn(`Workspace auto-switch check failed: ${e}`);
+    }
+  }
+  const result = await nerveCenter.captureToolExecution(name, args, captureAgent, async () => {
     if (process.env.AXIS_SKIP_SUBSCRIPTION_CHECK === "1") {
     } else {
       if (isSubscriptionStale()) {
@@ -3819,11 +4043,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         content = String(args.content);
       } else {
         try {
-          const projectRoot = path7.resolve(process.cwd());
-          const rebased = path7.isAbsolute(filePath) ? path7.join(projectRoot, filePath.replace(/^\/+/, "")) : path7.resolve(projectRoot, filePath);
-          const resolved = await fs9.promises.realpath(rebased).catch(() => rebased);
-          const rel = path7.relative(projectRoot, resolved);
-          if (rel.startsWith("..") || path7.isAbsolute(rel)) {
+          const projectRoot = path8.resolve(process.cwd());
+          const rebased = path8.isAbsolute(filePath) ? path8.join(projectRoot, filePath.replace(/^\/+/, "")) : path8.resolve(projectRoot, filePath);
+          const resolved = await fs10.promises.realpath(rebased).catch(() => rebased);
+          const rel = path8.relative(projectRoot, resolved);
+          if (rel.startsWith("..") || path8.isAbsolute(rel)) {
             return {
               content: [{ type: "text", text: `index_file: refusing to read ${filePath} \u2014 outside project root` }],
               isError: true
@@ -3846,7 +4070,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               isError: true
             };
           }
-          const stat = await fs9.promises.stat(resolved);
+          const stat = await fs10.promises.stat(resolved);
           const MAX_BYTES = 1024 * 1024;
           if (stat.size > MAX_BYTES) {
             return {
@@ -3854,7 +4078,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               isError: true
             };
           }
-          content = await fs9.promises.readFile(resolved, "utf-8");
+          content = await fs10.promises.readFile(resolved, "utf-8");
         } catch (e) {
           return {
             content: [{
@@ -3865,7 +4089,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           };
         }
       }
-      const metaPath = path7.isAbsolute(filePath) ? path7.basename(filePath) : filePath;
+      const metaPath = path8.isAbsolute(filePath) ? path8.basename(filePath) : filePath;
       try {
         await manager.embedContent([{ content, metadata: { filePath: metaPath } }], nerveCenter.currentProjectName);
         return { content: [{ type: "text", text: "Indexed via Remote API." }] };
@@ -3930,9 +4154,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const email = args?.email ? String(args.email) : void 0;
       logger.info(`[get_subscription_status] Called with email: ${email || "(using API key identity)"}`);
       try {
-        const result = await nerveCenter.getSubscriptionStatus(email);
-        logger.info(`[get_subscription_status] Result: ${JSON.stringify(result).substring(0, 200)}`);
-        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+        const result2 = await nerveCenter.getSubscriptionStatus(email);
+        logger.info(`[get_subscription_status] Result: ${JSON.stringify(result2).substring(0, 200)}`);
+        return { content: [{ type: "text", text: JSON.stringify(result2, null, 2) }] };
       } catch (e) {
         logger.error(`[get_subscription_status] Exception: ${e.message}`, e);
         return { content: [{ type: "text", text: JSON.stringify({ error: e.message }, null, 2) }], isError: true };
@@ -3942,9 +4166,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const email = args?.email ? String(args.email) : void 0;
       logger.info(`[get_usage_stats] Called with email: ${email || "(using API key identity)"}`);
       try {
-        const result = await nerveCenter.getUsageStats(email);
-        logger.info(`[get_usage_stats] Result: ${JSON.stringify(result).substring(0, 200)}`);
-        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+        const result2 = await nerveCenter.getUsageStats(email);
+        logger.info(`[get_usage_stats] Result: ${JSON.stringify(result2).substring(0, 200)}`);
+        return { content: [{ type: "text", text: JSON.stringify(result2, null, 2) }] };
       } catch (e) {
         logger.error(`[get_usage_stats] Exception: ${e.message}`, e);
         return { content: [{ type: "text", text: JSON.stringify({ error: e.message }, null, 2) }], isError: true };
@@ -3967,31 +4191,38 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
     }
     if (name === "propose_file_access") {
-      const { agentId, filePath, intent, userPrompt } = args;
-      const result = await nerveCenter.proposeFileAccess(agentId, filePath, intent, userPrompt);
-      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      const { agentId, filePath, filePaths, intent, userPrompt } = args;
+      const batch = Array.isArray(filePaths) ? filePaths.filter((p) => typeof p === "string") : [];
+      if (batch.length === 0 && typeof filePath !== "string") {
+        return {
+          content: [{ type: "text", text: JSON.stringify({ status: "REJECTED", message: "Provide `filePath` (one file) or `filePaths` (a batch of files)." }) }],
+          isError: true
+        };
+      }
+      const result2 = batch.length > 0 ? await nerveCenter.proposeFilesAccess(agentId, batch, intent, userPrompt) : await nerveCenter.proposeFileAccess(agentId, filePath, intent, userPrompt);
+      return { content: [{ type: "text", text: JSON.stringify(result2, null, 2) }] };
     }
     if (name === "release_file_access") {
       const { agentId, filePath } = args;
-      const result = await nerveCenter.releaseFileAccess(agentId, filePath);
-      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      const result2 = await nerveCenter.releaseFileAccess(agentId, filePath);
+      return { content: [{ type: "text", text: JSON.stringify(result2, null, 2) }] };
     }
     if (name === "list_locks") {
-      const result = await nerveCenter.listLocks();
-      return { content: [{ type: "text", text: JSON.stringify({ locks: result }, null, 2) }] };
+      const result2 = await nerveCenter.listLocks();
+      return { content: [{ type: "text", text: JSON.stringify({ locks: result2 }, null, 2) }] };
     }
     if (name === "update_shared_context") {
       const { agentId, text } = args;
-      const result = await nerveCenter.updateSharedContext(text, agentId);
-      return { content: [{ type: "text", text: result }] };
+      const result2 = await nerveCenter.updateSharedContext(text, agentId);
+      return { content: [{ type: "text", text: result2 }] };
     }
     if (name === "finalize_session") {
-      const result = await nerveCenter.finalizeSession();
-      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      const result2 = await nerveCenter.finalizeSession();
+      return { content: [{ type: "text", text: JSON.stringify(result2, null, 2) }] };
     }
     if (name === "get_project_soul") {
-      const result = await nerveCenter.getProjectSoul();
-      return { content: [{ type: "text", text: result }] };
+      const result2 = await nerveCenter.getProjectSoul();
+      return { content: [{ type: "text", text: result2 }] };
     }
     if (name === "update_project_soul") {
       const { context, conventions } = args;
@@ -4012,37 +4243,37 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (name === "switch_project") {
       const { projectRoot, projectName } = args;
       const identity = resolveProjectIdentity(projectRoot, process.cwd(), process.env);
-      const result = await nerveCenter.switchProject({
+      const result2 = await nerveCenter.switchProject({
         root: identity.root,
         projectName: projectName || identity.projectName
       });
-      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      return { content: [{ type: "text", text: JSON.stringify(result2, null, 2) }] };
     }
     if (name === "post_job") {
       const { title, description, priority, dependencies } = args;
-      const result = await nerveCenter.postJob(title, description, priority, dependencies);
-      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+      const result2 = await nerveCenter.postJob(title, description, priority, dependencies);
+      return { content: [{ type: "text", text: JSON.stringify(result2) }] };
     }
     if (name === "list_jobs") {
       const includeCompleted = Boolean(args?.includeCompleted);
       const jobs = await nerveCenter.listJobs();
-      const result = includeCompleted ? jobs : jobs.filter((job) => job.status !== "done" && job.status !== "cancelled");
-      return { content: [{ type: "text", text: JSON.stringify({ jobs: result }, null, 2) }] };
+      const result2 = includeCompleted ? jobs : jobs.filter((job) => job.status !== "done" && job.status !== "cancelled");
+      return { content: [{ type: "text", text: JSON.stringify({ jobs: result2 }, null, 2) }] };
     }
     if (name === "cancel_job") {
       const { jobId, reason } = args;
-      const result = await nerveCenter.cancelJob(jobId, reason);
-      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+      const result2 = await nerveCenter.cancelJob(jobId, reason);
+      return { content: [{ type: "text", text: JSON.stringify(result2) }] };
     }
     if (name === "force_unlock") {
       const { filePath, reason } = args;
-      const result = await nerveCenter.forceUnlock(filePath, reason);
-      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+      const result2 = await nerveCenter.forceUnlock(filePath, reason);
+      return { content: [{ type: "text", text: JSON.stringify(result2) }] };
     }
     if (name === "claim_next_job") {
       const { agentId } = args;
-      const result = await nerveCenter.claimNextJob(agentId);
-      if (result && result.status === "NO_JOBS_AVAILABLE") {
+      const result2 = await nerveCenter.claimNextJob(agentId);
+      if (result2 && result2.status === "NO_JOBS_AVAILABLE") {
         presence.seen(agentId, Date.now(), "idle", "waiting for work");
         const roster = presence.list(Date.now());
         return { content: [{ type: "text", text: JSON.stringify({
@@ -4053,27 +4284,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           roster
         }, null, 2) }] };
       }
-      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      return { content: [{ type: "text", text: JSON.stringify(result2, null, 2) }] };
     }
     if (name === "claim_job") {
       const { agentId, jobId } = args;
-      const result = await nerveCenter.claimJob(agentId, jobId);
-      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      const result2 = await nerveCenter.claimJob(agentId, jobId);
+      return { content: [{ type: "text", text: JSON.stringify(result2, null, 2) }] };
     }
     if (name === "complete_job") {
       const { agentId, jobId, outcome, completionKey } = args;
-      const result = await nerveCenter.completeJob(agentId, jobId, outcome, completionKey);
-      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+      const result2 = await nerveCenter.completeJob(agentId, jobId, outcome, completionKey);
+      return { content: [{ type: "text", text: JSON.stringify(result2) }] };
     }
     if (name === "verify_file_lock") {
       const { agentId, filePath } = args;
-      const result = await nerveCenter.verifyFileAccess(agentId, filePath);
-      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      const result2 = await nerveCenter.verifyFileAccess(agentId, filePath);
+      return { content: [{ type: "text", text: JSON.stringify(result2, null, 2) }] };
     }
     if (name === "guarded_write") {
       const { agentId, filePath, content } = args;
-      const result = await nerveCenter.guardedWrite(agentId, filePath, content);
-      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      const result2 = await nerveCenter.guardedWrite(agentId, filePath, content);
+      return { content: [{ type: "text", text: JSON.stringify(result2, null, 2) }] };
     }
     if (name === "list_agents") {
       const roster = presence.list(Date.now());
@@ -4086,6 +4317,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
     throw new Error(`Tool not found: ${name}`);
   });
+  if (workspaceNote && result && Array.isArray(result.content)) {
+    result.content.push({ type: "text", text: workspaceNote });
+  }
+  if (name === "switch_project" || name === "finalize_session") {
+    teamUpdates.reset();
+  } else if (TEAM_AWARE_TOOLS.has(name) && result && Array.isArray(result.content)) {
+    try {
+      const delta = teamUpdates.drain(captureAgent, nerveCenter.notepadSnapshot);
+      if (delta) {
+        result.content.push({ type: "text", text: formatTeamUpdates(delta) });
+      }
+    } catch (e) {
+      logger.warn(`Team-update drain failed: ${e}`);
+    }
+  }
+  return result;
 });
 async function main() {
   await ensureFileSystem();
