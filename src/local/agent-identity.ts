@@ -90,6 +90,19 @@ export function resolveAgentId(
     if (explicit) return explicit;
 
     const requestedBase = normalizeBase(requestedId);
+
+    // Idempotency: if the caller echoes back an id we already minted this
+    // session (it carries our process token suffix), keep it verbatim instead
+    // of suffixing again. Without this, an agent that passes the resolved id it
+    // saw at claim time — from `job.assigned_to`, the notepad, or a prior tool
+    // response — gets a double-suffixed id (`claude-code-abc-abc`) that no
+    // longer matches the stored assignee. `completeJob`'s `assignedTo === agentId`
+    // check then fails, locking the agent out of completing its own job with no
+    // usable recovery (the completion key is never surfaced to the worker).
+    if (requestedBase === token || requestedBase.endsWith(`-${token}`)) {
+        return requestedBase;
+    }
+
     const base = requestedBase !== "agent"
         ? requestedBase
         : (detectHostBase(env) || normalizeBase(env.AXIS_AGENT_BASE));
