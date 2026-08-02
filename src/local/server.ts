@@ -1,3 +1,12 @@
+/**
+ * @deprecated DO NOT EXTEND — scheduled for deletion (audit #1 / #12).
+ *
+ * This Express + SSE MCP server is an abandoned duplicate of the canonical
+ * servers and its inline tool list has long drifted from the real surface:
+ * • Local (free):  src/local/mcp-server.ts (stdio, ships as @virsanghavi/axis-server)
+ * • Hosted (paid): axis-frontend/app/api/mcp/route.ts (Streamable HTTP)
+ * The canonical tool contract lives in src/shared/tool-registry.ts.
+ */
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import {
@@ -464,5 +473,6 @@ app.post("/message", async (req, res) => {
 });
 
 app.listen(port, () => {
+    logger.warn("DEPRECATED: this Express/SSE server is scheduled for deletion. Use the stdio server (src/local/mcp-server.ts) locally or the hosted MCP at https://useaxis.dev/api/mcp.");
     logger.info("Orchestrator Server running", { url: `http://localhost:${port}/sse` });
 });

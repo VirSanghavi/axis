@@ -1,3 +1,11 @@
+/**
+ * @deprecated DO NOT EXTEND — scheduled for deletion (audit #1 / #12).
+ *
+ * This Hono API is a legacy duplicate of the hosted API. The canonical hosted
+ * surface (auth, CORS, rate limiting, /embed, /search and the rest of /api/v1)
+ * lives in the axis-frontend repo under app/api/v1/, deployed at
+ * https://useaxis.dev/api/v1. Route logic changes belong there, not here.
+ */
 import { Hono } from "hono";
 import { createClient } from "@supabase/supabase-js";
 import OpenAI from "openai";
@@ -6,6 +14,11 @@ import { cors } from 'hono/cors';
 import dotenv from "dotenv";
 
 dotenv.config({ path: ".env.local" });
+
+console.warn(
+    "DEPRECATED: src/api/index.ts is a legacy duplicate of the hosted API. " +
+    "Use https://useaxis.dev/api/v1 (axis-frontend/app/api/v1) instead."
+);
 
 // Simple in-memory rate limiter
 const RATE_LIMIT_WINDOW = 60 * 1000; // 1 min

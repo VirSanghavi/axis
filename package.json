@@ -13,7 +13,7 @@
     "test:search:mcp": "npx tsx scripts/test-mcp-search.ts"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^0.6.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@supabase/supabase-js": "^2.39.0",
     "@types/express": "^5.0.6",
     "@virsanghavi/axis-server": "^1.7.1",
