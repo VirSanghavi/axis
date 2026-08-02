@@ -14,7 +14,8 @@
   ],
   "scripts": {
     "build": "tsc",
-    "start": "node bin/cli.js"
+    "start": "node bin/cli.js",
+    "prepublishOnly": "npm run build"
   },
   "keywords": [
     "axis",
