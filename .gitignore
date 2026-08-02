@@ -65,6 +65,7 @@ packages/*/venv/
 !/supabase/migrations/0008_oauth_org_binding.sql
 !/supabase/migrations/0009_lock_content_hash.sql
 !/supabase/migrations/0011_inference_guardrails.sql
+!/supabase/migrations/0012_cochange_git_seed.sql
 /sandbox_mcp_test
 /sandbox
 packages/python-sdk/axis/__pycache__/
