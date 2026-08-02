@@ -60,3 +60,7 @@ sandbox/
 
 # Frontend moved to private repo VirSanghavi/axis-frontend — never re-track here
 frontend/
+
+# Local tooling artifacts (screenshots, browser traces)
+.playwright-mcp/
+before-hero.png
