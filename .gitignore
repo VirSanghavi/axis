@@ -45,6 +45,17 @@ history/
 *.map
 next-env.d.ts
 
+# Package build artifacts (never commit; every publish rebuilds from source)
+#   npm:    `npm run build` in packages/axis-server and packages/axis-init
+#   python: `python -m build` in packages/python-sdk
+packages/*/dist/
+packages/*/build/
+packages/*/*.egg-info/
+packages/**/*.whl
+packages/**/*.tar.gz
+# Local virtualenv for the python SDK
+packages/*/venv/
+
 # backend
 /supabase
 !/supabase/
@@ -53,8 +64,10 @@ next-env.d.ts
 /supabase/migrations/*
 !/supabase/migrations/0008_oauth_org_binding.sql
 !/supabase/migrations/0009_lock_content_hash.sql
+!/supabase/migrations/0011_inference_guardrails.sql
 /sandbox_mcp_test
-/sandboxpackages/python-sdk/axis/__pycache__/
+/sandbox
+packages/python-sdk/axis/__pycache__/
 sandbox/
 **/__pycache__/
 
