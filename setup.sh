@@ -39,9 +39,9 @@ fi
 # 4. Interactive Configuration
 echo ""
 echo "--- Configuration ---"
-read -p "Do you want to run the database migration (v2)? (y/N) " run_mig
+read -p "Do you want to set up the local database? (y/N) " run_mig
 if [[ "$run_mig" =~ ^[Yy]$ ]]; then
-   echo "Please run the content of supabase/schema_v2.sql in your Supabase SQL Editor."
+   echo "Run 'supabase db reset' (Docker required) — it applies every numbered migration in supabase/migrations/."
 fi
 
 echo ""

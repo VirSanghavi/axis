@@ -56,16 +56,19 @@ packages/**/*.tar.gz
 # Local virtualenv for the python SDK
 packages/*/venv/
 
-# backend
+# backend — supabase: ignore CLI runtime dirs (.temp/.branches) but track ALL
+# migrations by pattern, so a new migration is never silently invisible to git.
+# (Per-file allowlisting burned us: migrate.yml auto-applies on main, and an
+# unlisted migration could never reach it.)
 /supabase
 !/supabase/
 /supabase/*
 !/supabase/migrations/
+!/supabase/README.md
+!/supabase/config.toml
+!/supabase/schema.sql
 /supabase/migrations/*
-!/supabase/migrations/0008_oauth_org_binding.sql
-!/supabase/migrations/0009_lock_content_hash.sql
-!/supabase/migrations/0011_inference_guardrails.sql
-!/supabase/migrations/0012_cochange_git_seed.sql
+!/supabase/migrations/*.sql
 /sandbox_mcp_test
 /sandbox
 packages/python-sdk/axis/__pycache__/
