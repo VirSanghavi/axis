@@ -157,6 +157,45 @@ async function walkDir(dir: string, maxDepth: number = 12): Promise<string[]> {
 
 // ── Search Engine ──
 
+// ── Ranking helpers (shared by both legs) ──
+// Tests reference a symbol more often than the implementation defines it, so
+// raw match-count ranking put tests/*.test.ts above the implementation for
+// every identifier query (mean MRR 0.371 on the golden eval). Two correctives:
+// a boost for definition-shaped lines, and a demotion of test files whenever
+// non-test files also matched (pure test queries keep their ranking).
+
+/** True for paths under tests/ or named *.test.* / *.spec.*. */
+export function isTestPath(relativePath: string): boolean {
+  const rel = relativePath.toLowerCase();
+  return /(^|\/)(tests?|__tests__)\//.test(rel) || /\.(test|spec)\.[\w.]+$/.test(rel);
+}
+
+/** Does this line DEFINE the keyword (vs merely mention/call it)? */
+export function isDefinitionLine(line: string, keyword: string): boolean {
+  const kw = keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(
+    `(?:export\\s+)?(?:default\\s+)?(?:abstract\\s+)?(?:async\\s+)?` +
+    `(?:function\\*?|class|interface|type|enum|const|let|var)\\s+${kw}\\b`,
+    "i"
+  ).test(line) || new RegExp(`(?:public|private|protected|static|async)\\s+${kw}\\s*\\(`, "i").test(line);
+}
+
+/** Multiplier applied to test-file scores when implementations also matched. */
+const TEST_DEMOTION = 0.3;
+
+/**
+ * Demote test files below implementations when at least one non-test file is
+ * present in the result set. Mutates and returns the array for chaining.
+ */
+function demoteTestsWhenImplPresent<T extends { relativePath: string; score: number }>(matches: T[]): T[] {
+  const anyImpl = matches.some((m) => !isTestPath(m.relativePath));
+  if (!anyImpl) return matches;
+  for (const m of matches) {
+    if (isTestPath(m.relativePath)) m.score *= TEST_DEMOTION;
+  }
+  return matches;
+}
+
 interface SearchMatch {
   filePath: string;
   relativePath: string;
@@ -185,7 +224,8 @@ async function searchFile(
   if (matchedKeywords.length === 0) return null;
 
   // ── Relevance gate: require at least one keyword match ──
-  // WarpGrep-style: prefer recall over precision; let the agent filter.
+  // Deliberately loose — recall beats precision here, because the agent reads
+  // the results and discards what it doesn't need.
   const coverage = matchedKeywords.length / keywords.length;
   if (coverage < 0.2) return null; // Need at least 1 of 5, or 1 of 3, etc.
 
@@ -200,6 +240,15 @@ async function searchFile(
   for (const kw of keywords) {
     if (relLower.includes(kw)) {
       score += 3;
+    }
+  }
+
+  // Definition boost: a file that DEFINES a queried symbol outranks the many
+  // files that merely call it (tests call symbols more often than impls
+  // define them — without this, tests win every identifier query).
+  for (const kw of matchedKeywords) {
+    if (lines.some((l) => isDefinitionLine(l, kw))) {
+      score += 4;
     }
   }
 
@@ -262,7 +311,7 @@ async function searchFile(
   return { filePath, relativePath, score, matchedKeywords, regions };
 }
 
-// ── WarpGrep-style: Ripgrep-based parallel search ──
+// ── Ripgrep leg: literal, multi-pattern scan of the working tree ──
 
 interface RipgrepHit {
   file: string;
@@ -318,6 +367,11 @@ function ripgrepAvailable(): boolean {
   return !r.error && r.status === 0;
 }
 
+/**
+ * The ripgrep leg: one literal scan per extracted keyword, results deduped by
+ * file:line, grouped by file, and rendered as a snippet list. Returns "" when
+ * ripgrep finds nothing, which is how the caller knows to fall back.
+ */
 async function warpgrepSearch(query: string, cwd: string): Promise<string> {
   const keywords = extractKeywords(query);
   if (keywords.length === 0) {
@@ -327,7 +381,7 @@ async function warpgrepSearch(query: string, cwd: string): Promise<string> {
     keywords.push(tokens[0]!);
   }
 
-  // Run ripgrep in parallel for each keyword (WarpGrep-style: parallel multi-pattern)
+  // One ripgrep invocation per keyword, capped at 5, merged and deduped.
   const allHits: RipgrepHit[] = [];
   const seen = new Set<string>();
 
@@ -352,12 +406,31 @@ async function warpgrepSearch(query: string, cwd: string): Promise<string> {
     byFile.set(h.file, list);
   }
 
-  // Format: file:line:content (WarpGrep-style snippet return)
+  // Render: one heading per file, then its indented line-number/content pairs.
   const lines: string[] = [];
   lines.push(`Found ${allHits.length} match(es) via ripgrep (keywords: ${keywords.join(", ")})\n`);
   lines.push("═".repeat(60) + "\n");
 
-  const sortedFiles = [...byFile.keys()].sort();
+  // Rank files by relevance, not alphabetically: hit count + a definition
+  // boost, with test files demoted when implementations also matched.
+  const fileScores = new Map<string, number>();
+  for (const [relPath, hits] of byFile) {
+    let score = Math.min(hits.length, 10);
+    for (const kw of keywords) {
+      if (hits.some((h) => isDefinitionLine(h.content, kw))) score += 5;
+      if (relPath.toLowerCase().includes(kw.toLowerCase())) score += 3;
+    }
+    fileScores.set(relPath, score);
+  }
+  const anyImpl = [...byFile.keys()].some((f) => !isTestPath(f));
+  if (anyImpl) {
+    for (const f of byFile.keys()) {
+      if (isTestPath(f)) fileScores.set(f, (fileScores.get(f) || 0) * 0.3);
+    }
+  }
+  const sortedFiles = [...byFile.keys()].sort(
+    (a, b) => (fileScores.get(b) || 0) - (fileScores.get(a) || 0) || a.localeCompare(b)
+  );
   for (const relPath of sortedFiles.slice(0, MAX_RESULTS)) {
     const hits = byFile.get(relPath)!;
     lines.push(`${relPath}\n`);
@@ -389,7 +462,7 @@ export async function localSearch(query: string, rootDir?: string): Promise<stri
     logger.info(`[localSearch] Detected project root: ${cwd} (CWD was: ${rawCwd})`);
   }
 
-  // WarpGrep-style: require at least one searchable term
+  // Require at least one searchable term before touching the filesystem.
   const hasTerms = keywords.length > 0 ||
     q.replace(/[^\w\s]/g, " ").split(/\s+/).some(w => w.length >= 2);
   if (!hasTerms) {
@@ -398,7 +471,7 @@ export async function localSearch(query: string, rootDir?: string): Promise<stri
 
   logger.info(`[localSearch] Query: "${q}" → Keywords: [${keywords.join(", ")}] in ${cwd}`);
 
-  // WarpGrep-style: run ripgrep + keyword search in parallel
+  // Run both legs concurrently: the ripgrep scan and the keyword file walk.
   const useRipgrep = ripgrepAvailable();
   const [rgResults, keyResults] = await Promise.all([
     useRipgrep ? warpgrepSearch(q, cwd) : Promise.resolve(""),
@@ -416,7 +489,7 @@ export async function localSearch(query: string, rootDir?: string): Promise<stri
           if (r) allMatches.push(r);
         }
       }
-      allMatches.sort((a, b) => b.score - a.score);
+      demoteTestsWhenImplPresent(allMatches).sort((a, b) => b.score - a.score);
       const topMatches = allMatches.slice(0, MAX_RESULTS);
       if (topMatches.length === 0) return "";
       let out = `Found ${allMatches.length} matching file${allMatches.length === 1 ? "" : "s"} (showing top ${topMatches.length}, searched ${files.length} files)\n`;
@@ -448,7 +521,8 @@ export async function localSearch(query: string, rootDir?: string): Promise<stri
   if (rgHasResults) return rgResults;
   if (keyHasResults) return keyResults;
 
-  // Fallback: when 3+ keywords yield nothing, retry with fewer (WarpGrep-style refinement)
+  // Last resort: 3+ keywords that matched nothing are usually over-specified.
+  // Retry with the first two before reporting failure.
   const kws = keywords.length > 0 ? keywords : q.replace(/[^\w\s]/g, " ").split(/\s+/).filter(w => w.length >= 2).slice(0, 5);
   if (kws.length >= 3) {
     const fallbackKws = kws.slice(0, 2);
@@ -462,7 +536,7 @@ export async function localSearch(query: string, rootDir?: string): Promise<stri
       }
     }
     if (fallbackMatches.length > 0) {
-      fallbackMatches.sort((a, b) => b.score - a.score);
+      demoteTestsWhenImplPresent(fallbackMatches).sort((a, b) => b.score - a.score);
       const top = fallbackMatches.slice(0, MAX_RESULTS);
       let out = `Found ${fallbackMatches.length} matching file${fallbackMatches.length === 1 ? "" : "s"} (fallback: fewer keywords, showing top ${top.length})\n`;
       out += `Keywords: ${fallbackKws.join(", ")} (original: ${kws.join(", ")})\n`;
