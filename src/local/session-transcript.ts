@@ -32,6 +32,35 @@ export interface CollectedTranscript {
     };
 }
 
+// Loose structural shapes for the two external JSONL transcript formats.
+// Fields are optional/unknown because these files are foreign data: a missing
+// or oddly-typed field must skip one record, never crash the parse.
+type CodexPayload = {
+    type?: string;
+    role?: string;
+    content?: unknown;
+    call_id?: unknown;
+    namespace?: unknown;
+    name?: unknown;
+    arguments?: unknown;
+    output?: unknown;
+};
+
+type ClaudeMessage = {
+    role?: string;
+    content?: unknown;
+};
+
+// Generic MCP-client records: same foreign-data stance — every field optional,
+// unknown until checked.
+type GenericMessage = {
+    role?: unknown;
+    content?: unknown;
+    text?: unknown;
+    tool_calls?: unknown;
+    type?: unknown;
+};
+
 const MAX_EVENTS = 2_000;
 const MAX_EVENT_CHARS = 150_000;
 const MAX_TOTAL_CHARS = 3_000_000;
@@ -119,14 +148,14 @@ export function parseCodexTranscript(raw: string): TranscriptEvent[] {
 
     for (const [index, line] of raw.split("\n").entries()) {
         if (!line.trim()) continue;
-        let record: Record<string, any>;
+        let record: Record<string, unknown>;
         try {
             record = JSON.parse(line);
         } catch {
             continue;
         }
         if (record.type !== "response_item" || !record.payload) continue;
-        const payload = record.payload;
+        const payload = record.payload as CodexPayload;
         const base = {
             timestamp: typeof record.timestamp === "string" ? record.timestamp : undefined,
             agent: "codex",
@@ -181,14 +210,14 @@ export function parseClaudeTranscript(raw: string): TranscriptEvent[] {
 
     for (const [index, line] of raw.split("\n").entries()) {
         if (!line.trim()) continue;
-        let record: Record<string, any>;
+        let record: Record<string, unknown>;
         try {
             record = JSON.parse(line);
         } catch {
             continue;
         }
         if (record.type !== "user" && record.type !== "assistant") continue;
-        const message = record.message;
+        const message = record.message as ClaudeMessage | null | undefined;
         if (!message || (message.role !== "user" && message.role !== "assistant")) continue;
         const content = message.content;
         const base = {
@@ -257,8 +286,8 @@ export function parseClaudeTranscript(raw: string): TranscriptEvent[] {
     return normalizeTranscriptEvents(events);
 }
 
-function genericMessage(record: Record<string, any>, index: number): TranscriptEvent[] {
-    const message = record.message && typeof record.message === "object" ? record.message : record;
+function genericMessage(record: Record<string, unknown>, index: number): TranscriptEvent[] {
+    const message = (record.message && typeof record.message === "object" ? record.message : record) as GenericMessage & Record<string, unknown>;
     const role = message.role;
     const timestamp = record.timestamp || record.created_at || record.createdAt;
     const agent = record.agent || record.agentId || record.client || "mcp-client";
@@ -354,7 +383,7 @@ export function parseGenericTranscript(raw: string): TranscriptEvent[] {
 
     return normalizeTranscriptEvents(records.flatMap((record, index) =>
         record && typeof record === "object"
-            ? genericMessage(record as Record<string, any>, index)
+            ? genericMessage(record as Record<string, unknown>, index)
             : []
     ));
 }

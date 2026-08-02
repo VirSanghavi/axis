@@ -87,7 +87,7 @@ export class RagEngine {
                 return [];
             }
 
-            return data.map((d: any) => d.content);
+            return (data as { content: string }[]).map((d) => d.content);
         } catch (e) {
             logger.error("RAG Search Fail:", e);
             return [];

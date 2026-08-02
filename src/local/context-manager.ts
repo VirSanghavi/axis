@@ -194,22 +194,23 @@ export class ContextManager {
                     throw new Error(`API Error ${response.status}: ${text}`);
                 }
 
-                const result = await response.json() as any;
+                const result = (await response.json()) as { results?: { similarity: number; content: string }[] };
 
                 if (result.results && Array.isArray(result.results)) {
-                    return result.results.map((r: any) =>
+                    return result.results.map((r) =>
                         `[Similarity: ${(r.similarity * 100).toFixed(1)}%] ${r.content}`
                     ).join("\n\n---\n\n") || "No results found.";
                 }
 
                 throw new Error("No results format recognized.");
-            } catch (e: any) {
+            } catch (e) {
                 clearTimeout(timeout);
+                const msg = e instanceof Error ? e.message : String(e);
                 // Don't retry 4xx errors
-                if (e.message.startsWith("API Error 4")) throw e;
+                if (msg.startsWith("API Error 4")) throw e;
                 if (attempt < maxRetries) {
                     const delay = baseDelay * Math.pow(2, attempt - 1);
-                    logger.warn(`[searchContext] Network/timeout error, retrying in ${delay}ms (attempt ${attempt}/${maxRetries}): ${e.message}`);
+                    logger.warn(`[searchContext] Network/timeout error, retrying in ${delay}ms (attempt ${attempt}/${maxRetries}): ${msg}`);
                     await new Promise(r => setTimeout(r, delay));
                     continue;
                 }
@@ -220,7 +221,7 @@ export class ContextManager {
         throw new Error("searchContext: unexpected end of retry loop");
     }
 
-    async embedContent(items: { content: string, metadata: any }[], projectName: string = "default") {
+    async embedContent(items: { content: string, metadata: Record<string, unknown> }[], projectName: string = "default") {
         if (!this.apiUrl) {
             logger.warn("Skipping RAG embedding: SHARED_CONTEXT_API_URL not configured.");
             return;
@@ -262,16 +263,17 @@ export class ContextManager {
                 }
 
                 return await response.json();
-            } catch (e: any) {
+            } catch (e) {
                 clearTimeout(timeout);
-                if (e.message.startsWith("API Error 4")) throw e;
+                const msg = e instanceof Error ? e.message : String(e);
+                if (msg.startsWith("API Error 4")) throw e;
                 if (attempt < maxRetries) {
                     const delay = baseDelay * Math.pow(2, attempt - 1);
-                    logger.warn(`[embedContent] Network/timeout error, retrying in ${delay}ms (attempt ${attempt}/${maxRetries}): ${e.message}`);
+                    logger.warn(`[embedContent] Network/timeout error, retrying in ${delay}ms (attempt ${attempt}/${maxRetries}): ${msg}`);
                     await new Promise(r => setTimeout(r, delay));
                     continue;
                 }
-                logger.warn(`[embedContent] Failed after ${maxRetries} attempts: ${e.message}. Skipping embed.`);
+                logger.warn(`[embedContent] Failed after ${maxRetries} attempts: ${msg}. Skipping embed.`);
                 return;
             }
         }

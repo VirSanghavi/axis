@@ -29,7 +29,11 @@ export default tseslint.config(
       globals: globals.node,
     },
     rules: {
-      "@typescript-eslint/no-explicit-any": "off",
+      // Ratchet: no new `any` anywhere in the backend. The files below are
+      // exempt only while their in-flight refactors land (NerveCenter split,
+      // tool-drift work, persistence rewrite) — shrink this list to zero,
+      // never grow it.
+      "@typescript-eslint/no-explicit-any": "error",
       "@typescript-eslint/no-unused-vars": [
         "warn",
         { 
@@ -39,5 +43,17 @@ export default tseslint.config(
         }
       ]
     }
+  },
+  {
+    files: [
+      "src/local/nerve-center.ts",
+      "src/local/mcp-server.ts",
+      "src/local/atomic-file.ts",
+      "src/local/job-board.ts",
+      "src/local/coordination-types.ts",
+    ],
+    rules: {
+      "@typescript-eslint/no-explicit-any": "off",
+    },
   }
 );
