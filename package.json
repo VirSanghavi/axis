@@ -6,8 +6,9 @@
   "scripts": {
     "start:local": "bun run src/local/mcp-server.ts",
     "cli": "bun run src/local/cli.ts",
-    "test:search": "npx tsx scripts/test-search.ts",
-    "test:search:mcp": "npx tsx scripts/test-mcp-search.ts"
+    "test": "bun test",
+    "lint": "bunx eslint . --max-warnings=0",
+    "typecheck": "bunx tsc --noEmit"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
@@ -29,7 +30,6 @@
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-prettier": "^5.5.5",
     "prettier": "^3.8.1",
-    "tsx": "^4.21.0",
     "typescript-eslint": "^8.54.0"
   }
 }
