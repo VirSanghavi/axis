@@ -5,11 +5,26 @@ import prettierConfig from 'eslint-config-prettier';
 import globals from 'globals';
 
 export default tseslint.config(
+  // Global ignores — a standalone object so it applies to every config entry.
+  // (An `ignores` key alongside other keys only scopes that one entry.)
+  {
+    ignores: [
+      "node_modules/",
+      "dist/",
+      "tests/",
+      "frontend/",
+      "sandbox/",
+      "history/",
+      "packages/**/venv/",
+      "packages/**/dist/",
+      "packages/**/*.egg-info/",
+      "**/*.tsbuildinfo",
+    ],
+  },
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
   prettierConfig,
   {
-    ignores: ["node_modules/", "dist/", "tests/"],
     languageOptions: {
       globals: globals.node,
     },

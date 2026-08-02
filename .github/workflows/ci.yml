@@ -1,4 +1,4 @@
-name: OpenCtx CI
+name: Axis CI
 
 on:
   push:
@@ -11,18 +11,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Setup Bun
       uses: oven-sh/setup-bun@v1
       with:
         bun-version: latest
 
     - name: Install dependencies
-      run: bun install
+      run: bun install --frozen-lockfile
 
-    - name: Run Unit Tests
-      run: bun test tests/nerve-center.test.ts
+    - name: Lint
+      run: bunx eslint . --max-warnings=0
 
-    - name: Run Load Test
-      # We run the load test to ensure no regression in concurrency logic
+    - name: Typecheck
+      run: bunx tsc --noEmit
+
+    - name: Run full test suite
+      run: bun test
+
+    - name: Run concurrency load test
       run: bun tests/load-test.ts
