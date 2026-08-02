@@ -52,6 +52,8 @@ export class ContextManager {
     private mutex: Mutex;
     public apiUrl?: string;  // Made public so NerveCenter can access it
     public apiSecret?: string;  // Made public so NerveCenter can access it
+    /** Org to coordinate under; kept in sync by NerveCenter on workspace switches. */
+    public orgId?: string;
 
     constructor(apiUrl?: string, apiSecret?: string) {
         this.mutex = new Mutex();
@@ -168,7 +170,8 @@ export class ContextManager {
                     method: "POST",
                     headers: {
                         "Content-Type": "application/json",
-                        "Authorization": `Bearer ${this.apiSecret || ""}`
+                        "Authorization": `Bearer ${this.apiSecret || ""}`,
+                        ...(this.orgId ? { "X-Axis-Org": this.orgId } : {})
                     },
                     body: JSON.stringify({ query, projectName }),
                     signal: controller.signal,
@@ -236,7 +239,8 @@ export class ContextManager {
                     method: "POST",
                     headers: {
                         "Content-Type": "application/json",
-                        "Authorization": `Bearer ${this.apiSecret || ""}`
+                        "Authorization": `Bearer ${this.apiSecret || ""}`,
+                        ...(this.orgId ? { "X-Axis-Org": this.orgId } : {})
                     },
                     body: JSON.stringify({ items, projectName }),
                     signal: controller.signal,

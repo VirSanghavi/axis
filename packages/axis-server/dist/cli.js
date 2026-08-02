@@ -236,16 +236,26 @@ function existingDirectory(candidate) {
     return void 0;
   }
 }
-function deriveProjectName(root) {
+function readAxisConfig(root) {
   try {
-    const config = JSON.parse(
+    return JSON.parse(
       import_fs.default.readFileSync(import_path.default.join(root, ".axis", "axis.json"), "utf8")
     );
-    const configuredName = config.project ?? config.projectName;
-    if (configuredName) return String(configuredName);
   } catch {
+    return {};
   }
+}
+function deriveProjectName(root) {
+  const config = readAxisConfig(root);
+  const configuredName = config.project ?? config.projectName;
+  if (configuredName) return String(configuredName);
   return import_path.default.basename(root).toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "default";
+}
+function deriveOrgId(root, env = process.env) {
+  if (env.AXIS_ORG_ID) return String(env.AXIS_ORG_ID);
+  const config = readAxisConfig(root);
+  const configured = config.org ?? config.orgId;
+  return configured ? String(configured) : void 0;
 }
 function resolveProjectIdentity(configuredRoot, cwd, env = process.env) {
   const runtimeCandidate = existingDirectory(env.AXIS_WORKSPACE_ROOT) || existingDirectory(env.SUPERSET_WORKSPACE_PATH) || existingDirectory(env.SUPERSET_ROOT_PATH);
@@ -258,9 +268,11 @@ function resolveProjectIdentity(configuredRoot, cwd, env = process.env) {
     runtimeRoot && configuredProjectRoot && import_path.default.resolve(runtimeRoot) !== import_path.default.resolve(configuredProjectRoot)
   );
   const projectName = env.AXIS_PROJECT_NAME || (!switchedWorkspace ? env.PROJECT_NAME : void 0) || deriveProjectName(root);
+  const orgId = deriveOrgId(root, env);
   return {
     root,
     projectName,
+    ...orgId ? { orgId } : {},
     source,
     ...switchedWorkspace ? { ignoredConfiguredRoot: configuredProjectRoot } : {}
   };
@@ -300,6 +312,7 @@ import_commander.program.argument("[root]", "Project root directory (optional)")
       ...process.env,
       PROJECT_NAME: identity.projectName,
       AXIS_PROJECT_ROOT: identity.root,
+      ...identity.orgId ? { AXIS_ORG_ID: identity.orgId } : {},
       FORCE_COLOR: "1"
     }
   });

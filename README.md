@@ -27,8 +27,26 @@ SHARED_CONTEXT_API_SECRET=your_shared_secret
 OPENAI_API_KEY=your_openai_key
 SUPABASE_URL=your_supabase_url
 SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
-PROJECT_NAME=default
 ```
+
+Do NOT set `PROJECT_NAME` unless you deliberately want to override detection:
+it outranks repo detection, so a fixed value (like `default`) collapses every
+repo on the machine onto one shared job board. Left unset, the project name is
+derived from your repo (committed `.axis/axis.json` `"project"`, else the repo
+folder name), so every clone of the same repo resolves the same board.
+
+### Team coordination (shared boards)
+
+Commit an org pin so every teammate's clone lands on the same board:
+
+```json
+// .axis/axis.json (at the repo root)
+{ "project": "your-repo", "org": "<your org id from useaxis.dev/team>" }
+```
+
+Per-machine override: `AXIS_ORG_ID=<org id>`. Without an org, coordination
+scopes to your personal workspace (solo behavior, unchanged). Watch and drive
+the live board at `useaxis.dev/team/board`.
 
 ## Setup
 

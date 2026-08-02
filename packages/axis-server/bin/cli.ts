@@ -59,6 +59,7 @@ program
                 ...process.env,
                 PROJECT_NAME: identity.projectName,
                 AXIS_PROJECT_ROOT: identity.root,
+                ...(identity.orgId ? { AXIS_ORG_ID: identity.orgId } : {}),
                 FORCE_COLOR: '1'
             }
         });

@@ -4,7 +4,7 @@ import fs from "fs/promises";
 import { existsSync } from "fs";
 import path from "path";
 import { logger } from "../utils/logger.js";
-import { deriveProjectName, projectStateFilePath } from "./project-identity.js";
+import { deriveOrgId, deriveProjectName, projectStateFilePath } from "./project-identity.js";
 import { buildIntegrityReport, hashContent, hashFileIfExists } from "./lock-integrity.js";
 import { findReclaimable } from "./job-hygiene.js";
 import { locksEnforced, denyWrites, restoreWrites, withTempWrite } from "./fs-guard.js";
@@ -78,6 +78,8 @@ interface NerveCenterOptions {
     supabaseUrl?: string | null;
     supabaseServiceRoleKey?: string | null;
     projectName?: string;
+    /** Org to coordinate under (sent as X-Axis-Org). Defaults to AXIS_ORG_ID / .axis/axis.json "org". */
+    orgId?: string;
     /** Physically enforce locks by chmod'ing locked files read-only. Defaults to AXIS_ENFORCE_LOCKS. */
     enforceLocks?: boolean;
 }
@@ -98,6 +100,7 @@ export class NerveCenter {
     private _projectId?: string; // Renamed backing field
     private projectName: string;
     private projectNameExplicit: boolean;
+    private orgId?: string;
     private useSupabase: boolean;
     private enforceLocks: boolean;
     private protocolEvents: TranscriptEvent[] = [];
@@ -225,6 +228,16 @@ export class NerveCenter {
             this.projectName = "default";
         }
 
+        // Org scoping: without this the API resolves every call to the
+        // caller's PERSONAL org, so two teammates on the same repo silently
+        // get two disjoint boards. An org here (option → env → committed
+        // .axis/axis.json "org") pins coordination to the shared org.
+        this.orgId = options.orgId || deriveOrgId(this.projectRoot);
+        this.contextManager.orgId = this.orgId;
+        if (this.orgId) {
+            logger.info(`NerveCenter: Coordinating under org ${this.orgId}`);
+        }
+
         this.state = {
             locks: {},
             jobs: {},
@@ -238,6 +251,10 @@ export class NerveCenter {
 
     public get currentProjectName(): string {
         return this.projectName;
+    }
+
+    public get currentOrgId(): string | undefined {
+        return this.orgId;
     }
 
     async init() {
@@ -268,7 +285,7 @@ export class NerveCenter {
         return this.state.liveNotepad;
     }
 
-    async switchProject(identity: { root: string; projectName?: string }) {
+    async switchProject(identity: { root: string; projectName?: string; orgId?: string }) {
         return await this.mutex.runExclusive(async () => {
             await this.saveState();
 
@@ -280,6 +297,9 @@ export class NerveCenter {
 
             this.projectName = identity.projectName || deriveProjectName(this.projectRoot);
             this.projectNameExplicit = Boolean(identity.projectName);
+            // Each workspace can pin a different org via its own .axis/axis.json.
+            this.orgId = identity.orgId || deriveOrgId(this.projectRoot);
+            this.contextManager.orgId = this.orgId;
             this._projectId = undefined;
             this.state = NerveCenter.createEmptyState();
 
@@ -441,7 +461,10 @@ export class NerveCenter {
                     method,
                     headers: {
                         "Content-Type": "application/json",
-                        "Authorization": `Bearer ${this.contextManager.apiSecret || ""}`
+                        "Authorization": `Bearer ${this.contextManager.apiSecret || ""}`,
+                        // Pin coordination to the configured org so teammates
+                        // resolve the same board (absent → personal org).
+                        ...(this.orgId ? { "X-Axis-Org": this.orgId } : {})
                     },
                     body: body ? JSON.stringify({ ...body, projectName: this.projectName }) : undefined,
                     signal: controller.signal,
@@ -1841,6 +1864,24 @@ The \`.axis/\` directory exists but \`context.md\` still has placeholder/templat
 Do NOT skip this. Do NOT proceed with other work until the soul is populated. Working without a filled soul means every decision you make lacks context.`;
         }
         return soul;
+    }
+
+    /**
+     * Teammates' agents as seen by the coordination server (derived from live
+     * locks + in_progress jobs across the whole org project). Empty when no
+     * remote API is configured — presence is then local-process only.
+     */
+    async listRemoteAgents(): Promise<Array<{ agentId: string; activeLocks: number; activeJobs: number; jobTitles: string[]; lastSeen: string }>> {
+        if (!this.contextManager.apiUrl) return [];
+        try {
+            const result = await this.callCoordination(
+                `agents?projectName=${encodeURIComponent(this.projectName)}`
+            ) as { agents?: Array<{ agentId: string; activeLocks: number; activeJobs: number; jobTitles: string[]; lastSeen: string }> };
+            return result?.agents || [];
+        } catch (e) {
+            logger.warn(`[listRemoteAgents] Remote presence unavailable: ${e instanceof Error ? e.message : e}`);
+            return [];
+        }
     }
 
     // --- Billing & Usage ---

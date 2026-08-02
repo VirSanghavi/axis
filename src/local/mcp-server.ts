@@ -1180,7 +1180,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 const identity = resolveProjectIdentity(projectRoot, process.cwd(), process.env);
                 const result = await nerveCenter.switchProject({
                     root: identity.root,
-                    projectName: projectName || identity.projectName
+                    projectName: projectName || identity.projectName,
+                    orgId: identity.orgId
                 });
                 return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
             }
@@ -1248,11 +1249,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
   if (name === "list_agents") {
     const roster = presence.list(Date.now());
+    // Merge in teammates seen by the coordination server (locks + claimed
+    // jobs across the whole org project) — the in-process roster only knows
+    // agents multiplexed through THIS server process.
+    const localIds = new Set(roster.map((a) => a.agentId));
+    const teammates = (await nerveCenter.listRemoteAgents())
+      .filter((a) => !localIds.has(a.agentId))
+      .map((a) => ({ ...a, source: "remote" as const }));
     return { content: [{ type: "text", text: JSON.stringify({
-      agentsOnline: roster.length,
+      agentsOnline: roster.length + teammates.length,
       active: roster.filter((a) => a.status === "active").length,
       idle: roster.filter((a) => a.status === "idle").length,
-      agents: roster
+      agents: roster,
+      teammates
     }, null, 2) }] };
   }
 

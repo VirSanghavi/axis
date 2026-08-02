@@ -86,6 +86,8 @@ var ContextManager = class {
   // Made public so NerveCenter can access it
   apiSecret;
   // Made public so NerveCenter can access it
+  /** Org to coordinate under; kept in sync by NerveCenter on workspace switches. */
+  orgId;
   constructor(apiUrl2, apiSecret2) {
     this.mutex = new Mutex();
     this.apiUrl = apiUrl2;
@@ -177,7 +179,8 @@ var ContextManager = class {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "Authorization": `Bearer ${this.apiSecret || ""}`
+            "Authorization": `Bearer ${this.apiSecret || ""}`,
+            ...this.orgId ? { "X-Axis-Org": this.orgId } : {}
           },
           body: JSON.stringify({ query, projectName }),
           signal: controller.signal
@@ -233,7 +236,8 @@ var ContextManager = class {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "Authorization": `Bearer ${this.apiSecret || ""}`
+            "Authorization": `Bearer ${this.apiSecret || ""}`,
+            ...this.orgId ? { "X-Axis-Org": this.orgId } : {}
           },
           body: JSON.stringify({ items, projectName }),
           signal: controller.signal
@@ -302,16 +306,26 @@ function existingDirectory(candidate) {
     return void 0;
   }
 }
-function deriveProjectName(root) {
+function readAxisConfig(root) {
   try {
-    const config = JSON.parse(
+    return JSON.parse(
       fs2.readFileSync(path2.join(root, ".axis", "axis.json"), "utf8")
     );
-    const configuredName = config.project ?? config.projectName;
-    if (configuredName) return String(configuredName);
   } catch {
+    return {};
   }
+}
+function deriveProjectName(root) {
+  const config = readAxisConfig(root);
+  const configuredName = config.project ?? config.projectName;
+  if (configuredName) return String(configuredName);
   return path2.basename(root).toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "default";
+}
+function deriveOrgId(root, env = process.env) {
+  if (env.AXIS_ORG_ID) return String(env.AXIS_ORG_ID);
+  const config = readAxisConfig(root);
+  const configured = config.org ?? config.orgId;
+  return configured ? String(configured) : void 0;
 }
 function resolveProjectIdentity(configuredRoot, cwd, env = process.env) {
   const runtimeCandidate = existingDirectory(env.AXIS_WORKSPACE_ROOT) || existingDirectory(env.SUPERSET_WORKSPACE_PATH) || existingDirectory(env.SUPERSET_ROOT_PATH);
@@ -324,9 +338,11 @@ function resolveProjectIdentity(configuredRoot, cwd, env = process.env) {
     runtimeRoot && configuredProjectRoot && path2.resolve(runtimeRoot) !== path2.resolve(configuredProjectRoot)
   );
   const projectName = env.AXIS_PROJECT_NAME || (!switchedWorkspace ? env.PROJECT_NAME : void 0) || deriveProjectName(root);
+  const orgId = deriveOrgId(root, env);
   return {
     root,
     projectName,
+    ...orgId ? { orgId } : {},
     source,
     ...switchedWorkspace ? { ignoredConfiguredRoot: configuredProjectRoot } : {}
   };
@@ -854,6 +870,7 @@ var NerveCenter = class _NerveCenter {
   // Renamed backing field
   projectName;
   projectNameExplicit;
+  orgId;
   useSupabase;
   enforceLocks;
   protocolEvents = [];
@@ -956,6 +973,11 @@ var NerveCenter = class _NerveCenter {
     } else {
       this.projectName = "default";
     }
+    this.orgId = options.orgId || deriveOrgId(this.projectRoot);
+    this.contextManager.orgId = this.orgId;
+    if (this.orgId) {
+      logger.info(`NerveCenter: Coordinating under org ${this.orgId}`);
+    }
     this.state = {
       locks: {},
       jobs: {},
@@ -967,6 +989,9 @@ var NerveCenter = class _NerveCenter {
   }
   get currentProjectName() {
     return this.projectName;
+  }
+  get currentOrgId() {
+    return this.orgId;
   }
   async init() {
     await this.loadState();
@@ -996,6 +1021,8 @@ var NerveCenter = class _NerveCenter {
       }
       this.projectName = identity.projectName || deriveProjectName(this.projectRoot);
       this.projectNameExplicit = Boolean(identity.projectName);
+      this.orgId = identity.orgId || deriveOrgId(this.projectRoot);
+      this.contextManager.orgId = this.orgId;
       this._projectId = void 0;
       this.state = _NerveCenter.createEmptyState();
       await this.loadState();
@@ -1111,7 +1138,10 @@ var NerveCenter = class _NerveCenter {
           method,
           headers: {
             "Content-Type": "application/json",
-            "Authorization": `Bearer ${this.contextManager.apiSecret || ""}`
+            "Authorization": `Bearer ${this.contextManager.apiSecret || ""}`,
+            // Pin coordination to the configured org so teammates
+            // resolve the same board (absent → personal org).
+            ...this.orgId ? { "X-Axis-Org": this.orgId } : {}
           },
           body: body ? JSON.stringify({ ...body, projectName: this.projectName }) : void 0,
           signal: controller.signal
@@ -2248,6 +2278,23 @@ The \`.axis/\` directory exists but \`context.md\` still has placeholder/templat
 Do NOT skip this. Do NOT proceed with other work until the soul is populated. Working without a filled soul means every decision you make lacks context.`;
     }
     return soul;
+  }
+  /**
+   * Teammates' agents as seen by the coordination server (derived from live
+   * locks + in_progress jobs across the whole org project). Empty when no
+   * remote API is configured — presence is then local-process only.
+   */
+  async listRemoteAgents() {
+    if (!this.contextManager.apiUrl) return [];
+    try {
+      const result = await this.callCoordination(
+        `agents?projectName=${encodeURIComponent(this.projectName)}`
+      );
+      return result?.agents || [];
+    } catch (e) {
+      logger.warn(`[listRemoteAgents] Remote presence unavailable: ${e instanceof Error ? e.message : e}`);
+      return [];
+    }
   }
   // --- Billing & Usage ---
   async getSubscriptionStatus(email) {
@@ -4245,7 +4292,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const identity = resolveProjectIdentity(projectRoot, process.cwd(), process.env);
       const result2 = await nerveCenter.switchProject({
         root: identity.root,
-        projectName: projectName || identity.projectName
+        projectName: projectName || identity.projectName,
+        orgId: identity.orgId
       });
       return { content: [{ type: "text", text: JSON.stringify(result2, null, 2) }] };
     }
@@ -4308,11 +4356,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
     if (name === "list_agents") {
       const roster = presence.list(Date.now());
+      const localIds = new Set(roster.map((a) => a.agentId));
+      const teammates = (await nerveCenter.listRemoteAgents()).filter((a) => !localIds.has(a.agentId)).map((a) => ({ ...a, source: "remote" }));
       return { content: [{ type: "text", text: JSON.stringify({
-        agentsOnline: roster.length,
+        agentsOnline: roster.length + teammates.length,
         active: roster.filter((a) => a.status === "active").length,
         idle: roster.filter((a) => a.status === "idle").length,
-        agents: roster
+        agents: roster,
+        teammates
       }, null, 2) }] };
     }
     throw new Error(`Tool not found: ${name}`);

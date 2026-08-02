@@ -4,6 +4,13 @@ import path from "path";
 export interface ProjectIdentity {
     root: string;
     projectName: string;
+    /**
+     * Org the project coordinates under. When set, every remote call carries
+     * X-Axis-Org so all members of that org resolve the SAME board for this
+     * project name. Unset → the server's legacy behavior (the API scopes to
+     * the caller's personal org), which keeps solo users unchanged.
+     */
+    orgId?: string;
     source: "runtime" | "configured" | "cwd";
     ignoredConfiguredRoot?: string;
 }
@@ -39,21 +46,39 @@ function existingDirectory(candidate?: string): string | undefined {
     }
 }
 
-export function deriveProjectName(root: string): string {
+function readAxisConfig(root: string): Record<string, unknown> {
     try {
-        const config = JSON.parse(
+        return JSON.parse(
             fs.readFileSync(path.join(root, ".axis", "axis.json"), "utf8")
         );
-        const configuredName = config.project ?? config.projectName;
-        if (configuredName) return String(configuredName);
     } catch {
-        // A missing or invalid config falls back to the repository directory.
+        // A missing or invalid config falls back to derived values.
+        return {};
     }
+}
+
+export function deriveProjectName(root: string): string {
+    const config = readAxisConfig(root);
+    const configuredName = config.project ?? config.projectName;
+    if (configuredName) return String(configuredName);
 
     return path.basename(root)
         .toLowerCase()
         .replace(/[^a-z0-9._-]+/g, "-")
         .replace(/^-+|-+$/g, "") || "default";
+}
+
+/**
+ * The org this repo coordinates under. Committing `"org": "<org id>"` in
+ * .axis/axis.json is the one-file way a team makes every clone, on every
+ * machine and account, share a single job board / lock table / notepad.
+ * Env AXIS_ORG_ID wins for per-machine overrides.
+ */
+export function deriveOrgId(root: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
+    if (env.AXIS_ORG_ID) return String(env.AXIS_ORG_ID);
+    const config = readAxisConfig(root);
+    const configured = config.org ?? config.orgId;
+    return configured ? String(configured) : undefined;
 }
 
 export function resolveProjectIdentity(
@@ -83,9 +108,12 @@ export function resolveProjectIdentity(
         (!switchedWorkspace ? env.PROJECT_NAME : undefined) ||
         deriveProjectName(root);
 
+    const orgId = deriveOrgId(root, env);
+
     return {
         root,
         projectName,
+        ...(orgId ? { orgId } : {}),
         source,
         ...(switchedWorkspace ? { ignoredConfiguredRoot: configuredProjectRoot } : {})
     };
