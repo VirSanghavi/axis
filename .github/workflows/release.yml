@@ -1,0 +1,107 @@
+name: Release
+
+# Tag-triggered publishing — the only path that ships packages. Publish
+# credentials live exclusively in repo Actions secrets (NPM_TOKEN,
+# PYPI_API_TOKEN), never in developer or web-app env files.
+#
+#   axis-server-v1.14.1  → publishes @virsanghavi/axis-server
+#   axis-init-v1.1.3     → publishes @virsanghavi/axis-init
+#   python-sdk-v1.0.2    → publishes virsanghavi-axis to PyPI
+#
+# Each job asserts the tag version matches the package manifest, so a tag can
+# never ship a version the repo doesn't declare.
+
+on:
+  push:
+    tags:
+      - "axis-server-v*"
+      - "axis-init-v*"
+      - "python-sdk-v*"
+
+permissions:
+  contents: read
+
+jobs:
+  publish-axis-server:
+    if: startsWith(github.ref_name, 'axis-server-v')
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/axis-server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: Verify tag matches package.json version
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          TAG_VERSION="${GITHUB_REF_NAME#axis-server-v}"
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "Tag $TAG_VERSION != package.json $PKG_VERSION" >&2
+            exit 1
+          fi
+      - name: Install
+        run: npm install
+      - name: Publish (prepublishOnly builds from source)
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  publish-axis-init:
+    if: startsWith(github.ref_name, 'axis-init-v')
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/axis-init
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: Verify tag matches package.json version
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          TAG_VERSION="${GITHUB_REF_NAME#axis-init-v}"
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "Tag $TAG_VERSION != package.json $PKG_VERSION" >&2
+            exit 1
+          fi
+      - name: Install
+        run: npm install
+      - name: Publish (prepublishOnly builds from source)
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  publish-python-sdk:
+    if: startsWith(github.ref_name, 'python-sdk-v')
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/python-sdk
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify tag matches setup.py version
+        run: |
+          PKG_VERSION=$(python -c "import re; print(re.search(r'version=\"([^\"]+)\"', open('setup.py').read()).group(1))")
+          TAG_VERSION="${GITHUB_REF_NAME#python-sdk-v}"
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "Tag $TAG_VERSION != setup.py $PKG_VERSION" >&2
+            exit 1
+          fi
+      - name: Build from source (never ship a committed dist)
+        run: |
+          rm -rf dist
+          python -m pip install --upgrade build twine
+          python -m build
+      - name: Publish to PyPI
+        run: python -m twine upload dist/*
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}

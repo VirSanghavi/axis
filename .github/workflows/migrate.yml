@@ -1,0 +1,38 @@
+name: Apply database migrations
+
+# Migrations stop being hand-applied: any change to supabase/migrations on
+# main is pushed to the production database by CI, in file order, using the
+# Supabase CLI. Requires two Actions secrets:
+#   SUPABASE_ACCESS_TOKEN — supabase.com access token
+#   SUPABASE_DB_URL       — direct Postgres connection string for the project
+#
+# supabase db push only applies migrations it hasn't recorded yet, so re-runs
+# are idempotent.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "supabase/migrations/**"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: db-migrate
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+      - name: Apply pending migrations
+        run: supabase db push --db-url "$SUPABASE_DB_URL" --include-all
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
