@@ -6,7 +6,7 @@ Axis is a high-performance orchestration layer that enables **Parallel Agent Wor
 > This repository is the **free, open-source orchestration core** of Axis (AGPL-3.0): the MCP server, the `axis` CLI, the Python SDK, and the agent protocol — everything your agents use to coordinate.
 >
 > - **Free forever:** the orchestration layer — job board, file locking, shared notepad, sessions, project soul. It's just coordination state; it costs nothing to run.
-> - **Paid (hosted):** the intelligence layer — hybrid code search, agentic `deep_search`, and incremental indexing — plus the managed backend, dashboard, and billing. That lives at **[useaxis.dev](https://useaxis.dev)** (closed source) because it carries real embedding/LLM cost.
+> - **Paid (hosted):** the intelligence layer — hosted search (vector + full-text + trigram, fused and LLM-reranked), cited multi-hop `deep_search`, and incremental indexing — plus the managed backend, dashboard, and billing. The local server's `search_codebase` is ripgrep plus a keyword ranker (no index needed); a Pro key blends hosted results in when they arrive within budget. That lives at **[useaxis.dev](https://useaxis.dev)** (closed source) because it carries real embedding/LLM cost.
 >
 > **Quickest start:** sign up at [useaxis.dev](https://useaxis.dev), then point your MCP client at `https://useaxis.dev/api/mcp` and authenticate — no key to paste. See **[agent-instructions/mcp-setup.md](agent-instructions/mcp-setup.md)** for OAuth, API-key, and local-install options.
 
@@ -170,8 +170,8 @@ The generic adapter accepts common `role`/`content`, `messages`, `tool_calls`,
 `codex`, `claude`, or `generic`. MCP cannot access chat text a host keeps
 private; in that case Axis still captures the complete Axis tool timeline.
 
-> **Physical lock enforcement (opt-in).** Set `AXIS_ENFORCE_LOCKS=1` to make locks
-> mandatory, not advisory: on grant the server `chmod`s the locked file read-only,
+> **Read-only lock hardening (opt-in).** Locks are advisory coordination by design.
+> Set `AXIS_ENFORCE_LOCKS=1` to harden them: on grant the server `chmod`s the locked file read-only,
 > so *any* process — including an agent that ignores Axis — gets `EACCES` on write.
 > The holder writes through `guarded_write` (which briefly restores perms);
 > `release`/`complete_job`/`finalize_session` restore the original mode. This changes
@@ -183,7 +183,7 @@ private; in that case Axis still captures the complete Axis tool timeline.
 
 - `index_codebase` — build the searchable index for a project
 - `index_file` — index a single file (reads from disk if content is omitted)
-- `search_codebase` — hybrid code search with `related` files + `definitions` enrichment
+- `search_codebase` — hosted: vector + full-text + trigram retrieval, fused and LLM-reranked, with `related` files + `definitions` enrichment (locally this tool answers from ripgrep + keyword ranking)
 - `search_docs` — search indexed documentation
 
 **Account:**
@@ -223,8 +223,10 @@ private; in that case Axis still captures the complete Axis tool timeline.
 ## Production & Deployment
 
 ### Supabase Setup
-Apply the schema in [supabase/schema.sql](supabase/schema.sql) to your Supabase project.
-It creates the `projects`, `embeddings`, and `jobs` tables plus the `match_embeddings` RPC.
+Run `supabase db reset` (Docker required) to build the database from the numbered
+migrations in [supabase/migrations](supabase/migrations) — they are the source of truth.
+[supabase/schema.sql](supabase/schema.sql) is a generated snapshot for reference only;
+never apply it by hand. See [supabase/README.md](supabase/README.md) for the workflow.
 
 ### RAG API Examples
 
