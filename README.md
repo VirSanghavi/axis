@@ -215,18 +215,12 @@ private; in that case Axis still captures the complete Axis tool timeline.
 
 ## Architecture
 
-- **Active Orchestrator (`src/local/server.ts`)**: A high-concurrency MCP server that manages distributed state.
+- **Local MCP server (`src/local/mcp-server.ts`)**: The canonical stdio server, shipped as `@virsanghavi/axis-server`. Its tool surface is defined once in `src/shared/tool-registry.ts`.
+- **Hosted MCP + API**: The paid surface lives in the `axis-frontend` repo — MCP at `https://useaxis.dev/api/mcp`, REST at `https://useaxis.dev/api/v1`.
 - **Parallel Job Board**: Supabase-backed registry for atomic task distribution.
 - **Distributed Memory**: Real-time vector-indexed persistence of agent decisions.
 
 ## Production & Deployment
-
-### Docker
-The system is fully containerized for cloud orchestration.
-```bash
-docker-compose up --build
-```
-This starts the Parallel Control Plane on port 3001 and the Context API on port 3000.
 
 ### Supabase Setup
 Apply the schema in [supabase/schema.sql](supabase/schema.sql) to your Supabase project.
@@ -234,16 +228,18 @@ It creates the `projects`, `embeddings`, and `jobs` tables plus the `match_embed
 
 ### RAG API Examples
 
+The RAG endpoints are served by the hosted API (`axis-frontend` repo, deployed at useaxis.dev).
+
 **Embed content**
 
 ```bash
-curl -X POST http://localhost:3000/embed \
+curl -X POST https://useaxis.dev/api/v1/embed \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $SHARED_CONTEXT_API_SECRET" \
+  -H "Authorization: Bearer $AXIS_API_KEY" \
   -d '{
     "items": [
       {
-        "content": "This repo uses Bun and Hono",
+        "content": "This repo uses Bun",
         "metadata": { "filename": "context.md", "source": "agent-instructions" }
       }
     ]
@@ -253,9 +249,9 @@ curl -X POST http://localhost:3000/embed \
 **Search content**
 
 ```bash
-curl -X POST http://localhost:3000/search \
+curl -X POST https://useaxis.dev/api/v1/search \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $SHARED_CONTEXT_API_SECRET" \
+  -H "Authorization: Bearer $AXIS_API_KEY" \
   -d '{
     "query": "What runtime does this project use?",
     "limit": 5,
@@ -274,7 +270,7 @@ bun tests/load-test.ts
 ```
 
 ### Security & Robustness
-- **Rate Limiting**: In-memory rate limiter protects endpoints.
+- **Rate Limiting**: Enforced by the hosted API (axis-frontend) in front of every /api/v1 route.
 - **Persistence**: State is saved to `history/nerve-center-state.json` to survive restarts.
 - **Concurrency**: `AsyncMutex` ensures atomic operations on the Job Board and File Locks.
 
