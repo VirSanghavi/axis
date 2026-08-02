@@ -137,9 +137,9 @@ const teamUpdates = new TeamUpdateTracker();
 // Tools whose responses carry the team-activity trailer. Read-mostly tools
 // (search, context reads) stay clean; coordination touchpoints get awareness.
 const TEAM_AWARE_TOOLS = new Set([
-  "post_job", "claim_job", "claim_next_job", "complete_job", "cancel_job", "list_jobs",
-  "propose_file_access", "release_file_access", "verify_file_lock", "guarded_write",
-  "list_locks", "update_shared_context",
+  "post_job", "claim_job", "claim_next_job", "complete_job", "cancel_job", "release_job",
+  "list_jobs", "propose_file_access", "release_file_access", "verify_file_lock",
+  "guarded_write", "list_locks", "update_shared_context",
 ]);
 
 logger.info("=== Axis MCP Server Initialized ===");
@@ -918,6 +918,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { jobId, reason } = args as any;
     const result = await nerveCenter.cancelJob(jobId, reason);
     return { content: [{ type: "text", text: JSON.stringify(result) }] };
+  }
+  if (name === "release_job") {
+    const { jobId, force, agentId } = args as any;
+    const result = await nerveCenter.releaseJob(jobId, Boolean(force), agentId);
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+  }
+  if (name === "get_shared_context") {
+    const result = await nerveCenter.getSharedContext();
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   }
   if (name === "force_unlock") {
     const { filePath, reason } = args as any;

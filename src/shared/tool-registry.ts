@@ -258,6 +258,28 @@ export const LOCAL_TOOLS: AxisToolDefinition[] = [
         }
       },
       {
+        name: "release_job",
+        description: "**RELEASE TICKET**: Put an abandoned in_progress job back on the board without cancelling it.\n- Use when another agent claimed a job and went silent — the job returns to 'todo' so anyone can pick it up.\n- Guarded: refuses if the assigned agent still looks active; pass `force: true` to override deliberately.\n- Parity with the hosted release_job tool.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            jobId: { type: "string" },
+            force: { type: "boolean", description: "Release even if the assigned agent looks active. Default: false." },
+            agentId: { type: "string", description: "Optional — defaults to this session's unique identity; recorded as the releaser." }
+          },
+          required: ["jobId"]
+        }
+      },
+      {
+        name: "get_shared_context",
+        description: "**READ THE LIVE NOTEPAD**: Return the current shared notepad for this project — the team's short-term working memory (claims, decisions, blockers, handoffs).\n- Use to catch up on what other agents did without waiting for the ambient team-activity trailer.\n- Same shape as the hosted get_shared_context tool: { notepad, projectName }.",
+        inputSchema: {
+          type: "object",
+          properties: {},
+          required: []
+        }
+      },
+      {
         name: "force_unlock",
         description: "**ADMIN OVERRIDE**: Break a file lock.\n- **WARNING**: Only use this if a lock is clearly stale or the locking agent has crashed.\n- Will forcibly remove the lock from the database.",
         inputSchema: {

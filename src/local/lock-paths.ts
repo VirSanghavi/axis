@@ -1,0 +1,115 @@
+import fs from "fs/promises";
+import { existsSync } from "fs";
+import path from "path";
+
+/**
+ * Lock path normalization + file-only validation.
+ * Extracted verbatim from NerveCenter statics (audit #3) — pure functions
+ * with no coordination state.
+ */
+
+/**
+ * Normalize a lock path to be relative to the project root.
+ * Strips the project root prefix (process.cwd()) so that absolute and relative
+ * paths resolve to the same key. This ensures that:
+ *   "/Users/vir/Projects/MyApp/src/api/route.ts" and "src/api/route.ts"
+ * are treated as the same lock.
+ */
+export function normalizeLockPath(filePath: string): string {
+    let normalized = filePath.replace(/\/+$/, "");
+    const cwd = process.cwd().replace(/\/+$/, "");
+
+    // Strip project root prefix if present
+    if (normalized.startsWith(cwd + "/")) {
+        normalized = normalized.slice(cwd.length + 1);
+    } else if (normalized === cwd) {
+        normalized = "";
+    }
+
+    // Strip leading slashes for consistency
+    normalized = normalized.replace(/^\/+/, "");
+
+    // Collapse repo-name-prefixed relative paths: an agent whose shell cwd is
+    // the repo's PARENT directory sends "<repoDir>/src/x.ts", which used to
+    // coexist with "src/x.ts" as two distinct lock keys on the same file —
+    // observed live as two agents holding GRANTED locks on one file. Strip the
+    // leading repo-dir segment unless the literal path is (or could be) a real
+    // file inside a same-named subdirectory of the repo.
+    const rootBase = path.basename(cwd);
+    if (rootBase && normalized.startsWith(rootBase + "/")) {
+        const stripped = normalized.slice(rootBase.length + 1);
+        const literalExists = existsSync(path.join(cwd, normalized));
+        const strippedExists = existsSync(path.join(cwd, stripped));
+        const innerDirExists = existsSync(path.join(cwd, rootBase));
+        if (!literalExists && (strippedExists || !innerDirExists)) {
+            normalized = stripped;
+        }
+    }
+    return normalized;
+}
+
+/**
+ * Validate that a lock targets an individual file, not a directory.
+ * Agents must lock specific files — directory locks are rejected because
+ * they block all other agents from working on ANY file in that tree,
+ * even for completely unrelated features.
+ *
+ * Detection strategy:
+ * 1. If the path exists on disk, use fs.stat to check (handles extensionless files like Makefile)
+ * 2. If the path doesn't exist, use file extension heuristic
+ */
+export async function validateFileOnly(filePath: string): Promise<{ valid: boolean; reason?: string }> {
+    const normalized = normalizeLockPath(filePath);
+
+    // Reject empty / root paths
+    if (!normalized || normalized === "." || normalized === "/") {
+        return { valid: false, reason: "Cannot lock the project root. Lock individual files instead." };
+    }
+
+    const projectRoot = path.resolve(process.cwd());
+    const absolutePath = path.resolve(projectRoot, filePath);
+    const relativePath = path.relative(projectRoot, absolutePath);
+    if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+        return { valid: false, reason: "Cannot lock files outside the project root." };
+    }
+
+    // Try filesystem check first (handles extensionless files like Makefile, Dockerfile, LICENSE)
+    try {
+        const stat = await fs.stat(absolutePath);
+        if (stat.isDirectory()) {
+            return {
+                valid: false,
+                reason: `'${normalized}' is a directory. Lock individual files instead — directory locks block all agents from the entire tree, preventing parallel work on different features.`
+            };
+        }
+        // It's a file (even without an extension) — allow it
+        return { valid: true };
+    } catch {
+        // Path doesn't exist on disk — fall through to heuristic
+    }
+
+    // Heuristic: if the last segment has no file extension, it's likely a directory
+    const lastSegment = normalized.split("/").filter(Boolean).pop() || "";
+    if (!lastSegment.includes(".")) {
+        return {
+            valid: false,
+            reason: `'${normalized}' looks like a directory (no file extension). Lock individual files instead — directory locks block all agents from the entire tree, preventing parallel work on different features.`
+        };
+    }
+
+    return { valid: true };
+}
+
+/**
+ * Build an actionable denial message: who holds the lock, why, and how to
+ * recover. Vague "locked by another agent" errors leave agents stuck; this
+ * tells them what to do next.
+ */
+export function orchestrationMessage(lockTimeoutMs: number, normalizedPath: string, ownerId?: string, intent?: string): string {
+    const mins = Math.round(lockTimeoutMs / 60000);
+    const owner = ownerId || "another agent";
+    const why = intent ? ` for: "${intent}"` : "";
+    return `File '${normalizedPath}' is locked by '${owner}'${why}. `
+        + `Pick a different file or job, or coordinate via update_shared_context. `
+        + `The lock auto-expires after ${mins} min; use force_unlock only if '${owner}' has crashed.`;
+}
