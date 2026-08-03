@@ -81,3 +81,7 @@ frontend/
 # Local tooling artifacts (screenshots, browser traces)
 .playwright-mcp/
 before-hero.png
+
+# Runtime artifact of the load test; it rewrites itself on every run
+# and dirtied the tree during CI.
+/tests/load-test-state.json

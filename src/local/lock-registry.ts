@@ -140,12 +140,12 @@ export class LockRegistry {
      * targeting the same file are correctly detected as conflicts.
      */
     private findExactConflict(requestedPath: string, requestingAgent: string, locks: FileLock[]): FileLock | null {
-        const normalizedRequested = normalizeLockPath(requestedPath);
+        const normalizedRequested = normalizeLockPath(requestedPath, this.core.projectRoot);
         for (const lock of locks) {
             if (lock.agentId === requestingAgent) continue;
             const isStale = (Date.now() - lock.timestamp) > this.core.lockTimeout;
             if (isStale) continue;
-            const normalizedLock = normalizeLockPath(lock.filePath);
+            const normalizedLock = normalizeLockPath(lock.filePath, this.core.projectRoot);
             if (normalizedRequested === normalizedLock) {
                 return lock;
             }
@@ -198,10 +198,10 @@ export class LockRegistry {
             logger.info(`[proposeFileAccess] Starting - agentId: ${agentId}, filePath: ${filePath}`);
 
             // --- Normalize and validate: file-only locks ---
-            const normalizedPath = normalizeLockPath(filePath);
+            const normalizedPath = normalizeLockPath(filePath, this.core.projectRoot);
             logger.info(`[proposeFileAccess] Normalized path: '${normalizedPath}' (from '${filePath}')`);
 
-            const fileCheck = await validateFileOnly(filePath);
+            const fileCheck = await validateFileOnly(filePath, this.core.projectRoot);
             if (!fileCheck.valid) {
                 logger.warn(`[proposeFileAccess] REJECTED — not a file: ${fileCheck.reason}`);
                 return {
@@ -372,7 +372,7 @@ export class LockRegistry {
     async releaseFileAccess(agentId: string, filePath: string) {
         return await this.core.mutex.runExclusive(async () => {
             const { supabase, useSupabase, projectId, coordination, store, enforcement } = this.core;
-            const normalizedPath = normalizeLockPath(filePath);
+            const normalizedPath = normalizeLockPath(filePath, this.core.projectRoot);
 
             if (coordination.enabled) {
                 try {
@@ -458,7 +458,7 @@ export class LockRegistry {
                 await store.save();
             }
             // Restore perms whether the path was stored normalized or absolute.
-            await enforcement.restore(normalizeLockPath(filePath));
+            await enforcement.restore(normalizeLockPath(filePath, this.core.projectRoot));
 
             await this.logLockEvent("FORCE_UNLOCKED", filePath, "admin", undefined, reason);
             await this.core.appendToNotepad(`\n- [FORCE UNLOCK] ${filePath} unlocked by admin. Reason: ${reason}`);
@@ -476,10 +476,10 @@ export class LockRegistry {
     async verifyFileAccess(agentId: string, filePath: string) {
         return await this.core.mutex.runExclusive(async () => {
             const { store } = this.core;
-            const normalizedPath = normalizeLockPath(filePath);
+            const normalizedPath = normalizeLockPath(filePath, this.core.projectRoot);
             const lock = store.current.locks[normalizedPath]
                 || (await this.listLocks()).find(
-                    (l) => normalizeLockPath(l.filePath) === normalizedPath
+                    (l) => normalizeLockPath(l.filePath, this.core.projectRoot) === normalizedPath
                 );
 
             if (!lock) {
@@ -530,14 +530,14 @@ export class LockRegistry {
     async guardedWrite(agentId: string, filePath: string, content: string) {
         return await this.core.mutex.runExclusive(async () => {
             const { store, enforcement } = this.core;
-            const normalizedPath = normalizeLockPath(filePath);
+            const normalizedPath = normalizeLockPath(filePath, this.core.projectRoot);
 
-            const fileCheck = await validateFileOnly(filePath);
+            const fileCheck = await validateFileOnly(filePath, this.core.projectRoot);
             if (!fileCheck.valid) return { status: "REJECTED", message: fileCheck.reason };
 
             const lock = store.current.locks[normalizedPath]
                 || (await this.listLocks()).find(
-                    (l) => normalizeLockPath(l.filePath) === normalizedPath
+                    (l) => normalizeLockPath(l.filePath, this.core.projectRoot) === normalizedPath
                 );
             if (!lock) {
                 return { status: "NO_LOCK", message: `Acquire a lock with propose_file_access before writing '${normalizedPath}'.` };

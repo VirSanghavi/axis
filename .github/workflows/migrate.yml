@@ -31,8 +31,29 @@ jobs:
       - uses: supabase/setup-cli@v1
         with:
           version: latest
+      # Plain `db push` — deliberately NOT `--include-all`.
+      #
+      # `--include-all` applies every migration production has no
+      # schema_migrations row for. Production predates this directory: 0000
+      # through 0007 were applied by hand in the SQL editor and were never
+      # recorded, so --include-all replays them and aborts the entire push on
+      # the first failure. 0007's cochange_neighbors returns 4 columns;
+      # production already runs the 5-column 0012 version, and CREATE OR
+      # REPLACE FUNCTION cannot change a function's return type — it errors,
+      # and every later migration in the batch is rolled back with it.
+      #
+      # Before --include-all can ever be safe here, the history has to be
+      # repaired ONCE against production, by hand:
+      #
+      #   supabase migration repair --status applied 0000 0001 0002 0003 \
+      #     0004 0005 0006 0007 --db-url "$SUPABASE_DB_URL"
+      #
+      # That backfills the schema_migrations rows for the already-applied
+      # migrations without re-running their SQL. Verify with
+      # `supabase migration list --db-url ...` that local and remote agree,
+      # and only then reconsider the flag. See supabase/README.md.
       - name: Apply pending migrations
-        run: supabase db push --db-url "$SUPABASE_DB_URL" --include-all
+        run: supabase db push --db-url "$SUPABASE_DB_URL"
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}

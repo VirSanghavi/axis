@@ -14,7 +14,6 @@ import {
 import {
     CoordinationContext,
     Job,
-    JobRecord,
     NerveCenterOptions,
     LOCK_TIMEOUT_DEFAULT,
 } from "./coordination-types.js";
@@ -146,6 +145,9 @@ export class NerveCenter {
             get useSupabase() { return self.useSupabase; },
             get projectId() { return self._projectId; },
             get projectName() { return self.projectName; },
+            // A getter, not a snapshot: detectProjectName can reassign the root
+            // to a discovered ancestor after construction.
+            get projectRoot() { return self.projectRoot; },
             get lockTimeout() { return self.lockTimeout; },
             appendToNotepad: (text: string) => this.appendToNotepad(text),
         };

@@ -85,14 +85,33 @@ now deleted. `0014` replaces a `try_acquire_lock` that did SELECT-then-INSERT
 blocks everyone else.
 
 **`0001`, `0002`, and `0003`** used bare `CREATE POLICY` and were the only
-migrations here that could not survive a replay. That mattered once
-`.github/workflows/migrate.yml` started running `supabase db push --include-all`
+migrations here that could not survive a replay. That mattered when
+`.github/workflows/migrate.yml` briefly ran `supabase db push --include-all`
 on every push to main: `--include-all` applies any migration production has no
 `schema_migrations` row for, and these three were applied by hand in the SQL
 editor years before anything was being recorded. Replaying them would have hit
 `policy ... already exists` and failed the whole push. Each `CREATE POLICY` is
 now preceded by `DROP POLICY IF EXISTS`. Behavior on a fresh database is
 unchanged; every migration in this directory is now replay-safe.
+
+**`--include-all` has since been removed from the workflow**, because
+replay-safe is not enough for `0007`. Production runs the 5-column
+`cochange_neighbors` from `0012`; `0007` declares the 4-column original, and
+`CREATE OR REPLACE FUNCTION` cannot change a function's return type. Replaying
+`0007` therefore errors and rolls back the whole batch, taking every genuinely
+pending migration with it. The repair is a one-time, hand-run backfill of the
+history rows against production:
+
+```
+supabase migration repair --status applied \
+  0000 0001 0002 0003 0004 0005 0006 0007 \
+  --db-url "$SUPABASE_DB_URL"
+supabase migration list --db-url "$SUPABASE_DB_URL"   # local and remote must agree
+```
+
+Until that has been run and verified, CI uses a plain `supabase db push`, which
+applies only migrations recorded as pending and leaves the unrecorded prehistory
+alone.
 
 ## The .gitignore trap — read this before adding any file here
 
