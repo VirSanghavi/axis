@@ -365,8 +365,30 @@ export class LockRegistry {
             await enforcement.enforce(normalizedPath, agentId, filePath);
             await this.logLockEvent("GRANTED", normalizedPath, agentId, undefined, intent);
             await this.core.appendToNotepad(`\n- [LOCK] ${agentId} locked ${normalizedPath}\n  Intent: ${intent}`);
-            return { status: "GRANTED", message: `Access granted for ${normalizedPath}` };
+            // Reaching Path 3 with a board configured means the board was
+            // unreachable, which is a materially different situation from never
+            // having had one.
+            const degraded = coordination.enabled || useSupabase;
+            return {
+                status: "GRANTED",
+                scope: "local" as const,
+                message: this.localGrantMessage(normalizedPath, degraded)
+            };
         });
+    }
+
+    /**
+     * A grant from the local fallback binds this machine and nothing else.
+     * Saying so in the response is correctness, not promotion: an agent handed
+     * a bare "GRANTED" reports to its user that the file is safe to edit, and
+     * on a team that is simply false. The lock is real, its scope is not what
+     * the word implies, and stderr warnings do not reach anyone because MCP
+     * clients do not surface them.
+     */
+    private localGrantMessage(normalizedPath: string, degraded: boolean): string {
+        return degraded
+            ? `Access granted for ${normalizedPath}, but on this machine only: the shared board was unreachable, so this lock is invisible to agents elsewhere and they are not blocked from this file.`
+            : `Access granted for ${normalizedPath} (this machine only). No shared board is configured, so agents run by other people on this repository are not blocked from this file.`;
     }
 
     async releaseFileAccess(agentId: string, filePath: string) {
