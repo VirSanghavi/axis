@@ -3,7 +3,7 @@
   "name": "dev.useaxis/axis",
   "title": "Axis",
   "description": "Coding agents from Claude Code, Cursor and Codex claim jobs and lock files on one shared board.",
-  "version": "1.14.1",
+  "version": "1.14.2",
   "websiteUrl": "https://useaxis.dev",
   "repository": {
     "url": "https://github.com/VirSanghavi/axis",
@@ -16,7 +16,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@virsanghavi/axis-server",
-      "version": "1.14.1",
+      "version": "1.14.2",
       "runtimeHint": "npx",
       "transport": {
         "type": "stdio"

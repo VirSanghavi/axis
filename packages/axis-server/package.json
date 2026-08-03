@@ -1,6 +1,6 @@
 {
   "name": "@virsanghavi/axis-server",
-  "version": "1.14.1",
+  "version": "1.14.2",
   "description": "One coordination board for a team's coding agents. Claude Code, Cursor, Codex and Windsurf share a job board and take a lock on a file before editing it, so agents run by different people do not overwrite each other.",
   "mcpName": "dev.useaxis/axis",
   "license": "AGPL-3.0-only",
