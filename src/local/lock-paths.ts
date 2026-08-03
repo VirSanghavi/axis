@@ -92,6 +92,33 @@ export function normalizeLockPath(filePath: string, projectRoot?: string): strin
 }
 
 /**
+ * Extensionless basenames that are known FILES, not directories (lowercased).
+ * Locking a not-yet-created Dockerfile/Makefile/LICENSE used to be rejected by
+ * the no-extension heuristic below — the stat-based check only rescues files
+ * that already exist. Keep in sync with the same list in
+ * axis-frontend/frontend/lib/axis-services.ts (the hosted server never has a
+ * filesystem to stat, so it relies on this list for every call).
+ */
+const KNOWN_EXTENSIONLESS_FILES = new Set([
+    // Build / task runners
+    "makefile", "gnumakefile", "justfile", "rakefile", "buildfile", "buck", "tiltfile", "earthfile",
+    // Containers / infra
+    "dockerfile", "containerfile", "vagrantfile", "procfile", "caddyfile", "jenkinsfile", "kptfile",
+    // Language package managers
+    "gemfile", "guardfile", "brewfile", "podfile", "cartfile", "pipfile", "fastfile", "appfile", "matchfile", "snapfile",
+    // Project meta / legal
+    "license", "licence", "copying", "copyright", "notice", "patents", "authors", "contributors", "maintainers",
+    "codeowners", "owners", "readme", "changelog", "changes", "news", "todo", "version", "cname",
+]);
+
+/**
+ * Extensionless names that are files ONLY in their conventional uppercase
+ * spelling (Bazel BUILD/WORKSPACE, GNU INSTALL). Lowercase "build" etc. is far
+ * more often a directory, so these are matched case-sensitively.
+ */
+const KNOWN_EXTENSIONLESS_FILES_EXACT = new Set(["BUILD", "WORKSPACE", "INSTALL"]);
+
+/**
  * Validate that a lock targets an individual file, not a directory.
  * Agents must lock specific files — directory locks are rejected because
  * they block all other agents from working on ANY file in that tree,
@@ -136,9 +163,11 @@ export async function validateFileOnly(
         // Path doesn't exist on disk — fall through to heuristic
     }
 
-    // Heuristic: if the last segment has no file extension, it's likely a directory
+    // Heuristic: if the last segment has no file extension, it's likely a
+    // directory — unless it is a well-known extensionless file an agent is
+    // about to create (an existing one is already allowed by the stat above).
     const lastSegment = normalized.split("/").filter(Boolean).pop() || "";
-    if (!lastSegment.includes(".")) {
+    if (!lastSegment.includes(".") && !KNOWN_EXTENSIONLESS_FILES.has(lastSegment.toLowerCase()) && !KNOWN_EXTENSIONLESS_FILES_EXACT.has(lastSegment)) {
         return {
             valid: false,
             reason: `'${normalized}' looks like a directory (no file extension). Lock individual files instead — directory locks block all agents from the entire tree, preventing parallel work on different features.`
