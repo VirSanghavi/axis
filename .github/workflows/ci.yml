@@ -26,6 +26,16 @@ jobs:
     - name: Typecheck
       run: bunx tsc --noEmit
 
+    # packages/axis-server is a standalone npm package (not a bun workspace),
+    # so the root install never builds its dist/ — but the test suite verifies
+    # the published artifact (tests/package-contents.test.ts). Build it the
+    # same way prepublishOnly does, or that test fails on every clean checkout.
+    - name: Build axis-server package
+      run: |
+        cd packages/axis-server
+        npm ci
+        npm run build
+
     - name: Run full test suite
       run: bun test
 
