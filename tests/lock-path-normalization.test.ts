@@ -6,7 +6,7 @@
  * the same file simultaneously — observed live during the audit swarm.
  */
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "fs/promises";
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "fs/promises";
 import { tmpdir } from "os";
 import path from "path";
 import { NerveCenter } from "../src/local/nerve-center.js";
@@ -96,5 +96,96 @@ describe("double-lock regression (the observed failure)", () => {
 
         const locks = await nc.listLocks();
         expect(Object.keys(locks)).toHaveLength(1);
+    });
+
+    /**
+     * Symlinked routes to one physical file must collapse to one lock key.
+     *
+     * Found by running examples/two-agent-collision.ts: on macOS `/var` is a
+     * symlink to `/private/var`, so a literal prefix comparison against a
+     * resolved cwd treats the two spellings as different files. That is the same
+     * "two agents GRANTED on one file" failure as the repo-prefix case above,
+     * reached by a different route, and it is not exotic: symlinked workspace
+     * folders and home directories hit it too.
+     */
+    test("a symlinked path and a direct path are the same lock", async () => {
+        const nc = await makeNerveCenter();
+        const root = process.cwd();
+        await mkdir(path.join(root, "src"), { recursive: true });
+        await writeFile(path.join(root, "src", "z.ts"), "v1");
+
+        // A symlinked alias of the repo root, the way /var aliases /private/var.
+        const alias = path.join(path.dirname(root), `${path.basename(root)}-alias`);
+        await symlink(root, alias, "dir");
+        cleanups.push(() => rm(alias, { recursive: true, force: true }));
+
+        expect((await nc.proposeFileAccess("agent-A", "src/z.ts", "editing", "p")).status).toBe("GRANTED");
+
+        // Same file, reached through the symlink. It must be DENIED because
+        // agent-A holds it. Asserting only "not GRANTED" is too weak: before the
+        // fix this path came back REJECTED as "outside the project root", which
+        // would satisfy a negative assertion while proving nothing about locking.
+        const second = await nc.proposeFileAccess("agent-B", path.join(alias, "src", "z.ts"), "also editing", "p");
+        expect(second.status).toBe("REQUIRES_ORCHESTRATION");
+        expect(second.message).toContain("agent-A");
+
+        const locks = await nc.listLocks();
+        const entries = Object.values(locks as Record<string, { agentId: string; filePath: string }>);
+        expect(entries).toHaveLength(1);
+        expect(entries[0].agentId).toBe("agent-A");
+    });
+
+    /**
+     * The configured projectRoot must actually govern lock containment.
+     *
+     * Before this fix, lock-paths always compared against process.cwd(), so a
+     * server launched outside the repo (or one whose root detection walked up to
+     * an ancestor) refused every lock with "outside the project root". The option
+     * was accepted and silently ignored.
+     */
+    test("locks resolve against the configured projectRoot, not the process cwd", async () => {
+        const repo = await realpath(await mkdtemp(path.join(tmpdir(), "axis-repo-")));
+        const elsewhere = await realpath(await mkdtemp(path.join(tmpdir(), "axis-elsewhere-")));
+        cleanups.push(() => rm(repo, { recursive: true, force: true }));
+        cleanups.push(() => rm(elsewhere, { recursive: true, force: true }));
+
+        await mkdir(path.join(repo, "src"), { recursive: true });
+        await writeFile(path.join(repo, "src", "a.ts"), "v1");
+
+        const stateFile = path.join(repo, "state.json");
+        await writeFile(stateFile, JSON.stringify({ locks: {}, jobs: {}, liveNotepad: "x" }));
+
+        // The server is running somewhere that is NOT the repo.
+        process.chdir(elsewhere);
+
+        const nc = new NerveCenter(new MockManager() as never, {
+            stateFilePath: stateFile,
+            projectRoot: repo,
+        });
+        await nc.init();
+
+        const res = await nc.proposeFileAccess("agent-A", path.join(repo, "src", "a.ts"), "editing", "p");
+        expect(res.status).toBe("GRANTED");
+
+        // And the key is repo-relative, not an absolute path that happens to work.
+        const locks = await nc.listLocks();
+        const entries = Object.values(locks as Record<string, { filePath: string }>);
+        expect(entries).toHaveLength(1);
+        expect(entries[0].filePath).toBe("src/a.ts");
+    });
+
+    test("a symlinked path inside the repo is not rejected as outside it", async () => {
+        const nc = await makeNerveCenter();
+        const root = process.cwd();
+        await mkdir(path.join(root, "src"), { recursive: true });
+        await writeFile(path.join(root, "src", "w.ts"), "v1");
+
+        const alias = path.join(path.dirname(root), `${path.basename(root)}-alias2`);
+        await symlink(root, alias, "dir");
+        cleanups.push(() => rm(alias, { recursive: true, force: true }));
+
+        // Before canonicalization this returned REJECTED, "outside the project root".
+        const res = await nc.proposeFileAccess("agent-A", path.join(alias, "src", "w.ts"), "editing", "p");
+        expect(res.status).toBe("GRANTED");
     });
 });

@@ -22,6 +22,12 @@ export interface CoreServices {
     readonly useSupabase: boolean;
     readonly projectId: string | undefined;
     readonly projectName: string;
+    /**
+     * Absolute repo root. Lock paths are resolved and contained against this,
+     * NOT against process.cwd(): the two differ whenever the client launches the
+     * server outside the repo, or when root detection walks up to an ancestor.
+     */
+    readonly projectRoot: string;
     readonly lockTimeout: number;
     /** Append to the live notepad (persists locally + syncs to Supabase/API). */
     appendToNotepad(text: string): Promise<void>;

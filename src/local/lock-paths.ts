@@ -1,6 +1,43 @@
 import fs from "fs/promises";
-import { existsSync } from "fs";
+import { existsSync, realpathSync } from "fs";
 import path from "path";
+
+/** realpath, or the input unchanged when it cannot be resolved. Never throws. */
+function realpathOrSelf(target: string): string {
+    try {
+        return realpathSync(target);
+    } catch {
+        return target;
+    }
+}
+
+/**
+ * Resolve symlinks as far down a path as the filesystem allows, then re-append
+ * the segments that do not exist yet.
+ *
+ * A plain realpath is not enough: agents legitimately lock files they are about
+ * to create, and realpath throws on a missing leaf. Walking up to the deepest
+ * existing ancestor canonicalizes the real part while leaving the rest intact.
+ *
+ * This is what makes two names for one file produce one lock key. On macOS
+ * `/var` is a symlink to `/private/var`, so without this an agent sending
+ * `/var/repo/src/a.ts` and one sending `src/a.ts` generate different keys and
+ * BOTH get GRANTED on the same physical file.
+ */
+export function canonicalizePath(absolute: string): string {
+    const pending: string[] = [];
+    let current = absolute;
+
+    while (current && current !== path.dirname(current)) {
+        if (existsSync(current)) {
+            return path.join(realpathOrSelf(current), ...pending);
+        }
+        pending.unshift(path.basename(current));
+        current = path.dirname(current);
+    }
+
+    return absolute;
+}
 
 /**
  * Lock path normalization + file-only validation.
@@ -15,9 +52,15 @@ import path from "path";
  *   "/Users/vir/Projects/MyApp/src/api/route.ts" and "src/api/route.ts"
  * are treated as the same lock.
  */
-export function normalizeLockPath(filePath: string): string {
-    let normalized = filePath.replace(/\/+$/, "");
-    const cwd = process.cwd().replace(/\/+$/, "");
+export function normalizeLockPath(filePath: string, projectRoot?: string): string {
+    const cwd = canonicalizePath(path.resolve(projectRoot ?? process.cwd())).replace(/\/+$/, "");
+
+    // Canonicalize before comparing, so a symlinked route to a file and a direct
+    // route to the same file collapse to one lock key instead of two.
+    const trimmed = filePath.replace(/\/+$/, "");
+    let normalized = trimmed
+        ? canonicalizePath(path.resolve(cwd, trimmed)).replace(/\/+$/, "")
+        : trimmed;
 
     // Strip project root prefix if present
     if (normalized.startsWith(cwd + "/")) {
@@ -58,17 +101,22 @@ export function normalizeLockPath(filePath: string): string {
  * 1. If the path exists on disk, use fs.stat to check (handles extensionless files like Makefile)
  * 2. If the path doesn't exist, use file extension heuristic
  */
-export async function validateFileOnly(filePath: string): Promise<{ valid: boolean; reason?: string }> {
-    const normalized = normalizeLockPath(filePath);
+export async function validateFileOnly(
+    filePath: string,
+    projectRoot?: string
+): Promise<{ valid: boolean; reason?: string }> {
+    const normalized = normalizeLockPath(filePath, projectRoot);
 
     // Reject empty / root paths
     if (!normalized || normalized === "." || normalized === "/") {
         return { valid: false, reason: "Cannot lock the project root. Lock individual files instead." };
     }
 
-    const projectRoot = path.resolve(process.cwd());
-    const absolutePath = path.resolve(projectRoot, filePath);
-    const relativePath = path.relative(projectRoot, absolutePath);
+    // Canonicalize both sides. Comparing a symlinked path against a resolved root
+    // literally reports a file inside the repo as outside it, refusing every lock.
+    const root = canonicalizePath(path.resolve(projectRoot ?? process.cwd()));
+    const absolutePath = canonicalizePath(path.resolve(root, filePath));
+    const relativePath = path.relative(root, absolutePath);
     if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
         return { valid: false, reason: "Cannot lock files outside the project root." };
     }
