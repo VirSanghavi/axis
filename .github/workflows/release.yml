@@ -49,6 +49,31 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+      # The registry only stores metadata and points at the npm artifact, so it
+      # must run after the publish above. It also refuses any server.json whose
+      # package lacks a matching `mcpName`, which is why that field lives in
+      # packages/axis-server/package.json rather than here.
+      - name: Publish to the official MCP registry
+        working-directory: .
+        run: |
+          VERSION=$(node -p "require('./packages/axis-server/package.json').version")
+          MANIFEST=$(node -p "require('./server.json').version")
+          if [ "$VERSION" != "$MANIFEST" ]; then
+            echo "server.json declares $MANIFEST but the package is $VERSION" >&2
+            echo "Bump both together, or the registry advertises a version npm does not serve." >&2
+            exit 1
+          fi
+          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/download/v${PUBLISHER_VERSION}/mcp-publisher_linux_amd64.tar.gz" \
+            | tar -xz mcp-publisher
+          # dev.useaxis is a domain namespace, so this authenticates by signing a
+          # challenge with the key whose public half is the useaxis.dev TXT
+          # record. GitHub OIDC would only grant io.github.* namespaces.
+          ./mcp-publisher login dns --domain=useaxis.dev --private-key="$MCP_REGISTRY_ED25519_KEY"
+          ./mcp-publisher publish
+        env:
+          PUBLISHER_VERSION: 1.8.0
+          MCP_REGISTRY_ED25519_KEY: ${{ secrets.MCP_REGISTRY_ED25519_KEY }}
+
   publish-axis-init:
     if: startsWith(github.ref_name, 'axis-init-v')
     runs-on: ubuntu-latest
