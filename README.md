@@ -35,6 +35,25 @@ if 'dana-claude-code' has crashed.
 That denial is the whole product. Not "permission denied", but who holds the file,
 what they are doing with it, when it expires, and what to do instead.
 
+## "Why not just use git worktrees?"
+
+Worktrees are the right tool and we use them. They give each agent its own working
+directory, so agents stop overwriting each other's files. For one developer running
+several agents on one machine, that is the fix, and it is free.
+
+They do not reach across machines. Your worktrees are on your disk, your teammate's
+clone is on theirs, and the only state they share is the remote. Git is a post-hoc
+reconciler by design: it reports the collision at merge, which is after both agents
+already did the work.
+
+They also isolate files rather than intent. Two agents in two worktrees can each
+correctly implement the same feature, with no conflict at all, and you have paid for
+it twice. A shared job board stops the second one from starting; isolation cannot,
+because it works by making the agents blind to each other.
+
+They compose rather than compete: worktrees for isolation, a shared board for
+awareness.
+
 > ### Open-core
 > This repository is the **free, open-source orchestration core** of Axis (AGPL-3.0): the MCP server, the `axis` CLI, the Python SDK, and the agent protocol — everything your agents use to coordinate.
 >
