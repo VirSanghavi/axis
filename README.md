@@ -1,6 +1,39 @@
-# Axis: Parallel Agent Workflows & Orchestration
+# Axis: one coordination board for your whole team's agents
 
-Axis is a high-performance orchestration layer that enables **Parallel Agent Workflows**. It allows multiple AI agents (Claude Code, Cursor, Antigravity, Windsurf) to coordinate on the same codebase simultaneously through distributed shared memory and atomic task management.
+Claude Code's Agent Teams coordinates the agents running on **your** machine, and it does that well. Axis solves the next problem along: several **developers**, running **different agent vendors**, on the same repo at the same time.
+
+Every agent that speaks MCP (Claude Code, Cursor, Codex, Windsurf, Antigravity) claims work from the same job board and takes a lock on a file before editing it. So your agent finds out that your teammate's agent is already in that file, before it overwrites their work instead of after.
+
+If you are one developer on one machine, use Agent Teams. It is free, native, and better at that. Axis is for when the collisions stop being yours.
+
+## See it in 30 seconds
+
+```bash
+bun examples/two-agent-collision.ts
+```
+
+Runs fully offline against a throwaway repo in your temp directory. Two agents go
+for the same file; every status below is a real return value, not staged output:
+
+```
+2. Dana's agent (Claude Code) claims the top job and takes the file
+   claim_next_job      -> CLAIMED  refactor auth to issue JWTs
+   propose_file_access -> GRANTED  src/auth.ts
+
+3. Sam's agent (Cursor, different machine) goes for the same file
+   propose_file_access -> REQUIRES_ORCHESTRATION
+
+File 'src/auth.ts' is locked by 'dana-claude-code' for: "refactor auth to issue
+JWTs instead of session cookies". Pick a different file or job, or coordinate via
+update_shared_context. The lock auto-expires after 30 min; use force_unlock only
+if 'dana-claude-code' has crashed.
+
+4. So it takes the other job instead of colliding
+   claim_next_job      -> CLAIMED  add rate limiting to the login route
+```
+
+That denial is the whole product. Not "permission denied", but who holds the file,
+what they are doing with it, when it expires, and what to do instead.
 
 > ### Open-core
 > This repository is the **free, open-source orchestration core** of Axis (AGPL-3.0): the MCP server, the `axis` CLI, the Python SDK, and the agent protocol — everything your agents use to coordinate.
@@ -12,10 +45,11 @@ Axis is a high-performance orchestration layer that enables **Parallel Agent Wor
 
 ## Features
 
-1.  **Parallel Agent Orchestration (PAO-1)**: Coordinate agent swarms with a shared Job Board and pessimistic File Locking.
-2.  **Distributed Shared Memory**: Real-time synchronization of the "Live Notepad" across disparate agent processes.
-3.  **Governance & Mirroring**: High-fidelity context mirroring to ensure all agents operate on "Ground Truth."
-4.  **MCP Native**: Standardized toolset via the Model Context Protocol for seamless integration with any agent.
+1.  **Shared job board**: Post work, claim it atomically. Claims run through `SELECT ... FOR UPDATE SKIP LOCKED` inside the transaction, so two agents racing for the same job cannot both win. Dependencies are respected: a job whose blockers are not `done` will not be handed out.
+2.  **Per-file locks, tamper-evident**: An agent takes a lock before editing. Locks are advisory by nature (a coordination server cannot block a write it does not perform), so Axis records a content fingerprint when the lock is granted and lets the holder verify before writing. You find out that a file changed under you, instead of silently clobbering it.
+3.  **One board across people and vendors**: Commit an org pin in `.axis/axis.json` and every teammate's clone resolves to the same board, whatever agent each person runs.
+4.  **Live board and shared notepad**: See what every agent on the repo is doing right now at [useaxis.dev/team/board](https://useaxis.dev/team/board), pushed over Postgres Realtime.
+5.  **MCP native**: Standard protocol and OAuth, so there is no key to paste and no plugin to install per client.
 
 ## Environment
 

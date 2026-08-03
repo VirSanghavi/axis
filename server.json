@@ -1,0 +1,19 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
+  "name": "dev.useaxis/axis",
+  "description": "One coordination board for a team's coding agents. Claude Code, Cursor, Codex and Windsurf share a job board and take a lock on a file before editing it, so agents run by different people do not overwrite each other.",
+  "version": "1.14.0",
+  "packages": [
+    {
+      "registry_type": "npm",
+      "identifier": "@virsanghavi/axis-server",
+      "version": "1.14.0"
+    }
+  ],
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://useaxis.dev/api/mcp"
+    }
+  ]
+}
