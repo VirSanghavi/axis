@@ -173,7 +173,9 @@ Point your IDE (Claude Desktop, Cursor, etc.) at the hosted MCP server:
 Authenticate via OAuth (no key to manage) or a Bearer API key — see [agent-instructions/mcp-setup.md](agent-instructions/mcp-setup.md). New tools land server-side, so there is nothing to update on your machine.
 
 ### MCP Tooling
-The server exposes these tools to agents (23 total in the current source).
+The server exposes 28 tools to agents. `src/shared/tool-manifest.ts` is the
+canonical list and is what the test suite checks the server against; this section
+is a readable summary of it.
 
 **Coordination (free, open-core):**
 
@@ -194,7 +196,23 @@ The server exposes these tools to agents (23 total in the current source).
 - `switch_project` — rebind a live MCP session to another workspace without reconnecting
 - `force_unlock` — admin override for stale locks from crashed agents
 - `update_shared_context` — append to the Live Notepad. Coordination tool responses also carry an ambient "team activity" trailer: whatever *other* agents logged since your last call, so nobody has to remember to re-read the notepad. `agentId` is optional on every tool — it defaults to the session's unique identity.
+- `release_job` — put a claimed job back on the board for someone else
 - `finalize_session` — archive the session and clear all remaining locks
+
+**Shared context and search:**
+
+- `read_context` — read the project's shared context
+- `update_context` — write to the project's shared context
+- `get_shared_context` — fetch the current Live Notepad
+- `search_codebase` — semantic search over the indexed repository
+- `search_docs` — search indexed documentation
+- `index_codebase` — build the search index for a repository
+- `index_file` — index a single file, for incremental updates
+
+**Account:**
+
+- `get_subscription_status` — current plan and entitlements
+- `get_usage_stats` — request counts and limits
 
 ### Universal Session History
 
