@@ -1,13 +1,41 @@
 {
-  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "dev.useaxis/axis",
+  "title": "Axis",
   "description": "One coordination board for a team's coding agents. Claude Code, Cursor, Codex and Windsurf share a job board and take a lock on a file before editing it, so agents run by different people do not overwrite each other.",
-  "version": "1.14.0",
+  "version": "1.14.1",
+  "websiteUrl": "https://useaxis.dev",
+  "repository": {
+    "url": "https://github.com/VirSanghavi/axis",
+    "source": "github",
+    "id": "1151610818",
+    "subfolder": "packages/axis-server"
+  },
   "packages": [
     {
-      "registry_type": "npm",
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@virsanghavi/axis-server",
-      "version": "1.14.0"
+      "version": "1.14.1",
+      "runtimeHint": "npx",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "AXIS_API_KEY",
+          "description": "Board credential from useaxis.dev. Omit to run local-only, with no cross-machine coordination."
+        },
+        {
+          "name": "AXIS_API_SECRET",
+          "description": "Secret paired with AXIS_API_KEY.",
+          "isSecret": true
+        },
+        {
+          "name": "AXIS_ORG_ID",
+          "description": "Pin the board to one organization, when you belong to several."
+        }
+      ]
     }
   ],
   "remotes": [

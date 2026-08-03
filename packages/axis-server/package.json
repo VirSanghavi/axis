@@ -1,7 +1,31 @@
 {
   "name": "@virsanghavi/axis-server",
-  "version": "1.14.0",
-  "description": "Axis MCP Server CLI",
+  "version": "1.14.1",
+  "description": "One coordination board for a team's coding agents. Claude Code, Cursor, Codex and Windsurf share a job board and take a lock on a file before editing it, so agents run by different people do not overwrite each other.",
+  "mcpName": "dev.useaxis/axis",
+  "license": "AGPL-3.0-only",
+  "author": "Vir Sanghavi",
+  "homepage": "https://useaxis.dev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/VirSanghavi/axis.git",
+    "directory": "packages/axis-server"
+  },
+  "bugs": {
+    "url": "https://github.com/VirSanghavi/axis/issues"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "mcp-server",
+    "claude-code",
+    "cursor",
+    "coding-agent",
+    "agent-orchestration",
+    "multi-agent",
+    "file-locking",
+    "ai-agents"
+  ],
   "main": "dist/index.js",
   "bin": {
     "axis-server": "dist/cli.js"
